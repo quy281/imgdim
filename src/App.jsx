@@ -1,6 +1,6 @@
 ﻿import React, { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Image as KonvaImage, Arrow, Label, Tag, Text, Group, Circle, Line as KonvaLine, Rect as KonvaRect, Transformer } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock } from 'lucide-react';
+import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X } from 'lucide-react';
 import './App.css';
 
 const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stageScale }) => {
@@ -113,6 +113,7 @@ export default function App() {
   const [customWatermark, setCustomWatermark] = useState(null);
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const [showMobileHistory, setShowMobileHistory] = useState(false);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
@@ -234,6 +235,7 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     });
+    if (showMobileHistory) setShowMobileHistory(false);
   };
 
   const handleUploadCustomFrame = (e) => {
@@ -304,7 +306,7 @@ export default function App() {
     let x = (pos.x - stage.x()) / stage.scaleX();
     let y = (pos.y - stage.y()) / stage.scaleY();
 
-    if (e.evt.shiftKey) {
+    if (e.evt && e.evt.shiftKey) {
       const dx = x - tempLine.start.x; const dy = y - tempLine.start.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
       const currentAngle = Math.atan2(dy, dx);
@@ -434,10 +436,18 @@ export default function App() {
         {!currentDoc ? (
           <div className="empty-state">
             <div className="upload-box">
-              <ImagePlus size={64} style={{ marginBottom: 10 }} />
-              <h2>Tải ảnh lên để bắt đầu</h2>
-              <p>Kéo thả ảnh hoặc click vào đây</p>
-              <input type="file" multiple onChange={handleUpload} accept="image/*" />
+              <Camera size={64} style={{ marginBottom: 10, color: '#3b82f6' }} />
+              <h2 style={{ fontSize: '18px', margin: '5px 0' }}>Chụp ảnh hoặc Tải ảnh lên</h2>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '10px', width: '100%', padding: '0 20px', boxSizing: 'border-box' }}>
+                <div className="file-input-wrapper" style={{ flex: 1 }}>
+                  <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}><Camera size={18} /> {isMobile ? '' : 'Chụp'}</button>
+                  <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
+                </div>
+                <div className="file-input-wrapper" style={{ flex: 1 }}>
+                  <button className="btn" style={{ width: '100%', justifyContent: 'center', border: '1px solid #cbd5e1' }}><ImagePlus size={18} /> {isMobile ? '' : 'Thư viện'}</button>
+                  <input type="file" multiple onChange={handleUpload} accept="image/*" />
+                </div>
+              </div>
             </div>
           </div>
         ) : (
@@ -509,67 +519,75 @@ export default function App() {
 
       {isMobile && currentDoc && (
         <div className="bottom-bar">
-          {docs.length > 0 && (
-            <div className="bottom-thumbnails">
+          <div className="bottom-tools">
+            <button className="btn btn-icon" onClick={() => setShowMobileHistory(true)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+              <Images size={22} />
+            </button>
+            <div className="divider"></div>
+
+            <div className="file-input-wrapper">
+              <button className="btn btn-icon btn-primary"><Camera size={22} /></button>
+              <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
+            </div>
+
+            <div className="file-input-wrapper">
+              <button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }}><ImagePlus size={22} /></button>
+              <input type="file" multiple onChange={handleUpload} accept="image/*" />
+            </div>
+
+            <div className="divider"></div>
+
+            <button className={`btn btn-icon ${isDrawingMode ? 'active-tool' : ''}`} onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}>
+              <PencilRuler size={22} />
+            </button>
+            <button className={`btn btn-icon ${isGridMode ? 'active-tool' : ''}`} onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }}>
+              <Grid3X3 size={22} />
+            </button>
+
+            <div className="divider"></div>
+
+            <div className="file-input-wrapper">
+              <button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }} title="Khung"><Frame size={22} /></button>
+              <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
+            </div>
+
+            <div className="file-input-wrapper">
+              <button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }} title="Watermark"><Stamp size={22} /></button>
+              <input type="file" accept="image/png" onChange={handleUploadCustomWatermark} />
+            </div>
+
+            <div className="divider"></div>
+
+            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }}>
+              <Download size={22} color="#059669" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Popup Quản lý Lịch sử (Mobile) */}
+      {isMobile && showMobileHistory && (
+        <div className="mobile-history-overlay" onClick={() => setShowMobileHistory(false)}>
+          <div className="mobile-history-modal" onClick={e => e.stopPropagation()}>
+            <div className="mobile-history-header">
+              <h3 style={{ margin: 0, fontSize: '16px', color: '#1e293b' }}>Lịch sử ảnh ({docs.length})</h3>
+              <button className="btn btn-icon" onClick={() => setShowMobileHistory(false)} style={{ padding: '4px' }}><X size={20} /></button>
+            </div>
+
+            <div className="mobile-history-list">
               {docs.map(doc => (
-                <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => setActiveDocId(doc.id)}>
+                <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => { setActiveDocId(doc.id); setShowMobileHistory(false); }}>
                   <img src={doc.img.src} alt="thumb" />
                   <div className="thumb-name">{doc.name}</div>
                 </div>
               ))}
+              {docs.length === 0 && <p style={{ textAlign: 'center', width: '100%', color: '#94a3b8' }}>Chưa có ảnh nào</p>}
             </div>
-          )}
-
-          <div className="bottom-tools">
-            <div className="file-input-wrapper" style={{ width: 'auto' }}>
-              <button className="btn btn-primary"><ImagePlus size={18} /> Thêm ảnh</button>
-              <input type="file" multiple onChange={handleUpload} accept="image/*" />
-            </div>
-            <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ color: '#059669', background: '#ecfdf5', border: '1px solid #34d399' }}>
-              <SaveAll size={18} /> {isExportingAll ? 'Đang xuất...' : 'Xuất Toàn Bộ'}
-            </button>
-
-            <div className="divider"></div>
-
-            <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }} disabled={!currentDoc}>
-              <PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ Dim...' : 'Vẽ Dim'}
-            </button>
-            <button className="btn" onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }} disabled={!currentDoc}>
-              <Grid3X3 size={18} /> Lưới 3D
-            </button>
-
-            <div className="divider"></div>
-
-            <div className="file-input-wrapper" style={{ width: 'auto' }}>
-              <button className="btn" style={{ border: '1px dashed #cbd5e1' }}>Tải Khung</button>
-              <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
-            </div>
-            <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }} disabled={!currentDoc}>
-              <Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}
-            </button>
-            {showFrame && customFrame && (
-              <button className="btn" onClick={() => { setIsEditFrameMode(!isEditFrameMode); setIsDrawingMode(false); document.body.style.cursor = 'default'; }} style={{ background: isEditFrameMode ? '#dbeafe' : 'transparent', color: isEditFrameMode ? '#1d4ed8' : '#475569', border: isEditFrameMode ? '1px solid #93c5fd' : 'none' }}>
-                {isEditFrameMode ? <Lock size={18} /> : <Unlock size={18} />} Khóa/Mở Khung
+            <div style={{ padding: '15px', borderTop: '1px solid #e2e8f0' }}>
+              <button className="btn w-full" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ justifyContent: 'center', width: '100%', color: '#059669', background: '#ecfdf5', border: '1px solid #34d399', fontSize: '15px', padding: '10px' }}>
+                <SaveAll size={20} /> {isExportingAll ? 'Đang xuất...' : 'Lưu tất cả ảnh'}
               </button>
-            )}
-
-            <div className="divider"></div>
-
-            <div className="file-input-wrapper" style={{ width: 'auto' }}>
-              <button className="btn" style={{ border: '1px dashed #cbd5e1' }}>Tải Watermark</button>
-              <input type="file" accept="image/png" onChange={handleUploadCustomWatermark} />
             </div>
-            {!customWatermark && (
-              <button className="btn" onClick={() => { const txt = prompt("Nhập Chữ Watermark:", watermarkTxt); if (txt !== null) setWatermarkTxt(txt); }} style={{ border: '1px dashed #cbd5e1' }}>
-                <Stamp size={14} /> Chữ Watermark
-              </button>
-            )}
-
-            <div className="divider"></div>
-
-            <button className="btn" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
-              <Download size={18} /> Lưu ảnh này
-            </button>
           </div>
         </div>
       )}
