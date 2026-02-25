@@ -1,5 +1,9 @@
 {
   "appId": "com.img.dim",
   "appName": "MKG - Dim",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "url": "http://192.168.0.103:5173",
+    "cleartext": true
+  }
 }

@@ -29,6 +29,7 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
     <Group
       name="dim-group" draggable
       onClick={(e) => { e.cancelBubble = true; onSelect(line.id); }}
+      onTap={(e) => { e.cancelBubble = true; onSelect(line.id); }} // Thêm onTap cho mobile
       onDragStart={(e) => { if (e.target.name() === 'handle') e.cancelBubble = true; }}
       onDragEnd={(e) => {
         if (e.target.name() === 'dim-group') {
@@ -48,6 +49,7 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
         x={(line.start.x + line.end.x) / 2} y={(line.start.y + line.end.y) / 2}
         offsetX={((line.label.length * 6 + 16) / 2) * invScale} offsetY={12 * invScale}
         onDblClick={(e) => { e.cancelBubble = true; onTextEdit(line); }}
+        onDblTap={(e) => { e.cancelBubble = true; onTextEdit(line); }} // Thêm onDblTap cho mobile
         onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
       >
         <Tag fill="rgba(0,0,0,0.65)" cornerRadius={12 * invScale} />
@@ -56,8 +58,8 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
 
       {isSelected && (
         <>
-          <Circle name="handle" x={line.start.x} y={line.start.y} radius={6 * invScale} fill="#3b82f6" draggable onDragStart={(e) => e.cancelBubble = true} onDragMove={(e) => handleDrag('start', e, false)} onDragEnd={(e) => { e.cancelBubble = true; handleDrag('start', e, true); }} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'move'; }} />
-          <Circle name="handle" x={line.end.x} y={line.end.y} radius={6 * invScale} fill="#3b82f6" draggable onDragStart={(e) => e.cancelBubble = true} onDragMove={(e) => handleDrag('end', e, false)} onDragEnd={(e) => { e.cancelBubble = true; handleDrag('end', e, true); }} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'move'; }} />
+          <Circle name="handle" x={line.start.x} y={line.start.y} radius={6 * invScale} hitStrokeWidth={20 * invScale} fill="#3b82f6" draggable onDragStart={(e) => e.cancelBubble = true} onDragMove={(e) => handleDrag('start', e, false)} onDragEnd={(e) => { e.cancelBubble = true; handleDrag('start', e, true); }} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'move'; }} />
+          <Circle name="handle" x={line.end.x} y={line.end.y} radius={6 * invScale} hitStrokeWidth={20 * invScale} fill="#3b82f6" draggable onDragStart={(e) => e.cancelBubble = true} onDragMove={(e) => handleDrag('end', e, false)} onDragEnd={(e) => { e.cancelBubble = true; handleDrag('end', e, true); }} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'move'; }} />
         </>
       )}
     </Group>
