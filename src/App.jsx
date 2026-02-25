@@ -12,7 +12,7 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
       const fixedPoint = point === 'start' ? line.end : line.start;
       const dx = x - fixedPoint.x; const dy = y - fixedPoint.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
-      const currentAngle = Math.atan2(dy, dx); 
+      const currentAngle = Math.atan2(dy, dx);
       const snapAngle = Math.round(currentAngle / (Math.PI / 4)) * (Math.PI / 4);
       x = fixedPoint.x + Math.cos(snapAngle) * distance;
       y = fixedPoint.y + Math.sin(snapAngle) * distance;
@@ -43,7 +43,7 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
     >
       <Arrow points={[line.start.x, line.start.y, line.end.x, line.end.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} shadowColor="black" shadowBlur={2} shadowOpacity={0.3} />
       <Arrow points={[line.end.x, line.end.y, line.start.x, line.start.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} shadowColor="black" shadowBlur={2} shadowOpacity={0.3} />
-      
+
       <Label
         x={(line.start.x + line.end.x) / 2} y={(line.start.y + line.end.y) / 2}
         offsetX={((line.label.length * 6 + 16) / 2) * invScale} offsetY={12 * invScale}
@@ -95,11 +95,11 @@ const FrameOverlay = ({ frameImg, frameAttrs, onChange, isEditing }) => {
 };
 
 export default function App() {
-  const [docs, setDocs] = useState([]); 
+  const [docs, setDocs] = useState([]);
   const [activeDocId, setActiveDocId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [copiedLine, setCopiedLine] = useState(null);
-  
+
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [isGridMode, setIsGridMode] = useState(false);
@@ -111,6 +111,14 @@ export default function App() {
   const [customFrame, setCustomFrame] = useState(null);
   const [watermarkTxt, setWatermarkTxt] = useState('');
   const [customWatermark, setCustomWatermark] = useState(null);
+
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const mainAreaRef = useRef();
   const stageRef = useRef();
@@ -146,7 +154,7 @@ export default function App() {
 
       // ESC: Thoát lệnh
       if (e.key === 'Escape') { setIsDrawingMode(false); setSelectedId(null); setIsEditFrameMode(false); document.body.style.cursor = 'default'; }
-      
+
       // Delete: Xóa
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId !== null && !isEditFrameMode) {
         commitHistory(currentDoc.lines.filter(l => l.id !== selectedId));
@@ -206,13 +214,13 @@ export default function App() {
       reader.onload = () => {
         const image = new window.Image(); image.src = reader.result;
         image.onload = () => {
-          const w = mainAreaRef.current ? mainAreaRef.current.offsetWidth : window.innerWidth - 220;
-          const h = mainAreaRef.current ? mainAreaRef.current.offsetHeight : window.innerHeight;
+          const w = mainAreaRef.current ? mainAreaRef.current.offsetWidth : window.innerWidth;
+          const h = mainAreaRef.current ? mainAreaRef.current.offsetHeight : window.innerHeight - 150;
           const autoScale = Math.min((w - 100) / image.width, (h - 100) / image.height, 1);
           const cx = image.width / 2; const cy = image.height / 2;
-          
+
           const newDoc = {
-            id: Date.now() + Math.random(), name: file.name, img: image, 
+            id: Date.now() + Math.random(), name: file.name, img: image,
             lines: [], linesHistory: [[]], historyStep: 0, // Cấu trúc History
             globalRatio: null,
             gridPoints: [{ x: cx - 200, y: cy + 100 }, { x: cx + 200, y: cy + 100 }, { x: cx + 100, y: cy - 50 }, { x: cx - 100, y: cy - 50 }],
@@ -259,9 +267,9 @@ export default function App() {
       const val = parseFloat(userInput);
       const dx = line.end.x - line.start.x; const dy = line.end.y - line.start.y;
       const pxDist = Math.sqrt(dx * dx + dy * dy);
-      
+
       const newLines = currentDoc.lines.map(l => l.id === line.id ? { ...l, label: userInput } : l);
-      
+
       if (!isNaN(val) && pxDist > 0) {
         updateDoc({ globalRatio: val / pxDist }); // Cập nhật Ratio
       }
@@ -283,7 +291,7 @@ export default function App() {
     if (isEditFrameMode) return;
     if (e.target.name() === 'handle' || e.target.name() === 'grid-handle') return;
     if (!isDrawingMode) { if (e.target === e.target.getStage() || e.target.className === 'Image') setSelectedId(null); return; }
-    
+
     const stage = stageRef.current; const pos = stage.getPointerPosition();
     const x = (pos.x - stage.x()) / stage.scaleX();
     const y = (pos.y - stage.y()) / stage.scaleY();
@@ -299,7 +307,7 @@ export default function App() {
     if (e.evt.shiftKey) {
       const dx = x - tempLine.start.x; const dy = y - tempLine.start.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
-      const currentAngle = Math.atan2(dy, dx); 
+      const currentAngle = Math.atan2(dy, dx);
       const snapAngle = Math.round(currentAngle / (Math.PI / 4)) * (Math.PI / 4);
       x = tempLine.start.x + Math.cos(snapAngle) * distance;
       y = tempLine.start.y + Math.sin(snapAngle) * distance;
@@ -342,151 +350,229 @@ export default function App() {
 
   const handleBatchExport = async () => {
     if (docs.length === 0) return;
-    setIsExportingAll(true); setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); 
+    setIsExportingAll(true); setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
     for (let i = 0; i < docs.length; i++) {
       setActiveDocId(docs[i].id);
-      await new Promise(resolve => setTimeout(resolve, 500)); 
+      await new Promise(resolve => setTimeout(resolve, 500));
       executeDownload(docs[i]);
     }
     setIsExportingAll(false);
   };
 
   return (
-    <div className="app-wrapper">
-      <div className="sidebar">
-        <div className="p-4 font-bold border-b" style={{ padding: '15px', borderBottom: '1px solid #ddd' }}>Lịch sử phiên ({docs.length})</div>
-        <div className="thumb-list">
-          {docs.map(doc => (
-            <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => setActiveDocId(doc.id)}>
-              <img src={doc.img.src} alt="thumb" />
-              <div className="thumb-name">{doc.name}</div>
-            </div>
-          ))}
-        </div>
-        
-        <div style={{ padding: '15px', borderTop: '1px solid #ddd', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div className="file-input-wrapper">
-            <button className="btn btn-primary w-full" style={{ justifyContent: 'center', width: '100%' }}><ImagePlus size={18} /> Thêm ảnh bản vẽ</button>
-            <input type="file" multiple onChange={handleUpload} accept="image/*" />
+    <div className={`app-wrapper ${isMobile ? 'mobile-layout' : 'desktop-layout'}`}>
+      {!isMobile && (
+        <div className="sidebar">
+          <div className="p-4 font-bold border-b" style={{ padding: '15px', borderBottom: '1px solid #ddd' }}>Lịch sử phiên ({docs.length})</div>
+          <div className="thumb-list">
+            {docs.map(doc => (
+              <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => setActiveDocId(doc.id)}>
+                <img src={doc.img.src} alt="thumb" />
+                <div className="thumb-name">{doc.name}</div>
+              </div>
+            ))}
           </div>
-          <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ justifyContent: 'center', width: '100%', color: '#059669', background: '#ecfdf5', border: '1px solid #34d399' }}>
-            <SaveAll size={18} /> {isExportingAll ? 'Đang xuất...' : 'Xuất Toàn Bộ'}
-          </button>
-        </div>
 
-        <div style={{ padding: '15px', borderTop: '1px solid #ddd', background: '#f8fafc' }}>
-          <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', color: '#475569' }}>Cài đặt Mặc định</div>
-          <div className="file-input-wrapper" style={{ marginBottom: '8px' }}>
-            <button className="btn w-full" style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>Tải Khung (PNG)</button>
-            <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
+          <div style={{ padding: '15px', borderTop: '1px solid #ddd', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="file-input-wrapper">
+              <button className="btn btn-primary w-full" style={{ justifyContent: 'center', width: '100%' }}><ImagePlus size={18} /> Thêm ảnh bản vẽ</button>
+              <input type="file" multiple onChange={handleUpload} accept="image/*" />
+            </div>
+            <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ justifyContent: 'center', width: '100%', color: '#059669', background: '#ecfdf5', border: '1px solid #34d399' }}>
+              <SaveAll size={18} /> {isExportingAll ? 'Đang xuất...' : 'Xuất Toàn Bộ'}
+            </button>
           </div>
-          <div className="file-input-wrapper" style={{ marginBottom: '8px' }}>
-            <button className="btn w-full" style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>Tải Watermark (PNG)</button>
-            <input type="file" accept="image/png" onChange={handleUploadCustomWatermark} />
-          </div>
-          {!customWatermark && (
-             <button className="btn w-full" onClick={() => { const txt = prompt("Nhập Chữ Watermark:", watermarkTxt); if (txt !== null) setWatermarkTxt(txt); }} style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>
+
+          <div style={{ padding: '15px', borderTop: '1px solid #ddd', background: '#f8fafc' }}>
+            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', color: '#475569' }}>Cài đặt Mặc định</div>
+            <div className="file-input-wrapper" style={{ marginBottom: '8px' }}>
+              <button className="btn w-full" style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>Tải Khung (PNG)</button>
+              <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
+            </div>
+            <div className="file-input-wrapper" style={{ marginBottom: '8px' }}>
+              <button className="btn w-full" style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>Tải Watermark (PNG)</button>
+              <input type="file" accept="image/png" onChange={handleUploadCustomWatermark} />
+            </div>
+            {!customWatermark && (
+              <button className="btn w-full" onClick={() => { const txt = prompt("Nhập Chữ Watermark:", watermarkTxt); if (txt !== null) setWatermarkTxt(txt); }} style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>
                 <Stamp size={14} /> Điền Chữ Watermark
-             </button>
-          )}
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="main-area" ref={mainAreaRef}>
-        <div className="toolbar">
-          <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }} disabled={!currentDoc}>
-            <PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ Dim...' : 'Vẽ Dim'}
-          </button>
-          <button className="btn" onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }} disabled={!currentDoc}>
-            <Grid3X3 size={18} /> Lưới 3D
-          </button>
-          
-          <div className="divider"></div>
-
-          <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }} disabled={!currentDoc}>
-            <Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}
-          </button>
-
-          {showFrame && customFrame && (
-            <button className="btn" onClick={() => { setIsEditFrameMode(!isEditFrameMode); setIsDrawingMode(false); document.body.style.cursor = 'default'; }} style={{ background: isEditFrameMode ? '#dbeafe' : 'transparent', color: isEditFrameMode ? '#1d4ed8' : '#475569', border: isEditFrameMode ? '1px solid #93c5fd' : 'none' }}>
-              {isEditFrameMode ? <Lock size={18}/> : <Unlock size={18}/>} Khóa/Mở Khung
+        {!isMobile && currentDoc && (
+          <div className="toolbar">
+            <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }} disabled={!currentDoc}>
+              <PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ Dim...' : 'Vẽ Dim'}
             </button>
-          )}
-          
-          <div className="divider"></div>
-          <button className="btn" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
-            <Download size={18} /> Lưu ảnh này
-          </button>
-        </div>
+            <button className="btn" onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }} disabled={!currentDoc}>
+              <Grid3X3 size={18} /> Lưới 3D
+            </button>
 
-        {/* Cập nhật hint text để hướng dẫn dùng phím tắt */}
-        <div className="hint-text">
-          {isDrawingMode ? 'Kéo chuột để vẽ (Giữ SHIFT để khóa trục ngang/dọc)' : 'Bấm Ctrl+Z (Undo) | Ctrl+Y (Redo) | Ctrl+C (Copy) | Ctrl+V (Paste) | Delete (Xóa)'}
-        </div>
+            <div className="divider"></div>
 
-        {currentDoc ? (
-          <Stage 
-            width={stageSize.width} height={stageSize.height} ref={stageRef} scaleX={currentDoc.stageScale} scaleY={currentDoc.stageScale} x={currentDoc.stagePos.x} y={currentDoc.stagePos.y} 
-            draggable={!isDrawingMode && !isEditFrameMode} 
-            onWheel={handleWheel} onMouseDown={handleStageMouseDown} onMouseMove={handleStageMouseMove} onMouseUp={handleStageMouseUp}
-            onDragEnd={(e) => {
-              if (e.target === stageRef.current) updateDoc({ stagePos: { x: e.target.x(), y: e.target.y() } });
-            }}
-          >
-            <Layer>
-              <KonvaImage image={currentDoc.img} x={0} y={0} />
+            <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }} disabled={!currentDoc}>
+              <Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}
+            </button>
 
-              {isGridMode && (
-                <Group>
-                  <KonvaLine points={[currentDoc.gridPoints[0].x, currentDoc.gridPoints[0].y, currentDoc.gridPoints[1].x, currentDoc.gridPoints[1].y, currentDoc.gridPoints[2].x, currentDoc.gridPoints[2].y, currentDoc.gridPoints[3].x, currentDoc.gridPoints[3].y]} closed stroke="#4f46e5" strokeWidth={2 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} fill="rgba(79, 70, 229, 0.1)" />
-                  <KonvaLine points={[currentDoc.gridPoints[0].x, currentDoc.gridPoints[0].y, currentDoc.gridPoints[2].x, currentDoc.gridPoints[2].y]} stroke="#4f46e5" strokeWidth={1 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />
-                  <KonvaLine points={[currentDoc.gridPoints[1].x, currentDoc.gridPoints[1].y, currentDoc.gridPoints[3].x, currentDoc.gridPoints[3].y]} stroke="#4f46e5" strokeWidth={1 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />
-                  {currentDoc.gridPoints.map((pt, i) => (
-                    <Circle key={i} name="grid-handle" x={pt.x} y={pt.y} radius={8 / currentDoc.stageScale} fill="white" stroke="#4f46e5" strokeWidth={3 / currentDoc.stageScale} draggable onDragMove={(e) => updateGridPoint(i, e.target.x(), e.target.y())} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'move'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} />
-                  ))}
-                </Group>
-              )}
+            {showFrame && customFrame && (
+              <button className="btn" onClick={() => { setIsEditFrameMode(!isEditFrameMode); setIsDrawingMode(false); document.body.style.cursor = 'default'; }} style={{ background: isEditFrameMode ? '#dbeafe' : 'transparent', color: isEditFrameMode ? '#1d4ed8' : '#475569', border: isEditFrameMode ? '1px solid #93c5fd' : 'none' }}>
+                {isEditFrameMode ? <Lock size={18} /> : <Unlock size={18} />} Khóa/Mở Khung
+              </button>
+            )}
 
-              {/* Sử dụng onChange (realtime) và commit (khi thả chuột) */}
-              {currentDoc.lines.map((line) => (
-                <DimensionLine key={line.id} line={line} stageScale={currentDoc.stageScale} isSelected={line.id === selectedId} onSelect={setSelectedId} onTextEdit={handleTextEdit} 
-                  onChange={(newVal, commit = false) => {
-                    const newLines = currentDoc.lines.map(l => l.id === newVal.id ? newVal : l);
-                    if (commit) commitHistory(newLines); else updateDoc({ lines: newLines });
-                  }} 
-                />
-              ))}
-              
-              {tempLine && <KonvaLine points={[tempLine.start.x, tempLine.start.y, tempLine.end.x, tempLine.end.y]} stroke="#eab308" strokeWidth={2 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />}
+            <div className="divider"></div>
+            <button className="btn" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
+              <Download size={18} /> Lưu ảnh này
+            </button>
+          </div>
+        )}
 
-              {customWatermark ? (
-                <KonvaImage image={customWatermark} x={currentDoc.img.width / 2} y={currentDoc.img.height / 2} offsetX={customWatermark.width / 2} offsetY={customWatermark.height / 2} scaleX={(currentDoc.img.width * 0.4) / customWatermark.width} scaleY={(currentDoc.img.width * 0.4) / customWatermark.width} opacity={0.3} listening={false} />
-              ) : watermarkTxt ? (
-                <Group x={currentDoc.img.width / 2} y={currentDoc.img.height / 2} rotation={-25} listening={false}>
-                  <Text x={-currentDoc.img.width} y={-currentDoc.img.width * 0.05} width={currentDoc.img.width * 2} text={watermarkTxt} fontSize={Math.max(currentDoc.img.width / 12, 50)} fill="rgba(255, 255, 255, 0.35)" stroke="rgba(0, 0, 0, 0.15)" strokeWidth={3} align="center" fontStyle="bold" fontFamily="Inter" />
-                </Group>
-              ) : null}
-
-              {showFrame && (
-                customFrame && currentDoc.frameAttrs ? (
-                  <FrameOverlay frameImg={customFrame} frameAttrs={currentDoc.frameAttrs} isEditing={isEditFrameMode} onChange={(newAttrs) => updateDoc({ frameAttrs: newAttrs })} />
-                ) : (
-                  <Group listening={false}>
-                    <KonvaRect x={20} y={20} width={currentDoc.img.width - 40} height={currentDoc.img.height - 40} stroke="#ef4444" strokeWidth={6} />
-                    <KonvaRect x={28} y={28} width={currentDoc.img.width - 56} height={currentDoc.img.height - 56} stroke="#ef4444" strokeWidth={2} />
-                    <KonvaRect x={currentDoc.img.width - 320} y={currentDoc.img.height - 130} width={300} height={110} fill="rgba(0,0,0,0.7)" stroke="#ef4444" strokeWidth={2} />
-                    <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 115} text="BẢN VẼ DIMENSION" fill="white" fontSize={20} fontStyle="bold" fontFamily="Inter" />
-                    <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 85} text={`File: ${currentDoc.name.substring(0,25)}...`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
-                    <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 60} text={`Ngày: ${new Date().toLocaleDateString('vi-VN')}`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
-                  </Group>
-                )
-              )}
-            </Layer>
-          </Stage>
+        {!currentDoc ? (
+          <div className="empty-state">
+            <div className="upload-box">
+              <ImagePlus size={64} style={{ marginBottom: 10 }} />
+              <h2>Tải ảnh lên để bắt đầu</h2>
+              <p>Kéo thả ảnh hoặc click vào đây</p>
+              <input type="file" multiple onChange={handleUpload} accept="image/*" />
+            </div>
+          </div>
         ) : (
-          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: '#94a3b8' }}>Hãy mở file ảnh để bắt đầu</div>
+          <>
+            <div className="hint-text">
+              {isDrawingMode ? 'Kéo chuột để vẽ (Giữ SHIFT để khóa trục ngang/dọc)' : 'Bấm Ctrl+Z (Undo) | Ctrl+Y (Redo) | Ctrl+C (Copy) | Ctrl+V (Paste) | Delete (Xóa)'}
+            </div>
+
+            <Stage
+              width={stageSize.width} height={stageSize.height} ref={stageRef} scaleX={currentDoc.stageScale} scaleY={currentDoc.stageScale} x={currentDoc.stagePos.x} y={currentDoc.stagePos.y}
+              draggable={!isDrawingMode && !isEditFrameMode}
+              onWheel={handleWheel} onMouseDown={handleStageMouseDown} onMouseMove={handleStageMouseMove} onMouseUp={handleStageMouseUp}
+              onDragEnd={(e) => {
+                if (e.target === stageRef.current) updateDoc({ stagePos: { x: e.target.x(), y: e.target.y() } });
+              }}
+            >
+              <Layer>
+                <KonvaImage image={currentDoc.img} x={0} y={0} />
+
+                {isGridMode && (
+                  <Group>
+                    <KonvaLine points={[currentDoc.gridPoints[0].x, currentDoc.gridPoints[0].y, currentDoc.gridPoints[1].x, currentDoc.gridPoints[1].y, currentDoc.gridPoints[2].x, currentDoc.gridPoints[2].y, currentDoc.gridPoints[3].x, currentDoc.gridPoints[3].y]} closed stroke="#4f46e5" strokeWidth={2 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} fill="rgba(79, 70, 229, 0.1)" />
+                    <KonvaLine points={[currentDoc.gridPoints[0].x, currentDoc.gridPoints[0].y, currentDoc.gridPoints[2].x, currentDoc.gridPoints[2].y]} stroke="#4f46e5" strokeWidth={1 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />
+                    <KonvaLine points={[currentDoc.gridPoints[1].x, currentDoc.gridPoints[1].y, currentDoc.gridPoints[3].x, currentDoc.gridPoints[3].y]} stroke="#4f46e5" strokeWidth={1 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />
+                    {currentDoc.gridPoints.map((pt, i) => (
+                      <Circle key={i} name="grid-handle" x={pt.x} y={pt.y} radius={8 / currentDoc.stageScale} fill="white" stroke="#4f46e5" strokeWidth={3 / currentDoc.stageScale} draggable onDragMove={(e) => updateGridPoint(i, e.target.x(), e.target.y())} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'move'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} />
+                    ))}
+                  </Group>
+                )}
+
+                {currentDoc.lines.map((line) => (
+                  <DimensionLine key={line.id} line={line} stageScale={currentDoc.stageScale} isSelected={line.id === selectedId} onSelect={setSelectedId} onTextEdit={handleTextEdit}
+                    onChange={(newVal, commit = false) => {
+                      const newLines = currentDoc.lines.map(l => l.id === newVal.id ? newVal : l);
+                      if (commit) commitHistory(newLines); else updateDoc({ lines: newLines });
+                    }}
+                  />
+                ))}
+
+                {tempLine && <KonvaLine points={[tempLine.start.x, tempLine.start.y, tempLine.end.x, tempLine.end.y]} stroke="#eab308" strokeWidth={2 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />}
+
+                {customWatermark ? (
+                  <KonvaImage image={customWatermark} x={currentDoc.img.width / 2} y={currentDoc.img.height / 2} offsetX={customWatermark.width / 2} offsetY={customWatermark.height / 2} scaleX={(currentDoc.img.width * 0.4) / customWatermark.width} scaleY={(currentDoc.img.width * 0.4) / customWatermark.width} opacity={0.3} listening={false} />
+                ) : watermarkTxt ? (
+                  <Group x={currentDoc.img.width / 2} y={currentDoc.img.height / 2} rotation={-25} listening={false}>
+                    <Text x={-currentDoc.img.width} y={-currentDoc.img.width * 0.05} width={currentDoc.img.width * 2} text={watermarkTxt} fontSize={Math.max(currentDoc.img.width / 12, 50)} fill="rgba(255, 255, 255, 0.35)" stroke="rgba(0, 0, 0, 0.15)" strokeWidth={3} align="center" fontStyle="bold" fontFamily="Inter" />
+                  </Group>
+                ) : null}
+
+                {showFrame && (
+                  customFrame && currentDoc.frameAttrs ? (
+                    <FrameOverlay frameImg={customFrame} frameAttrs={currentDoc.frameAttrs} isEditing={isEditFrameMode} onChange={(newAttrs) => updateDoc({ frameAttrs: newAttrs })} />
+                  ) : (
+                    <Group listening={false}>
+                      <KonvaRect x={20} y={20} width={currentDoc.img.width - 40} height={currentDoc.img.height - 40} stroke="#ef4444" strokeWidth={6} />
+                      <KonvaRect x={28} y={28} width={currentDoc.img.width - 56} height={currentDoc.img.height - 56} stroke="#ef4444" strokeWidth={2} />
+                      <KonvaRect x={currentDoc.img.width - 320} y={currentDoc.img.height - 130} width={300} height={110} fill="rgba(0,0,0,0.7)" stroke="#ef4444" strokeWidth={2} />
+                      <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 115} text="BẢN VẼ DIMENSION" fill="white" fontSize={20} fontStyle="bold" fontFamily="Inter" />
+                      <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 85} text={`File: ${currentDoc.name.substring(0, 25)}...`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
+                      <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 60} text={`Ngày: ${new Date().toLocaleDateString('vi-VN')}`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
+                    </Group>
+                  )
+                )}
+              </Layer>
+            </Stage>
+          </>
         )}
       </div>
+
+      {isMobile && currentDoc && (
+        <div className="bottom-bar">
+          {docs.length > 0 && (
+            <div className="bottom-thumbnails">
+              {docs.map(doc => (
+                <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => setActiveDocId(doc.id)}>
+                  <img src={doc.img.src} alt="thumb" />
+                  <div className="thumb-name">{doc.name}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="bottom-tools">
+            <div className="file-input-wrapper" style={{ width: 'auto' }}>
+              <button className="btn btn-primary"><ImagePlus size={18} /> Thêm ảnh</button>
+              <input type="file" multiple onChange={handleUpload} accept="image/*" />
+            </div>
+            <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ color: '#059669', background: '#ecfdf5', border: '1px solid #34d399' }}>
+              <SaveAll size={18} /> {isExportingAll ? 'Đang xuất...' : 'Xuất Toàn Bộ'}
+            </button>
+
+            <div className="divider"></div>
+
+            <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }} disabled={!currentDoc}>
+              <PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ Dim...' : 'Vẽ Dim'}
+            </button>
+            <button className="btn" onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }} disabled={!currentDoc}>
+              <Grid3X3 size={18} /> Lưới 3D
+            </button>
+
+            <div className="divider"></div>
+
+            <div className="file-input-wrapper" style={{ width: 'auto' }}>
+              <button className="btn" style={{ border: '1px dashed #cbd5e1' }}>Tải Khung</button>
+              <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
+            </div>
+            <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }} disabled={!currentDoc}>
+              <Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}
+            </button>
+            {showFrame && customFrame && (
+              <button className="btn" onClick={() => { setIsEditFrameMode(!isEditFrameMode); setIsDrawingMode(false); document.body.style.cursor = 'default'; }} style={{ background: isEditFrameMode ? '#dbeafe' : 'transparent', color: isEditFrameMode ? '#1d4ed8' : '#475569', border: isEditFrameMode ? '1px solid #93c5fd' : 'none' }}>
+                {isEditFrameMode ? <Lock size={18} /> : <Unlock size={18} />} Khóa/Mở Khung
+              </button>
+            )}
+
+            <div className="divider"></div>
+
+            <div className="file-input-wrapper" style={{ width: 'auto' }}>
+              <button className="btn" style={{ border: '1px dashed #cbd5e1' }}>Tải Watermark</button>
+              <input type="file" accept="image/png" onChange={handleUploadCustomWatermark} />
+            </div>
+            {!customWatermark && (
+              <button className="btn" onClick={() => { const txt = prompt("Nhập Chữ Watermark:", watermarkTxt); if (txt !== null) setWatermarkTxt(txt); }} style={{ border: '1px dashed #cbd5e1' }}>
+                <Stamp size={14} /> Chữ Watermark
+              </button>
+            )}
+
+            <div className="divider"></div>
+
+            <button className="btn" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
+              <Download size={18} /> Lưu ảnh này
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">img-dim</string>
+    <string name="title_activity_main">img-dim</string>
+    <string name="package_name">com.img.dim</string>
+    <string name="custom_url_scheme">com.img.dim</string>
+</resources>
