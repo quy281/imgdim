@@ -1,6 +1,8 @@
 ﻿import React, { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Image as KonvaImage, Arrow, Label, Tag, Text, Group, Circle, Line as KonvaLine, Rect as KonvaRect, Transformer } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X } from 'lucide-react';
+import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2 } from 'lucide-react';
+import { Share } from '@capacitor/share';
+import { Filesystem, Directory } from '@capacitor/filesystem';
 import './App.css';
 
 const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stageScale }) => {
@@ -378,6 +380,37 @@ export default function App() {
     const link = document.createElement('a'); link.download = `[DIM]_${doc.name}`; link.href = uri; link.click();
   };
 
+  const handleShare = async (doc) => {
+    setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
+    setTimeout(async () => {
+      try {
+        let cropBox = { x: 0, y: 0, width: doc.img.width, height: doc.img.height };
+        if (showFrame && customFrame && doc.frameAttrs) {
+          cropBox = { x: doc.frameAttrs.x, y: doc.frameAttrs.y, width: doc.frameAttrs.width, height: doc.frameAttrs.height };
+        }
+        const uri = stageRef.current.getChildren()[0].toDataURL({ pixelRatio: 2, ...cropBox });
+
+        const base64Data = uri.split(',')[1];
+        const fileName = `DIM_${Date.now()}.png`;
+
+        const savedFile = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Cache
+        });
+
+        await Share.share({
+          title: 'Chia sẻ bản vẽ',
+          url: savedFile.uri,
+          dialogTitle: 'Chia sẻ bản vẽ DIM'
+        });
+      } catch (err) {
+        console.error("Lỗi chia sẻ:", err);
+        alert("Không thể chia sẻ ảnh: " + err.message);
+      }
+    }, 100);
+  };
+
   const handleBatchExport = async () => {
     if (docs.length === 0) return;
     setIsExportingAll(true); setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
@@ -578,19 +611,11 @@ export default function App() {
 
             <div className="divider"></div>
 
-            <div className="file-input-wrapper">
-              <button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }} title="Khung"><Frame size={22} /></button>
-              <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
-            </div>
+            <button className="btn btn-icon" onClick={() => handleShare(currentDoc)} style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }} title="Chia sẻ">
+              <Share2 size={22} color="#2563eb" />
+            </button>
 
-            <div className="file-input-wrapper">
-              <button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }} title="Watermark"><Stamp size={22} /></button>
-              <input type="file" accept="image/png" onChange={handleUploadCustomWatermark} />
-            </div>
-
-            <div className="divider"></div>
-
-            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }}>
+            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} title="Lưu">
               <Download size={22} color="#059669" />
             </button>
           </div>
