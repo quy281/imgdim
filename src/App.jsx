@@ -217,7 +217,10 @@ export default function App() {
         image.onload = () => {
           const w = mainAreaRef.current ? mainAreaRef.current.offsetWidth : window.innerWidth;
           const h = mainAreaRef.current ? mainAreaRef.current.offsetHeight : window.innerHeight - 150;
-          const autoScale = Math.min((w - 100) / image.width, (h - 100) / image.height, 1);
+          const pad = isMobile ? 10 : 100;
+          const autoScale = isMobile
+            ? Math.min(w / image.width, h / image.height)
+            : Math.min((w - pad) / image.width, (h - pad) / image.height, 1);
           const cx = image.width / 2; const cy = image.height / 2;
 
           const newDoc = {
@@ -289,12 +292,33 @@ export default function App() {
     updateDoc({ stageScale: newScale, stagePos: { x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale } });
   };
 
+  const getPointerPos = (e) => {
+    const stage = stageRef.current;
+    if (!stage) return null;
+    // For touch events, manually set pointer position from touch coordinates
+    if (e.evt && e.evt.touches && e.evt.touches.length > 0) {
+      const touch = e.evt.touches[0];
+      const rect = stage.container().getBoundingClientRect();
+      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    }
+    if (e.evt && e.evt.changedTouches && e.evt.changedTouches.length > 0) {
+      const touch = e.evt.changedTouches[0];
+      const rect = stage.container().getBoundingClientRect();
+      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    }
+    return stage.getPointerPosition();
+  };
+
   const handleStageMouseDown = (e) => {
     if (isEditFrameMode) return;
     if (e.target.name() === 'handle' || e.target.name() === 'grid-handle') return;
     if (!isDrawingMode) { if (e.target === e.target.getStage() || e.target.className === 'Image') setSelectedId(null); return; }
 
-    const stage = stageRef.current; const pos = stage.getPointerPosition();
+    // Prevent default touch behavior (scrolling) when drawing
+    if (e.evt && e.evt.cancelable) e.evt.preventDefault();
+
+    const stage = stageRef.current; const pos = getPointerPos(e);
+    if (!pos) return;
     const x = (pos.x - stage.x()) / stage.scaleX();
     const y = (pos.y - stage.y()) / stage.scaleY();
     setTempLine({ start: { x, y }, end: { x, y } });
@@ -302,7 +326,9 @@ export default function App() {
 
   const handleStageMouseMove = (e) => {
     if (!isDrawingMode || !tempLine || isEditFrameMode) return;
-    const stage = stageRef.current; const pos = stage.getPointerPosition();
+    if (e.evt && e.evt.cancelable) e.evt.preventDefault();
+    const stage = stageRef.current; const pos = getPointerPos(e);
+    if (!pos) return;
     let x = (pos.x - stage.x()) / stage.scaleX();
     let y = (pos.y - stage.y()) / stage.scaleY();
 
@@ -452,14 +478,18 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="hint-text">
-              {isDrawingMode ? 'Kéo chuột để vẽ (Giữ SHIFT để khóa trục ngang/dọc)' : 'Bấm Ctrl+Z (Undo) | Ctrl+Y (Redo) | Ctrl+C (Copy) | Ctrl+V (Paste) | Delete (Xóa)'}
-            </div>
+            {!isMobile && (
+              <div className="hint-text">
+                {isDrawingMode ? 'Kéo chuột để vẽ (Giữ SHIFT để khóa trục ngang/dọc)' : 'Bấm Ctrl+Z (Undo) | Ctrl+Y (Redo) | Ctrl+C (Copy) | Ctrl+V (Paste) | Delete (Xóa)'}
+              </div>
+            )}
 
             <Stage
               width={stageSize.width} height={stageSize.height} ref={stageRef} scaleX={currentDoc.stageScale} scaleY={currentDoc.stageScale} x={currentDoc.stagePos.x} y={currentDoc.stagePos.y}
               draggable={!isDrawingMode && !isEditFrameMode}
-              onWheel={handleWheel} onMouseDown={handleStageMouseDown} onMouseMove={handleStageMouseMove} onMouseUp={handleStageMouseUp}
+              onWheel={handleWheel}
+              onMouseDown={handleStageMouseDown} onMouseMove={handleStageMouseMove} onMouseUp={handleStageMouseUp}
+              onTouchStart={handleStageMouseDown} onTouchMove={handleStageMouseMove} onTouchEnd={handleStageMouseUp}
               onDragEnd={(e) => {
                 if (e.target === stageRef.current) updateDoc({ stagePos: { x: e.target.x(), y: e.target.y() } });
               }}
