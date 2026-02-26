@@ -3,6 +3,7 @@ import { Stage, Layer, Image as KonvaImage, Arrow, Label, Tag, Text, Group, Circ
 import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2 } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Capacitor } from '@capacitor/core';
 import './App.css';
 
 const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stageScale }) => {
@@ -371,27 +372,71 @@ export default function App() {
     newPoints[index] = { x, y }; updateDoc({ gridPoints: newPoints });
   };
 
-  const executeDownload = (doc) => {
+  const getExportURI = (doc) => {
+    const stage = stageRef.current;
+
+    // Lưu lại trạng thái Scale & Pan của Stage
+    const oldScale = stage.scaleX();
+    const oldPos = stage.position();
+
+    // Reset Scale & Pan về mặc định (1, 0, 0)
+    stage.scale({ x: 1, y: 1 });
+    stage.position({ x: 0, y: 0 });
+
     let cropBox = { x: 0, y: 0, width: doc.img.width, height: doc.img.height };
     if (showFrame && customFrame && doc.frameAttrs) {
       cropBox = { x: doc.frameAttrs.x, y: doc.frameAttrs.y, width: doc.frameAttrs.width, height: doc.frameAttrs.height };
     }
-    const uri = stageRef.current.getChildren()[0].toDataURL({ pixelRatio: 2, ...cropBox });
-    const link = document.createElement('a'); link.download = `[DIM]_${doc.name}`; link.href = uri; link.click();
+
+    // toDataURL với pixelRatio = 1 để lấy ảnh đúng độ phân giải thật
+    const uri = stage.toDataURL({ pixelRatio: 1, ...cropBox });
+
+    // Khôi phục lại trạng thái cũ
+    stage.scale({ x: oldScale, y: oldScale });
+    stage.position(oldPos);
+
+    return uri;
+  };
+
+  const executeDownload = async (doc, isBatch = false) => {
+    setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
+
+    return new Promise(resolve => {
+      setTimeout(async () => {
+        try {
+          const uri = getExportURI(doc);
+          if (Capacitor.isNativePlatform()) {
+            const base64Data = uri.split(',')[1];
+            const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
+
+            await Filesystem.writeFile({
+              path: fileName,
+              data: base64Data,
+              directory: Directory.Documents
+            });
+            if (!isBatch) alert("Lưu thành công ảnh vào thư mục Documents của điện thoại!");
+          } else {
+            const link = document.createElement('a');
+            link.download = `[DIM]_${doc.name}`;
+            link.href = uri;
+            link.click();
+          }
+        } catch (e) {
+          if (!isBatch) alert("Lỗi lưu ảnh: " + e.message);
+        }
+        resolve();
+      }, 100);
+    });
   };
 
   const handleShare = async (doc) => {
     setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
     setTimeout(async () => {
       try {
-        let cropBox = { x: 0, y: 0, width: doc.img.width, height: doc.img.height };
-        if (showFrame && customFrame && doc.frameAttrs) {
-          cropBox = { x: doc.frameAttrs.x, y: doc.frameAttrs.y, width: doc.frameAttrs.width, height: doc.frameAttrs.height };
-        }
-        const uri = stageRef.current.getChildren()[0].toDataURL({ pixelRatio: 2, ...cropBox });
+        const uri = getExportURI(doc);
 
         const base64Data = uri.split(',')[1];
-        const fileName = `DIM_${Date.now()}.png`;
+        const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
 
         const savedFile = await Filesystem.writeFile({
           path: fileName,
@@ -400,7 +445,7 @@ export default function App() {
         });
 
         await Share.share({
-          title: 'Chia sẻ bản vẽ',
+          title: 'Chia sẻ bản vẽ DIM',
           url: savedFile.uri,
           dialogTitle: 'Chia sẻ bản vẽ DIM'
         });
@@ -416,10 +461,13 @@ export default function App() {
     setIsExportingAll(true); setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
     for (let i = 0; i < docs.length; i++) {
       setActiveDocId(docs[i].id);
-      await new Promise(resolve => setTimeout(resolve, 500));
-      executeDownload(docs[i]);
+      await new Promise(resolve => setTimeout(resolve, 300)); // Đợi Stage render xong
+      await executeDownload(docs[i], true);
     }
     setIsExportingAll(false);
+    if (Capacitor.isNativePlatform()) {
+      alert("Đã lưu xong toàn bộ ảnh vào thư mục Documents!");
+    }
   };
 
   return (
