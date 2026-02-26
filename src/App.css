@@ -454,3 +454,25 @@ body {
         transform: translateY(0);
     }
 }
+
+/* Floating Toolbar for Selected Dimension */
+.floating-dim-toolbar {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: white;
+    padding: 8px 16px;
+    border-radius: 9999px;
+    box-shadow: 0 10px 25px -5px rgb(0 0 0 / 0.15), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid #e2e8f0;
+    z-index: 100;
+}
+
+.floating-dim-toolbar.mobile-floating {
+    bottom: 90px;
+    padding: 6px 16px;
+}

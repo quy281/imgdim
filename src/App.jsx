@@ -1,6 +1,6 @@
 ﻿import React, { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Image as KonvaImage, Arrow, Label, Tag, Text, Group, Circle, Line as KonvaLine, Rect as KonvaRect, Transformer } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2 } from 'lucide-react';
+import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2 } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
@@ -33,7 +33,8 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
       name="dim-group" draggable
       onClick={(e) => { e.cancelBubble = true; onSelect(line.id); }}
       onTap={(e) => { e.cancelBubble = true; onSelect(line.id); }} // Thêm onTap cho mobile
-      onDragStart={(e) => { if (e.target.name() === 'handle') e.cancelBubble = true; }}
+      onTouchStart={(e) => { e.cancelBubble = true; onSelect(line.id); }} // Fix bubble
+      onDragStart={(e) => { e.cancelBubble = true; if (e.target.name() === 'handle') e.cancelBubble = true; }}
       onDragEnd={(e) => {
         if (e.target.name() === 'dim-group') {
           const dx = e.target.x(); const dy = e.target.y();
@@ -316,7 +317,7 @@ export default function App() {
 
   const handleStageMouseDown = (e) => {
     if (isEditFrameMode) return;
-    if (e.target.name() === 'handle' || e.target.name() === 'grid-handle') return;
+    if (e.target.name() === 'handle' || e.target.name() === 'grid-handle' || e.target.name() === 'dim-group') return;
     if (!isDrawingMode) { if (e.target === e.target.getStage() || e.target.className === 'Image') setSelectedId(null); return; }
 
     // Prevent default touch behavior (scrolling) when drawing
@@ -370,6 +371,26 @@ export default function App() {
   const updateGridPoint = (index, x, y) => {
     const newPoints = [...currentDoc.gridPoints];
     newPoints[index] = { x, y }; updateDoc({ gridPoints: newPoints });
+  };
+
+  const handleMagicDim = () => {
+    if (!currentDoc || !currentDoc.img) return;
+    const w = currentDoc.img.width;
+    const h = currentDoc.img.height;
+    const pad = Math.min(w, h) * 0.05; // padding 5%
+
+    const newLines = [];
+    const baseId = Date.now();
+    // Top Horizontal
+    newLines.push({ id: baseId, start: { x: pad, y: pad }, end: { x: w - pad, y: pad }, label: Math.round(w - 2 * pad).toString() });
+    // Left Vertical
+    newLines.push({ id: baseId + 1, start: { x: pad, y: pad }, end: { x: pad, y: h - pad }, label: Math.round(h - 2 * pad).toString() });
+    // Bottom Horizontal
+    newLines.push({ id: baseId + 2, start: { x: pad, y: h - pad }, end: { x: w - pad, y: h - pad }, label: Math.round(w - 2 * pad).toString() });
+    // Right Vertical
+    newLines.push({ id: baseId + 3, start: { x: w - pad, y: pad }, end: { x: w - pad, y: h - pad }, label: Math.round(h - 2 * pad).toString() });
+
+    commitHistory([...currentDoc.lines, ...newLines]);
   };
 
   const getExportURI = (doc) => {
@@ -519,6 +540,9 @@ export default function App() {
             <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }} disabled={!currentDoc}>
               <PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ Dim...' : 'Vẽ Dim'}
             </button>
+            <button className="btn" onClick={handleMagicDim} style={{ color: '#d946ef' }} disabled={!currentDoc} title="Tự động vẽ khung Dim">
+              <Wand2 size={18} /> Magic Dim
+            </button>
             <button className="btn" onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }} disabled={!currentDoc}>
               <Grid3X3 size={18} /> Lưới 3D
             </button>
@@ -626,6 +650,42 @@ export default function App() {
                 )}
               </Layer>
             </Stage>
+
+            {/* Floating Toolbar when a dimension is selected */}
+            {selectedId && !isMobile && (
+              <div className="floating-dim-toolbar">
+                <button className="btn btn-icon" onClick={() => {
+                  const line = currentDoc.lines.find(l => l.id === selectedId);
+                  if (line) handleTextEdit(line);
+                }}>
+                  <Edit3 size={18} color="#2563eb" /> <span style={{ fontSize: 12, marginLeft: 6, color: '#2563eb', fontWeight: 600 }}>Sửa số</span>
+                </button>
+                <div style={{ width: 1, backgroundColor: '#e2e8f0', height: 20, margin: '0 8px' }}></div>
+                <button className="btn btn-icon" onClick={() => {
+                  commitHistory(currentDoc.lines.filter(l => l.id !== selectedId));
+                  setSelectedId(null);
+                }}>
+                  <Trash2 size={18} color="#ef4444" /> <span style={{ fontSize: 12, marginLeft: 6, color: '#ef4444', fontWeight: 600 }}>Xóa</span>
+                </button>
+              </div>
+            )}
+            {selectedId && isMobile && (
+              <div className="floating-dim-toolbar mobile-floating">
+                <button className="btn btn-icon" style={{ flexDirection: 'column', gap: 4 }} onClick={() => {
+                  const line = currentDoc.lines.find(l => l.id === selectedId);
+                  if (line) handleTextEdit(line);
+                }}>
+                  <Edit3 size={20} color="#2563eb" /> <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 600 }}>Sửa chữ</span>
+                </button>
+                <div style={{ width: 1, backgroundColor: '#e2e8f0', height: 24, margin: '0 12px' }}></div>
+                <button className="btn btn-icon" style={{ flexDirection: 'column', gap: 4 }} onClick={() => {
+                  commitHistory(currentDoc.lines.filter(l => l.id !== selectedId));
+                  setSelectedId(null);
+                }}>
+                  <Trash2 size={20} color="#ef4444" /> <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>Xóa Dim</span>
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -652,6 +712,9 @@ export default function App() {
 
             <button className={`btn btn-icon ${isDrawingMode ? 'active-tool' : ''}`} onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}>
               <PencilRuler size={22} />
+            </button>
+            <button className="btn btn-icon" onClick={handleMagicDim} style={{ color: '#d946ef' }}>
+              <Wand2 size={22} />
             </button>
             <button className={`btn btn-icon ${isGridMode ? 'active-tool' : ''}`} onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }}>
               <Grid3X3 size={22} />
