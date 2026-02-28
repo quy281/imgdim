@@ -1,6 +1,6 @@
 ﻿import React, { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Image as KonvaImage, Arrow, Label, Tag, Text, Group, Circle, Line as KonvaLine, Rect as KonvaRect, Transformer } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Grid3X3, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2 } from 'lucide-react';
+import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2 } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
@@ -46,8 +46,8 @@ const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stage
       onMouseEnter={(e) => { if (e.target.name() === 'dim-group') e.target.getStage().container().style.cursor = 'move'; }}
       onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
     >
-      <Arrow points={[line.start.x, line.start.y, line.end.x, line.end.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} shadowColor="black" shadowBlur={2} shadowOpacity={0.3} />
-      <Arrow points={[line.end.x, line.end.y, line.start.x, line.start.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} shadowColor="black" shadowBlur={2} shadowOpacity={0.3} />
+      <Arrow points={[line.start.x, line.start.y, line.end.x, line.end.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} perfectDrawEnabled={false} shadowForStrokeEnabled={false} />
+      <Arrow points={[line.end.x, line.end.y, line.start.x, line.start.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} perfectDrawEnabled={false} shadowForStrokeEnabled={false} />
 
       <Label
         x={(line.start.x + line.end.x) / 2} y={(line.start.y + line.end.y) / 2}
@@ -108,7 +108,6 @@ export default function App() {
 
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [isDrawingMode, setIsDrawingMode] = useState(false);
-  const [isGridMode, setIsGridMode] = useState(false);
   const [tempLine, setTempLine] = useState(null);
   const [isExportingAll, setIsExportingAll] = useState(false);
 
@@ -233,7 +232,6 @@ export default function App() {
             id: Date.now() + Math.random(), name: file.name, img: image,
             lines: [], linesHistory: [[]], historyStep: 0, // Cấu trúc History
             globalRatio: null,
-            gridPoints: [{ x: cx - 200, y: cy + 100 }, { x: cx + 200, y: cy + 100 }, { x: cx + 100, y: cy - 50 }, { x: cx - 100, y: cy - 50 }],
             frameAttrs: customFrame ? initFrameAttrs(image, customFrame) : null,
             stageScale: autoScale,
             stagePos: { x: (w - image.width * autoScale) / 2, y: (h - image.height * autoScale) / 2 + 20 }
@@ -317,7 +315,7 @@ export default function App() {
 
   const handleStageMouseDown = (e) => {
     if (isEditFrameMode) return;
-    if (e.target.name() === 'handle' || e.target.name() === 'grid-handle' || e.target.name() === 'dim-group') return;
+    if (e.target.name() === 'handle' || e.target.name() === 'dim-group') return;
     if (!isDrawingMode) { if (e.target === e.target.getStage() || e.target.className === 'Image') setSelectedId(null); return; }
 
     // Prevent default touch behavior (scrolling) when drawing
@@ -368,29 +366,23 @@ export default function App() {
     setTempLine(null);
   };
 
-  const updateGridPoint = (index, x, y) => {
-    const newPoints = [...currentDoc.gridPoints];
-    newPoints[index] = { x, y }; updateDoc({ gridPoints: newPoints });
-  };
-
   const handleMagicDim = () => {
     if (!currentDoc || !currentDoc.img) return;
     const w = currentDoc.img.width;
     const h = currentDoc.img.height;
     const pad = Math.min(w, h) * 0.05; // padding 5%
 
-    const newLines = [];
-    const baseId = Date.now();
-    // Top Horizontal
-    newLines.push({ id: baseId, start: { x: pad, y: pad }, end: { x: w - pad, y: pad }, label: Math.round(w - 2 * pad).toString() });
-    // Left Vertical
-    newLines.push({ id: baseId + 1, start: { x: pad, y: pad }, end: { x: pad, y: h - pad }, label: Math.round(h - 2 * pad).toString() });
-    // Bottom Horizontal
-    newLines.push({ id: baseId + 2, start: { x: pad, y: h - pad }, end: { x: w - pad, y: h - pad }, label: Math.round(w - 2 * pad).toString() });
-    // Right Vertical
-    newLines.push({ id: baseId + 3, start: { x: w - pad, y: pad }, end: { x: w - pad, y: h - pad }, label: Math.round(h - 2 * pad).toString() });
+    const newLines = [
+      { id: Date.now() + Math.random(), start: { x: pad, y: pad }, end: { x: w - pad, y: pad }, label: Math.round(w - 2 * pad).toString(), isMagic: true },
+      { id: Date.now() + Math.random(), start: { x: pad, y: pad }, end: { x: pad, y: h - pad }, label: Math.round(h - 2 * pad).toString(), isMagic: true },
+      { id: Date.now() + Math.random(), start: { x: pad, y: h - pad }, end: { x: w - pad, y: h - pad }, label: Math.round(w - 2 * pad).toString(), isMagic: true },
+      { id: Date.now() + Math.random(), start: { x: w - pad, y: pad }, end: { x: w - pad, y: h - pad }, label: Math.round(h - 2 * pad).toString(), isMagic: true }
+    ];
 
-    commitHistory([...currentDoc.lines, ...newLines]);
+    requestAnimationFrame(() => {
+      const nonMagicLines = currentDoc.lines.filter(l => !l.isMagic);
+      commitHistory([...nonMagicLines, ...newLines]);
+    });
   };
 
   const getExportURI = (doc) => {
@@ -420,7 +412,7 @@ export default function App() {
   };
 
   const executeDownload = async (doc, isBatch = false) => {
-    setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
+    setSelectedId(null); setIsEditFrameMode(false);
 
     return new Promise(resolve => {
       setTimeout(async () => {
@@ -451,7 +443,7 @@ export default function App() {
   };
 
   const handleShare = async (doc) => {
-    setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
+    setSelectedId(null); setIsEditFrameMode(false);
     setTimeout(async () => {
       try {
         const uri = getExportURI(doc);
@@ -479,7 +471,7 @@ export default function App() {
 
   const handleBatchExport = async () => {
     if (docs.length === 0) return;
-    setIsExportingAll(true); setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false);
+    setIsExportingAll(true); setSelectedId(null); setIsEditFrameMode(false);
     for (let i = 0; i < docs.length; i++) {
       setActiveDocId(docs[i].id);
       await new Promise(resolve => setTimeout(resolve, 300)); // Đợi Stage render xong
@@ -543,9 +535,6 @@ export default function App() {
             <button className="btn" onClick={handleMagicDim} style={{ color: '#d946ef' }} disabled={!currentDoc} title="Tự động vẽ khung Dim">
               <Wand2 size={18} /> Magic Dim
             </button>
-            <button className="btn" onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }} disabled={!currentDoc}>
-              <Grid3X3 size={18} /> Lưới 3D
-            </button>
 
             <div className="divider"></div>
 
@@ -560,7 +549,7 @@ export default function App() {
             )}
 
             <div className="divider"></div>
-            <button className="btn" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
+            <button className="btn" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
               <Download size={18} /> Lưu ảnh này
             </button>
           </div>
@@ -603,17 +592,6 @@ export default function App() {
             >
               <Layer>
                 <KonvaImage image={currentDoc.img} x={0} y={0} />
-
-                {isGridMode && (
-                  <Group>
-                    <KonvaLine points={[currentDoc.gridPoints[0].x, currentDoc.gridPoints[0].y, currentDoc.gridPoints[1].x, currentDoc.gridPoints[1].y, currentDoc.gridPoints[2].x, currentDoc.gridPoints[2].y, currentDoc.gridPoints[3].x, currentDoc.gridPoints[3].y]} closed stroke="#4f46e5" strokeWidth={2 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} fill="rgba(79, 70, 229, 0.1)" />
-                    <KonvaLine points={[currentDoc.gridPoints[0].x, currentDoc.gridPoints[0].y, currentDoc.gridPoints[2].x, currentDoc.gridPoints[2].y]} stroke="#4f46e5" strokeWidth={1 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />
-                    <KonvaLine points={[currentDoc.gridPoints[1].x, currentDoc.gridPoints[1].y, currentDoc.gridPoints[3].x, currentDoc.gridPoints[3].y]} stroke="#4f46e5" strokeWidth={1 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />
-                    {currentDoc.gridPoints.map((pt, i) => (
-                      <Circle key={i} name="grid-handle" x={pt.x} y={pt.y} radius={8 / currentDoc.stageScale} fill="white" stroke="#4f46e5" strokeWidth={3 / currentDoc.stageScale} draggable onDragMove={(e) => updateGridPoint(i, e.target.x(), e.target.y())} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'move'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} />
-                    ))}
-                  </Group>
-                )}
 
                 {currentDoc.lines.map((line) => (
                   <DimensionLine key={line.id} line={line} stageScale={currentDoc.stageScale} isSelected={line.id === selectedId} onSelect={setSelectedId} onTextEdit={handleTextEdit}
@@ -716,9 +694,6 @@ export default function App() {
             <button className="btn btn-icon" onClick={handleMagicDim} style={{ color: '#d946ef' }}>
               <Wand2 size={22} />
             </button>
-            <button className={`btn btn-icon ${isGridMode ? 'active-tool' : ''}`} onClick={() => { setIsGridMode(!isGridMode); }} style={{ background: isGridMode ? '#e0e7ff' : 'transparent', color: isGridMode ? '#4f46e5' : '#475569' }}>
-              <Grid3X3 size={22} />
-            </button>
 
             <div className="divider"></div>
 
@@ -726,7 +701,7 @@ export default function App() {
               <Share2 size={22} color="#2563eb" />
             </button>
 
-            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsGridMode(false); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} title="Lưu">
+            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} title="Lưu">
               <Download size={22} color="#059669" />
             </button>
           </div>
