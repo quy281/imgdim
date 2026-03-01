@@ -1,151 +1,87 @@
-﻿import React, { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Arrow, Label, Tag, Text, Group, Circle, Line as KonvaLine, Rect as KonvaRect, Transformer } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2 } from 'lucide-react';
+﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Stage, Layer, Image as KonvaImage, Line as KonvaLine, Rect as KonvaRect, Text, Group } from 'react-konva';
+import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2, Type, ArrowLeft } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
+import DimensionLine from './components/DimensionLine';
+import FrameOverlay from './components/FrameOverlay';
+import TextNote from './components/TextNote';
+import ProjectList from './components/ProjectList';
+import { loadProjects, saveProjects, loadDocs, saveDocs, deleteProjectDocs } from './db';
 import './App.css';
 
-const DimensionLine = ({ line, onTextEdit, onChange, onSelect, isSelected, stageScale }) => {
-  const invScale = 1 / stageScale;
-
-  const handleDrag = (point, e, commit = false) => {
-    let x = e.target.x(); let y = e.target.y();
-    if (e.evt && e.evt.shiftKey) {
-      const fixedPoint = point === 'start' ? line.end : line.start;
-      const dx = x - fixedPoint.x; const dy = y - fixedPoint.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      const currentAngle = Math.atan2(dy, dx);
-      const snapAngle = Math.round(currentAngle / (Math.PI / 4)) * (Math.PI / 4);
-      x = fixedPoint.x + Math.cos(snapAngle) * distance;
-      y = fixedPoint.y + Math.sin(snapAngle) * distance;
-      e.target.x(x); e.target.y(y);
-    }
-    const updatedLine = { ...line };
-    if (point === 'start') updatedLine.start = { x, y }; else updatedLine.end = { x, y };
-    onChange(updatedLine, commit);
-  };
-
-  const color = isSelected ? "#3b82f6" : "white";
-
-  return (
-    <Group
-      name="dim-group" draggable
-      onClick={(e) => { e.cancelBubble = true; onSelect(line.id); }}
-      onTap={(e) => { e.cancelBubble = true; onSelect(line.id); }} // Thêm onTap cho mobile
-      onTouchStart={(e) => { e.cancelBubble = true; onSelect(line.id); }} // Fix bubble
-      onDragStart={(e) => { e.cancelBubble = true; if (e.target.name() === 'handle') e.cancelBubble = true; }}
-      onDragEnd={(e) => {
-        if (e.target.name() === 'dim-group') {
-          const dx = e.target.x(); const dy = e.target.y();
-          const newLine = { ...line, start: { x: line.start.x + dx, y: line.start.y + dy }, end: { x: line.end.x + dx, y: line.end.y + dy } };
-          onChange(newLine, true); // Lưu vào History khi thả chuột xong
-          e.target.x(0); e.target.y(0);
-        }
-      }}
-      onMouseEnter={(e) => { if (e.target.name() === 'dim-group') e.target.getStage().container().style.cursor = 'move'; }}
-      onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
-    >
-      <Arrow points={[line.start.x, line.start.y, line.end.x, line.end.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} perfectDrawEnabled={false} shadowForStrokeEnabled={false} />
-      <Arrow points={[line.end.x, line.end.y, line.start.x, line.start.y]} stroke={color} strokeWidth={1 * invScale} fill={color} pointerLength={6 * invScale} pointerWidth={6 * invScale} hitStrokeWidth={20 * invScale} perfectDrawEnabled={false} shadowForStrokeEnabled={false} />
-
-      <Label
-        x={(line.start.x + line.end.x) / 2} y={(line.start.y + line.end.y) / 2}
-        offsetX={((line.label.length * 6 + 16) / 2) * invScale} offsetY={12 * invScale}
-        onDblClick={(e) => { e.cancelBubble = true; onTextEdit(line); }}
-        onDblTap={(e) => { e.cancelBubble = true; onTextEdit(line); }} // Thêm onDblTap cho mobile
-        onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
-      >
-        <Tag fill="rgba(0,0,0,0.65)" cornerRadius={12 * invScale} />
-        <Text text={line.label} fill="white" fontSize={11 * invScale} padding={6 * invScale} fontFamily="Inter" fontStyle="500" />
-      </Label>
-
-      {isSelected && (
-        <>
-          <Circle name="handle" x={line.start.x} y={line.start.y} radius={6 * invScale} hitStrokeWidth={20 * invScale} fill="#3b82f6" draggable onDragStart={(e) => e.cancelBubble = true} onDragMove={(e) => handleDrag('start', e, false)} onDragEnd={(e) => { e.cancelBubble = true; handleDrag('start', e, true); }} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'move'; }} />
-          <Circle name="handle" x={line.end.x} y={line.end.y} radius={6 * invScale} hitStrokeWidth={20 * invScale} fill="#3b82f6" draggable onDragStart={(e) => e.cancelBubble = true} onDragMove={(e) => handleDrag('end', e, false)} onDragEnd={(e) => { e.cancelBubble = true; handleDrag('end', e, true); }} onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'crosshair'; }} onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'move'; }} />
-        </>
-      )}
-    </Group>
-  );
-};
-
-const FrameOverlay = ({ frameImg, frameAttrs, onChange, isEditing }) => {
-  const shapeRef = useRef();
-  const trRef = useRef();
-
-  useEffect(() => {
-    if (isEditing && trRef.current) {
-      trRef.current.nodes([shapeRef.current]);
-      trRef.current.getLayer().batchDraw();
-    }
-  }, [isEditing]);
-
-  return (
-    <>
-      <KonvaImage
-        image={frameImg} ref={shapeRef}
-        x={frameAttrs.x} y={frameAttrs.y} width={frameAttrs.width} height={frameAttrs.height}
-        draggable={isEditing} listening={isEditing}
-        onDragEnd={(e) => onChange({ ...frameAttrs, x: e.target.x(), y: e.target.y() })}
-        onTransformEnd={() => {
-          const node = shapeRef.current;
-          const scaleX = node.scaleX(); const scaleY = node.scaleY();
-          node.scaleX(1); node.scaleY(1);
-          onChange({ x: node.x(), y: node.y(), width: Math.max(50, node.width() * scaleX), height: Math.max(50, node.height() * scaleY) });
-        }}
-      />
-      {isEditing && <Transformer ref={trRef} boundBoxFunc={(oldBox, newBox) => newBox} rotateEnabled={false} />}
-    </>
-  );
-};
-
 export default function App() {
+  // === Project state ===
+  const [projects, setProjects] = useState([]);
+  const [currentProjectId, setCurrentProjectId] = useState(null);
+  const [loadingDB, setLoadingDB] = useState(true);
+
+  // === Doc/Editor state ===
   const [docs, setDocs] = useState([]);
   const [activeDocId, setActiveDocId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [copiedLine, setCopiedLine] = useState(null);
-
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [isTextMode, setIsTextMode] = useState(false);
   const [tempLine, setTempLine] = useState(null);
   const [isExportingAll, setIsExportingAll] = useState(false);
-
   const [showFrame, setShowFrame] = useState(false);
   const [isEditFrameMode, setIsEditFrameMode] = useState(false);
   const [customFrame, setCustomFrame] = useState(null);
   const [watermarkTxt, setWatermarkTxt] = useState('');
   const [customWatermark, setCustomWatermark] = useState(null);
-
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [showMobileHistory, setShowMobileHistory] = useState(false);
 
+  const mainAreaRef = useRef();
+  const stageRef = useRef();
+  const currentDoc = docs.find(d => d.id === activeDocId);
+  const saveTimeoutRef = useRef(null);
+
+  // === Load projects on mount ===
+  useEffect(() => {
+    (async () => {
+      const p = await loadProjects();
+      setProjects(p);
+      setLoadingDB(false);
+    })();
+  }, []);
+
+  // === Load docs when project changes ===
+  useEffect(() => {
+    if (!currentProjectId) { setDocs([]); setActiveDocId(null); return; }
+    (async () => {
+      const raw = await loadDocs(currentProjectId);
+      // Reconstruct Image objects from base64
+      const hydrated = await Promise.all(raw.map(d => new Promise(resolve => {
+        if (!d.imgBase64) { resolve({ ...d, img: null }); return; }
+        const image = new window.Image();
+        image.onload = () => resolve({ ...d, img: image });
+        image.onerror = () => resolve({ ...d, img: null });
+        image.src = d.imgBase64;
+      })));
+      setDocs(hydrated.filter(d => d.img));
+      setActiveDocId(hydrated.length > 0 ? hydrated[0].id : null);
+    })();
+  }, [currentProjectId]);
+
+  // === Auto-save docs (debounced) ===
+  const scheduleSave = useCallback(() => {
+    if (!currentProjectId) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => { saveDocs(currentProjectId, docs); }, 500);
+  }, [currentProjectId, docs]);
+
+  useEffect(() => { scheduleSave(); }, [docs, scheduleSave]);
+
+  // === Resize ===
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
-
-  const mainAreaRef = useRef();
-  const stageRef = useRef();
-  const currentDoc = docs.find(d => d.id === activeDocId);
-
-  // Cập nhật State thông thường (không lưu Undo)
-  const updateDoc = (updates) => {
-    setDocs(prev => prev.map(d => d.id === activeDocId ? { ...d, ...updates } : d));
-  };
-
-  // Cập nhật State và LƯU LỊCH SỬ (Dùng cho vẽ, xóa, ctrl+v, drag xong)
-  const commitHistory = (newLines) => {
-    setDocs(prev => prev.map(d => {
-      if (d.id === activeDocId) {
-        const history = d.linesHistory.slice(0, d.historyStep + 1);
-        history.push(newLines);
-        return { ...d, lines: newLines, linesHistory: history, historyStep: history.length - 1 };
-      }
-      return d;
-    }));
-  };
 
   useEffect(() => {
     const updateSize = () => { if (mainAreaRef.current) setStageSize({ width: mainAreaRef.current.offsetWidth, height: mainAreaRef.current.offsetHeight }); };
@@ -153,72 +89,80 @@ export default function App() {
     updateSize(); return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Xử lý Phím Tắt: Undo/Redo/Copy/Paste
+  // === Doc helpers ===
+  const updateDoc = (updates) => {
+    setDocs(prev => prev.map(d => d.id === activeDocId ? { ...d, ...updates } : d));
+  };
+
+  const commitHistory = (newLines, newTexts) => {
+    setDocs(prev => prev.map(d => {
+      if (d.id !== activeDocId) return d;
+      const history = d.linesHistory.slice(0, d.historyStep + 1);
+      const textsHistory = (d.textsHistory || [[]]).slice(0, d.historyStep + 1);
+      const lines = newLines !== undefined ? newLines : d.lines;
+      const texts = newTexts !== undefined ? newTexts : (d.texts || []);
+      history.push(lines);
+      textsHistory.push(texts);
+      return { ...d, lines, texts, linesHistory: history, textsHistory, historyStep: history.length - 1 };
+    }));
+  };
+
+  // === Keyboard shortcuts ===
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!currentDoc) return;
-
-      // ESC: Thoát lệnh
-      if (e.key === 'Escape') { setIsDrawingMode(false); setSelectedId(null); setIsEditFrameMode(false); document.body.style.cursor = 'default'; }
-
-      // Delete: Xóa
+      if (e.key === 'Escape') { setIsDrawingMode(false); setIsTextMode(false); setSelectedId(null); setIsEditFrameMode(false); document.body.style.cursor = 'default'; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId !== null && !isEditFrameMode) {
-        commitHistory(currentDoc.lines.filter(l => l.id !== selectedId));
+        const isLine = currentDoc.lines.some(l => l.id === selectedId);
+        if (isLine) commitHistory(currentDoc.lines.filter(l => l.id !== selectedId), currentDoc.texts || []);
+        else commitHistory(currentDoc.lines, (currentDoc.texts || []).filter(t => t.id !== selectedId));
         setSelectedId(null);
       }
-
-      // Ctrl + Z: Undo
       if (e.ctrlKey && e.key.toLowerCase() === 'z') {
         if (currentDoc.historyStep > 0) {
-          const prevStep = currentDoc.historyStep - 1;
-          updateDoc({ lines: currentDoc.linesHistory[prevStep], historyStep: prevStep });
+          const s = currentDoc.historyStep - 1;
+          updateDoc({ lines: currentDoc.linesHistory[s], texts: (currentDoc.textsHistory || [[]])[s] || [], historyStep: s });
           setSelectedId(null);
         }
       }
-
-      // Ctrl + Y: Redo
       if (e.ctrlKey && e.key.toLowerCase() === 'y') {
         if (currentDoc.historyStep < currentDoc.linesHistory.length - 1) {
-          const nextStep = currentDoc.historyStep + 1;
-          updateDoc({ lines: currentDoc.linesHistory[nextStep], historyStep: nextStep });
+          const s = currentDoc.historyStep + 1;
+          updateDoc({ lines: currentDoc.linesHistory[s], texts: (currentDoc.textsHistory || [[]])[s] || [], historyStep: s });
           setSelectedId(null);
         }
       }
-
-      // Ctrl + C: Copy
       if (e.ctrlKey && e.key.toLowerCase() === 'c' && selectedId !== null) {
         const line = currentDoc.lines.find(l => l.id === selectedId);
         if (line) setCopiedLine(line);
       }
-
-      // Ctrl + V: Paste
       if (e.ctrlKey && e.key.toLowerCase() === 'v' && copiedLine) {
-        const newLine = {
-          ...copiedLine, id: Date.now(),
-          start: { x: copiedLine.start.x + 40 / currentDoc.stageScale, y: copiedLine.start.y + 40 / currentDoc.stageScale },
-          end: { x: copiedLine.end.x + 40 / currentDoc.stageScale, y: copiedLine.end.y + 40 / currentDoc.stageScale }
-        };
-        commitHistory([...currentDoc.lines, newLine]);
-        setSelectedId(newLine.id);
+        const off = 40 / currentDoc.stageScale;
+        const nl = { ...copiedLine, id: Date.now(), start: { x: copiedLine.start.x + off, y: copiedLine.start.y + off }, end: { x: copiedLine.end.x + off, y: copiedLine.end.y + off } };
+        commitHistory([...currentDoc.lines, nl], currentDoc.texts || []);
+        setSelectedId(nl.id);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentDoc, selectedId, isEditFrameMode, copiedLine]);
 
+  // === Frame / watermark helpers ===
   const initFrameAttrs = (baseImg, overlayImg) => {
     const scale = Math.min(baseImg.width / overlayImg.width, baseImg.height / overlayImg.height);
     const fw = overlayImg.width * scale; const fh = overlayImg.height * scale;
     return { x: (baseImg.width - fw) / 2, y: (baseImg.height - fh) / 2, width: fw, height: fh };
   };
 
+  // === Upload handlers ===
   const handleUpload = (e) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
     files.forEach(file => {
       const reader = new FileReader();
       reader.onload = () => {
-        const image = new window.Image(); image.src = reader.result;
+        const base64 = reader.result;
+        const image = new window.Image(); image.src = base64;
         image.onload = () => {
           const w = mainAreaRef.current ? mainAreaRef.current.offsetWidth : window.innerWidth;
           const h = mainAreaRef.current ? mainAreaRef.current.offsetHeight : window.innerHeight - 150;
@@ -226,11 +170,9 @@ export default function App() {
           const autoScale = isMobile
             ? Math.min(w / image.width, h / image.height)
             : Math.min((w - pad) / image.width, (h - pad) / image.height, 1);
-          const cx = image.width / 2; const cy = image.height / 2;
-
           const newDoc = {
-            id: Date.now() + Math.random(), name: file.name, img: image,
-            lines: [], linesHistory: [[]], historyStep: 0, // Cấu trúc History
+            id: Date.now() + Math.random(), name: file.name, img: image, imgBase64: base64,
+            lines: [], texts: [], linesHistory: [[]], textsHistory: [[]], historyStep: 0,
             globalRatio: null,
             frameAttrs: customFrame ? initFrameAttrs(image, customFrame) : null,
             stageScale: autoScale,
@@ -238,6 +180,12 @@ export default function App() {
           };
           setDocs(prev => [...prev, newDoc]);
           setActiveDocId(newDoc.id);
+          // Update project doc count
+          setProjects(prev => {
+            const updated = prev.map(p => p.id === currentProjectId ? { ...p, docCount: (p.docCount || 0) + 1 } : p);
+            saveProjects(updated);
+            return updated;
+          });
         };
       };
       reader.readAsDataURL(file);
@@ -246,46 +194,41 @@ export default function App() {
   };
 
   const handleUploadCustomFrame = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const image = new window.Image(); image.src = reader.result;
-      image.onload = () => {
-        setCustomFrame(image); setShowFrame(true);
-        setDocs(prev => prev.map(d => ({ ...d, frameAttrs: initFrameAttrs(d.img, image) })));
-      };
-    };
+    reader.onload = () => { const image = new window.Image(); image.src = reader.result; image.onload = () => { setCustomFrame(image); setShowFrame(true); setDocs(prev => prev.map(d => ({ ...d, frameAttrs: initFrameAttrs(d.img, image) }))); }; };
     reader.readAsDataURL(file);
   };
 
   const handleUploadCustomWatermark = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const image = new window.Image(); image.src = reader.result;
-      image.onload = () => setCustomWatermark(image);
-    };
+    reader.onload = () => { const image = new window.Image(); image.src = reader.result; image.onload = () => setCustomWatermark(image); };
     reader.readAsDataURL(file);
   };
 
+  // === Text / Dim edit ===
   const handleTextEdit = (line) => {
     const userInput = prompt("Nhập kích thước thực tế (VD: 800, 5000):", line.label);
     if (userInput !== null) {
       const val = parseFloat(userInput);
       const dx = line.end.x - line.start.x; const dy = line.end.y - line.start.y;
       const pxDist = Math.sqrt(dx * dx + dy * dy);
-
       const newLines = currentDoc.lines.map(l => l.id === line.id ? { ...l, label: userInput } : l);
-
-      if (!isNaN(val) && pxDist > 0) {
-        updateDoc({ globalRatio: val / pxDist }); // Cập nhật Ratio
-      }
-      commitHistory(newLines); // Lưu vào History
+      if (!isNaN(val) && pxDist > 0) updateDoc({ globalRatio: val / pxDist });
+      commitHistory(newLines, currentDoc.texts || []);
     }
   };
 
+  const handleTextNoteEdit = (note) => {
+    const txt = prompt("Nhập ghi chú:", note.text);
+    if (txt !== null && txt.trim()) {
+      const newTexts = (currentDoc.texts || []).map(t => t.id === note.id ? { ...t, text: txt.trim() } : t);
+      commitHistory(currentDoc.lines, newTexts);
+    }
+  };
+
+  // === Stage interaction ===
   const handleWheel = (e) => {
     if (!currentDoc) return;
     e.evt.preventDefault();
@@ -297,32 +240,34 @@ export default function App() {
   };
 
   const getPointerPos = (e) => {
-    const stage = stageRef.current;
-    if (!stage) return null;
-    // For touch events, manually set pointer position from touch coordinates
-    if (e.evt && e.evt.touches && e.evt.touches.length > 0) {
-      const touch = e.evt.touches[0];
-      const rect = stage.container().getBoundingClientRect();
-      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
-    }
-    if (e.evt && e.evt.changedTouches && e.evt.changedTouches.length > 0) {
-      const touch = e.evt.changedTouches[0];
-      const rect = stage.container().getBoundingClientRect();
-      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
-    }
+    const stage = stageRef.current; if (!stage) return null;
+    if (e.evt?.touches?.length > 0) { const t = e.evt.touches[0]; const r = stage.container().getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+    if (e.evt?.changedTouches?.length > 0) { const t = e.evt.changedTouches[0]; const r = stage.container().getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; }
     return stage.getPointerPosition();
   };
 
   const handleStageMouseDown = (e) => {
     if (isEditFrameMode) return;
     if (e.target.name() === 'handle' || e.target.name() === 'dim-group') return;
+
+    // Text mode: place text on click
+    if (isTextMode) {
+      if (e.evt && e.evt.cancelable) e.evt.preventDefault();
+      const stage = stageRef.current; const pos = getPointerPos(e); if (!pos) return;
+      const x = (pos.x - stage.x()) / stage.scaleX();
+      const y = (pos.y - stage.y()) / stage.scaleY();
+      const txt = prompt("Nhập ghi chú:");
+      if (txt && txt.trim()) {
+        const newNote = { id: Date.now(), x, y, text: txt.trim(), color: '#ffffff', fontSize: 16 };
+        commitHistory(currentDoc.lines, [...(currentDoc.texts || []), newNote]);
+        setSelectedId(newNote.id);
+      }
+      return;
+    }
+
     if (!isDrawingMode) { if (e.target === e.target.getStage() || e.target.className === 'Image') setSelectedId(null); return; }
-
-    // Prevent default touch behavior (scrolling) when drawing
     if (e.evt && e.evt.cancelable) e.evt.preventDefault();
-
-    const stage = stageRef.current; const pos = getPointerPos(e);
-    if (!pos) return;
+    const stage = stageRef.current; const pos = getPointerPos(e); if (!pos) return;
     const x = (pos.x - stage.x()) / stage.scaleX();
     const y = (pos.y - stage.y()) / stage.scaleY();
     setTempLine({ start: { x, y }, end: { x, y } });
@@ -331,18 +276,15 @@ export default function App() {
   const handleStageMouseMove = (e) => {
     if (!isDrawingMode || !tempLine || isEditFrameMode) return;
     if (e.evt && e.evt.cancelable) e.evt.preventDefault();
-    const stage = stageRef.current; const pos = getPointerPos(e);
-    if (!pos) return;
+    const stage = stageRef.current; const pos = getPointerPos(e); if (!pos) return;
     let x = (pos.x - stage.x()) / stage.scaleX();
     let y = (pos.y - stage.y()) / stage.scaleY();
-
     if (e.evt && e.evt.shiftKey) {
       const dx = x - tempLine.start.x; const dy = y - tempLine.start.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
-      const currentAngle = Math.atan2(dy, dx);
-      const snapAngle = Math.round(currentAngle / (Math.PI / 4)) * (Math.PI / 4);
-      x = tempLine.start.x + Math.cos(snapAngle) * distance;
-      y = tempLine.start.y + Math.sin(snapAngle) * distance;
+      const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+      x = tempLine.start.x + Math.cos(angle) * distance;
+      y = tempLine.start.y + Math.sin(angle) * distance;
     }
     setTempLine({ ...tempLine, end: { x, y } });
   };
@@ -351,16 +293,11 @@ export default function App() {
     if (!isDrawingMode || !tempLine || isEditFrameMode) return;
     const dx = tempLine.end.x - tempLine.start.x; const dy = tempLine.end.y - tempLine.start.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
-
     if (distance > 10) {
       let labelVal = Math.round(distance).toString();
-      if (currentDoc.globalRatio) {
-        let realVal = distance * currentDoc.globalRatio;
-        realVal = Math.round(realVal / 10) * 10;
-        labelVal = realVal.toString();
-      }
+      if (currentDoc.globalRatio) { let rv = distance * currentDoc.globalRatio; rv = Math.round(rv / 10) * 10; labelVal = rv.toString(); }
       const newLine = { id: Date.now(), start: tempLine.start, end: tempLine.end, label: labelVal };
-      commitHistory([...currentDoc.lines, newLine]); // LƯU VÀO HISTORY KHI VẼ XONG
+      commitHistory([...currentDoc.lines, newLine], currentDoc.texts || []);
       setSelectedId(newLine.id);
     }
     setTempLine(null);
@@ -368,52 +305,34 @@ export default function App() {
 
   const handleMagicDim = () => {
     if (!currentDoc || !currentDoc.img) return;
-    const w = currentDoc.img.width;
-    const h = currentDoc.img.height;
-    const pad = Math.min(w, h) * 0.05; // padding 5%
-
+    const w = currentDoc.img.width; const h = currentDoc.img.height;
+    const pad = Math.min(w, h) * 0.05;
     const newLines = [
       { id: Date.now() + Math.random(), start: { x: pad, y: pad }, end: { x: w - pad, y: pad }, label: Math.round(w - 2 * pad).toString(), isMagic: true },
       { id: Date.now() + Math.random(), start: { x: pad, y: pad }, end: { x: pad, y: h - pad }, label: Math.round(h - 2 * pad).toString(), isMagic: true },
       { id: Date.now() + Math.random(), start: { x: pad, y: h - pad }, end: { x: w - pad, y: h - pad }, label: Math.round(w - 2 * pad).toString(), isMagic: true },
       { id: Date.now() + Math.random(), start: { x: w - pad, y: pad }, end: { x: w - pad, y: h - pad }, label: Math.round(h - 2 * pad).toString(), isMagic: true }
     ];
-
     requestAnimationFrame(() => {
-      const nonMagicLines = currentDoc.lines.filter(l => !l.isMagic);
-      commitHistory([...nonMagicLines, ...newLines]);
+      const nonMagic = currentDoc.lines.filter(l => !l.isMagic);
+      commitHistory([...nonMagic, ...newLines], currentDoc.texts || []);
     });
   };
 
+  // === Export / Share ===
   const getExportURI = (doc) => {
     const stage = stageRef.current;
-
-    // Lưu lại trạng thái Scale & Pan của Stage
-    const oldScale = stage.scaleX();
-    const oldPos = stage.position();
-
-    // Reset Scale & Pan về mặc định (1, 0, 0)
-    stage.scale({ x: 1, y: 1 });
-    stage.position({ x: 0, y: 0 });
-
+    const oldScale = stage.scaleX(); const oldPos = stage.position();
+    stage.scale({ x: 1, y: 1 }); stage.position({ x: 0, y: 0 });
     let cropBox = { x: 0, y: 0, width: doc.img.width, height: doc.img.height };
-    if (showFrame && customFrame && doc.frameAttrs) {
-      cropBox = { x: doc.frameAttrs.x, y: doc.frameAttrs.y, width: doc.frameAttrs.width, height: doc.frameAttrs.height };
-    }
-
-    // toDataURL với pixelRatio = 1 để lấy ảnh đúng độ phân giải thật
+    if (showFrame && customFrame && doc.frameAttrs) cropBox = { x: doc.frameAttrs.x, y: doc.frameAttrs.y, width: doc.frameAttrs.width, height: doc.frameAttrs.height };
     const uri = stage.toDataURL({ pixelRatio: 1, ...cropBox });
-
-    // Khôi phục lại trạng thái cũ
-    stage.scale({ x: oldScale, y: oldScale });
-    stage.position(oldPos);
-
+    stage.scale({ x: oldScale, y: oldScale }); stage.position(oldPos);
     return uri;
   };
 
   const executeDownload = async (doc, isBatch = false) => {
     setSelectedId(null); setIsEditFrameMode(false);
-
     return new Promise(resolve => {
       setTimeout(async () => {
         try {
@@ -421,22 +340,12 @@ export default function App() {
           if (Capacitor.isNativePlatform()) {
             const base64Data = uri.split(',')[1];
             const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
-
-            await Filesystem.writeFile({
-              path: fileName,
-              data: base64Data,
-              directory: Directory.Documents
-            });
-            if (!isBatch) alert("Lưu thành công ảnh vào thư mục Documents của điện thoại!");
+            await Filesystem.writeFile({ path: fileName, data: base64Data, directory: Directory.Documents });
+            if (!isBatch) alert("Lưu thành công ảnh vào thư mục Documents!");
           } else {
-            const link = document.createElement('a');
-            link.download = `[DIM]_${doc.name}`;
-            link.href = uri;
-            link.click();
+            const link = document.createElement('a'); link.download = `[DIM]_${doc.name}`; link.href = uri; link.click();
           }
-        } catch (e) {
-          if (!isBatch) alert("Lỗi lưu ảnh: " + e.message);
-        }
+        } catch (err) { if (!isBatch) alert("Lỗi lưu ảnh: " + err.message); }
         resolve();
       }, 100);
     });
@@ -447,25 +356,11 @@ export default function App() {
     setTimeout(async () => {
       try {
         const uri = getExportURI(doc);
-
         const base64Data = uri.split(',')[1];
         const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
-
-        const savedFile = await Filesystem.writeFile({
-          path: fileName,
-          data: base64Data,
-          directory: Directory.Cache
-        });
-
-        await Share.share({
-          title: 'Chia sẻ bản vẽ DIM',
-          url: savedFile.uri,
-          dialogTitle: 'Chia sẻ bản vẽ DIM'
-        });
-      } catch (err) {
-        console.error("Lỗi chia sẻ:", err);
-        alert("Không thể chia sẻ ảnh: " + err.message);
-      }
+        const savedFile = await Filesystem.writeFile({ path: fileName, data: base64Data, directory: Directory.Cache });
+        await Share.share({ title: 'Chia sẻ bản vẽ DIM', url: savedFile.uri, dialogTitle: 'Chia sẻ bản vẽ DIM' });
+      } catch (err) { alert("Không thể chia sẻ ảnh: " + err.message); }
     }, 100);
   };
 
@@ -474,20 +369,58 @@ export default function App() {
     setIsExportingAll(true); setSelectedId(null); setIsEditFrameMode(false);
     for (let i = 0; i < docs.length; i++) {
       setActiveDocId(docs[i].id);
-      await new Promise(resolve => setTimeout(resolve, 300)); // Đợi Stage render xong
+      await new Promise(resolve => setTimeout(resolve, 300));
       await executeDownload(docs[i], true);
     }
     setIsExportingAll(false);
-    if (Capacitor.isNativePlatform()) {
-      alert("Đã lưu xong toàn bộ ảnh vào thư mục Documents!");
-    }
+    if (Capacitor.isNativePlatform()) alert("Đã lưu xong toàn bộ ảnh vào thư mục Documents!");
   };
+
+  // === Project CRUD ===
+  const handleCreateProject = (name) => {
+    const p = { id: Date.now(), name, createdAt: Date.now(), docCount: 0 };
+    const updated = [p, ...projects];
+    setProjects(updated);
+    saveProjects(updated);
+    setCurrentProjectId(p.id);
+  };
+
+  const handleDeleteProject = (id) => {
+    const updated = projects.filter(p => p.id !== id);
+    setProjects(updated);
+    saveProjects(updated);
+    deleteProjectDocs(id);
+    if (currentProjectId === id) { setCurrentProjectId(null); setDocs([]); setActiveDocId(null); }
+  };
+
+  const handleRenameProject = (id, newName) => {
+    const updated = projects.map(p => p.id === id ? { ...p, name: newName } : p);
+    setProjects(updated);
+    saveProjects(updated);
+  };
+
+  // === Loading ===
+  if (loadingDB) return <div className="loading-screen"><div className="loading-spinner" /><p>Đang tải...</p></div>;
+
+  // === Project list view ===
+  if (!currentProjectId) {
+    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} />;
+  }
+
+  // === Editor view ===
+  const currentProject = projects.find(p => p.id === currentProjectId);
 
   return (
     <div className={`app-wrapper ${isMobile ? 'mobile-layout' : 'desktop-layout'}`}>
       {!isMobile && (
         <div className="sidebar">
-          <div className="p-4 font-bold border-b" style={{ padding: '15px', borderBottom: '1px solid #ddd' }}>Lịch sử phiên ({docs.length})</div>
+          <div style={{ padding: '10px 15px', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button className="btn btn-icon" onClick={() => setCurrentProjectId(null)} style={{ padding: 4 }}><ArrowLeft size={18} /></button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 'bold', fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentProject?.name}</div>
+              <div style={{ fontSize: 11, color: '#94a3b8' }}>{docs.length} ảnh</div>
+            </div>
+          </div>
           <div className="thumb-list">
             {docs.map(doc => (
               <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => setActiveDocId(doc.id)}>
@@ -496,19 +429,17 @@ export default function App() {
               </div>
             ))}
           </div>
-
           <div style={{ padding: '15px', borderTop: '1px solid #ddd', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <div className="file-input-wrapper">
-              <button className="btn btn-primary w-full" style={{ justifyContent: 'center', width: '100%' }}><ImagePlus size={18} /> Thêm ảnh bản vẽ</button>
+              <button className="btn btn-primary w-full" style={{ justifyContent: 'center', width: '100%' }}><ImagePlus size={18} /> Thêm ảnh</button>
               <input type="file" multiple onChange={handleUpload} accept="image/*" />
             </div>
             <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ justifyContent: 'center', width: '100%', color: '#059669', background: '#ecfdf5', border: '1px solid #34d399' }}>
               <SaveAll size={18} /> {isExportingAll ? 'Đang xuất...' : 'Xuất Toàn Bộ'}
             </button>
           </div>
-
           <div style={{ padding: '15px', borderTop: '1px solid #ddd', background: '#f8fafc' }}>
-            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', color: '#475569' }}>Cài đặt Mặc định</div>
+            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', color: '#475569' }}>Cài đặt</div>
             <div className="file-input-wrapper" style={{ marginBottom: '8px' }}>
               <button className="btn w-full" style={{ justifyContent: 'center', width: '100%', border: '1px dashed #cbd5e1', fontSize: '12px' }}>Tải Khung (PNG)</button>
               <input type="file" accept="image/png" onChange={handleUploadCustomFrame} />
@@ -529,29 +460,18 @@ export default function App() {
       <div className="main-area" ref={mainAreaRef}>
         {!isMobile && currentDoc && (
           <div className="toolbar">
-            <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }} disabled={!currentDoc}>
-              <PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ Dim...' : 'Vẽ Dim'}
-            </button>
-            <button className="btn" onClick={handleMagicDim} style={{ color: '#d946ef' }} disabled={!currentDoc} title="Tự động vẽ khung Dim">
-              <Wand2 size={18} /> Magic Dim
-            </button>
-
+            <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsTextMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}><PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ...' : 'Vẽ Dim'}</button>
+            <button className="btn" onClick={handleMagicDim} style={{ color: '#d946ef' }}><Wand2 size={18} /> Magic Dim</button>
+            <button className="btn" onClick={() => { setIsTextMode(!isTextMode); setIsDrawingMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isTextMode ? 'text' : 'default'; setSelectedId(null); }} style={{ background: isTextMode ? '#dbeafe' : 'transparent', color: isTextMode ? '#2563eb' : '#475569' }}><Type size={18} /> {isTextMode ? 'Đang ghi chú...' : 'Ghi chú'}</button>
             <div className="divider"></div>
-
-            <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }} disabled={!currentDoc}>
-              <Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}
-            </button>
-
+            <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }}><Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}</button>
             {showFrame && customFrame && (
-              <button className="btn" onClick={() => { setIsEditFrameMode(!isEditFrameMode); setIsDrawingMode(false); document.body.style.cursor = 'default'; }} style={{ background: isEditFrameMode ? '#dbeafe' : 'transparent', color: isEditFrameMode ? '#1d4ed8' : '#475569', border: isEditFrameMode ? '1px solid #93c5fd' : 'none' }}>
-                {isEditFrameMode ? <Lock size={18} /> : <Unlock size={18} />} Khóa/Mở Khung
+              <button className="btn" onClick={() => { setIsEditFrameMode(!isEditFrameMode); setIsDrawingMode(false); setIsTextMode(false); document.body.style.cursor = 'default'; }} style={{ background: isEditFrameMode ? '#dbeafe' : 'transparent', color: isEditFrameMode ? '#1d4ed8' : '#475569', border: isEditFrameMode ? '1px solid #93c5fd' : 'none' }}>
+                {isEditFrameMode ? <Lock size={18} /> : <Unlock size={18} />} Khóa/Mở
               </button>
             )}
-
             <div className="divider"></div>
-            <button className="btn" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} disabled={!currentDoc}>
-              <Download size={18} /> Lưu ảnh này
-            </button>
+            <button className="btn" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }}><Download size={18} /> Lưu ảnh</button>
           </div>
         )}
 
@@ -570,153 +490,131 @@ export default function App() {
                   <input type="file" multiple onChange={handleUpload} accept="image/*" />
                 </div>
               </div>
+              {isMobile && (
+                <button className="btn" onClick={() => setCurrentProjectId(null)} style={{ marginTop: 16, color: '#64748b', fontSize: 13 }}><ArrowLeft size={16} /> Về danh sách dự án</button>
+              )}
             </div>
           </div>
         ) : (
           <>
             {!isMobile && (
               <div className="hint-text">
-                {isDrawingMode ? 'Kéo chuột để vẽ (Giữ SHIFT để khóa trục ngang/dọc)' : 'Bấm Ctrl+Z (Undo) | Ctrl+Y (Redo) | Ctrl+C (Copy) | Ctrl+V (Paste) | Delete (Xóa)'}
+                {isDrawingMode ? 'Kéo chuột để vẽ (Giữ SHIFT để khóa trục)' : isTextMode ? 'Click vào ảnh để đặt ghi chú' : 'Ctrl+Z (Undo) | Ctrl+Y (Redo) | Ctrl+C/V | Delete'}
               </div>
             )}
-
-            <Stage
-              width={stageSize.width} height={stageSize.height} ref={stageRef} scaleX={currentDoc.stageScale} scaleY={currentDoc.stageScale} x={currentDoc.stagePos.x} y={currentDoc.stagePos.y}
-              draggable={!isDrawingMode && !isEditFrameMode}
+            <Stage width={stageSize.width} height={stageSize.height} ref={stageRef} scaleX={currentDoc.stageScale} scaleY={currentDoc.stageScale} x={currentDoc.stagePos.x} y={currentDoc.stagePos.y}
+              draggable={!isDrawingMode && !isEditFrameMode && !isTextMode}
               onWheel={handleWheel}
               onMouseDown={handleStageMouseDown} onMouseMove={handleStageMouseMove} onMouseUp={handleStageMouseUp}
               onTouchStart={handleStageMouseDown} onTouchMove={handleStageMouseMove} onTouchEnd={handleStageMouseUp}
-              onDragEnd={(e) => {
-                if (e.target === stageRef.current) updateDoc({ stagePos: { x: e.target.x(), y: e.target.y() } });
-              }}
+              onDragEnd={(e) => { if (e.target === stageRef.current) updateDoc({ stagePos: { x: e.target.x(), y: e.target.y() } }); }}
             >
               <Layer>
                 <KonvaImage image={currentDoc.img} x={0} y={0} />
-
-                {currentDoc.lines.map((line) => (
+                {currentDoc.lines.map(line => (
                   <DimensionLine key={line.id} line={line} stageScale={currentDoc.stageScale} isSelected={line.id === selectedId} onSelect={setSelectedId} onTextEdit={handleTextEdit}
                     onChange={(newVal, commit = false) => {
                       const newLines = currentDoc.lines.map(l => l.id === newVal.id ? newVal : l);
-                      if (commit) commitHistory(newLines); else updateDoc({ lines: newLines });
+                      if (commit) commitHistory(newLines, currentDoc.texts || []); else updateDoc({ lines: newLines });
                     }}
                   />
                 ))}
-
+                {(currentDoc.texts || []).map(note => (
+                  <TextNote key={note.id} note={note} stageScale={currentDoc.stageScale} isSelected={note.id === selectedId} onSelect={setSelectedId} onEdit={handleTextNoteEdit}
+                    onChange={(newVal, commit = false) => {
+                      const newTexts = (currentDoc.texts || []).map(t => t.id === newVal.id ? newVal : t);
+                      if (commit) commitHistory(currentDoc.lines, newTexts); else updateDoc({ texts: newTexts });
+                    }}
+                  />
+                ))}
                 {tempLine && <KonvaLine points={[tempLine.start.x, tempLine.start.y, tempLine.end.x, tempLine.end.y]} stroke="#eab308" strokeWidth={2 / currentDoc.stageScale} dash={[5 / currentDoc.stageScale, 5 / currentDoc.stageScale]} />}
-
                 {customWatermark ? (
                   <KonvaImage image={customWatermark} x={currentDoc.img.width / 2} y={currentDoc.img.height / 2} offsetX={customWatermark.width / 2} offsetY={customWatermark.height / 2} scaleX={(currentDoc.img.width * 0.4) / customWatermark.width} scaleY={(currentDoc.img.width * 0.4) / customWatermark.width} opacity={0.3} listening={false} />
                 ) : watermarkTxt ? (
                   <Group x={currentDoc.img.width / 2} y={currentDoc.img.height / 2} rotation={-25} listening={false}>
-                    <Text x={-currentDoc.img.width} y={-currentDoc.img.width * 0.05} width={currentDoc.img.width * 2} text={watermarkTxt} fontSize={Math.max(currentDoc.img.width / 12, 50)} fill="rgba(255, 255, 255, 0.35)" stroke="rgba(0, 0, 0, 0.15)" strokeWidth={3} align="center" fontStyle="bold" fontFamily="Inter" />
+                    <Text x={-currentDoc.img.width} y={-currentDoc.img.width * 0.05} width={currentDoc.img.width * 2} text={watermarkTxt} fontSize={Math.max(currentDoc.img.width / 12, 50)} fill="rgba(255,255,255,0.35)" stroke="rgba(0,0,0,0.15)" strokeWidth={3} align="center" fontStyle="bold" fontFamily="Inter" />
                   </Group>
                 ) : null}
-
-                {showFrame && (
-                  customFrame && currentDoc.frameAttrs ? (
-                    <FrameOverlay frameImg={customFrame} frameAttrs={currentDoc.frameAttrs} isEditing={isEditFrameMode} onChange={(newAttrs) => updateDoc({ frameAttrs: newAttrs })} />
-                  ) : (
-                    <Group listening={false}>
-                      <KonvaRect x={20} y={20} width={currentDoc.img.width - 40} height={currentDoc.img.height - 40} stroke="#ef4444" strokeWidth={6} />
-                      <KonvaRect x={28} y={28} width={currentDoc.img.width - 56} height={currentDoc.img.height - 56} stroke="#ef4444" strokeWidth={2} />
-                      <KonvaRect x={currentDoc.img.width - 320} y={currentDoc.img.height - 130} width={300} height={110} fill="rgba(0,0,0,0.7)" stroke="#ef4444" strokeWidth={2} />
-                      <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 115} text="BẢN VẼ DIMENSION" fill="white" fontSize={20} fontStyle="bold" fontFamily="Inter" />
-                      <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 85} text={`File: ${currentDoc.name.substring(0, 25)}...`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
-                      <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 60} text={`Ngày: ${new Date().toLocaleDateString('vi-VN')}`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
-                    </Group>
-                  )
-                )}
+                {showFrame && (customFrame && currentDoc.frameAttrs ? (
+                  <FrameOverlay frameImg={customFrame} frameAttrs={currentDoc.frameAttrs} isEditing={isEditFrameMode} onChange={(newAttrs) => updateDoc({ frameAttrs: newAttrs })} />
+                ) : (
+                  <Group listening={false}>
+                    <KonvaRect x={20} y={20} width={currentDoc.img.width - 40} height={currentDoc.img.height - 40} stroke="#ef4444" strokeWidth={6} />
+                    <KonvaRect x={28} y={28} width={currentDoc.img.width - 56} height={currentDoc.img.height - 56} stroke="#ef4444" strokeWidth={2} />
+                    <KonvaRect x={currentDoc.img.width - 320} y={currentDoc.img.height - 130} width={300} height={110} fill="rgba(0,0,0,0.7)" stroke="#ef4444" strokeWidth={2} />
+                    <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 115} text="BẢN VẼ DIMENSION" fill="white" fontSize={20} fontStyle="bold" fontFamily="Inter" />
+                    <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 85} text={`File: ${currentDoc.name.substring(0, 25)}...`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
+                    <Text x={currentDoc.img.width - 305} y={currentDoc.img.height - 60} text={`Ngày: ${new Date().toLocaleDateString('vi-VN')}`} fill="#cbd5e1" fontSize={14} fontFamily="Inter" />
+                  </Group>
+                ))}
               </Layer>
             </Stage>
 
-            {/* Floating Toolbar when a dimension is selected */}
+            {/* Floating toolbar */}
             {selectedId && !isMobile && (
               <div className="floating-dim-toolbar">
                 <button className="btn btn-icon" onClick={() => {
                   const line = currentDoc.lines.find(l => l.id === selectedId);
-                  if (line) handleTextEdit(line);
-                }}>
-                  <Edit3 size={18} color="#2563eb" /> <span style={{ fontSize: 12, marginLeft: 6, color: '#2563eb', fontWeight: 600 }}>Sửa số</span>
-                </button>
+                  const note = (currentDoc.texts || []).find(t => t.id === selectedId);
+                  if (line) handleTextEdit(line); else if (note) handleTextNoteEdit(note);
+                }}><Edit3 size={18} color="#2563eb" /> <span style={{ fontSize: 12, marginLeft: 6, color: '#2563eb', fontWeight: 600 }}>Sửa</span></button>
                 <div style={{ width: 1, backgroundColor: '#e2e8f0', height: 20, margin: '0 8px' }}></div>
                 <button className="btn btn-icon" onClick={() => {
-                  commitHistory(currentDoc.lines.filter(l => l.id !== selectedId));
+                  const isLine = currentDoc.lines.some(l => l.id === selectedId);
+                  if (isLine) commitHistory(currentDoc.lines.filter(l => l.id !== selectedId), currentDoc.texts || []);
+                  else commitHistory(currentDoc.lines, (currentDoc.texts || []).filter(t => t.id !== selectedId));
                   setSelectedId(null);
-                }}>
-                  <Trash2 size={18} color="#ef4444" /> <span style={{ fontSize: 12, marginLeft: 6, color: '#ef4444', fontWeight: 600 }}>Xóa</span>
-                </button>
+                }}><Trash2 size={18} color="#ef4444" /> <span style={{ fontSize: 12, marginLeft: 6, color: '#ef4444', fontWeight: 600 }}>Xóa</span></button>
               </div>
             )}
             {selectedId && isMobile && (
               <div className="floating-dim-toolbar mobile-floating">
                 <button className="btn btn-icon" style={{ flexDirection: 'column', gap: 4 }} onClick={() => {
                   const line = currentDoc.lines.find(l => l.id === selectedId);
-                  if (line) handleTextEdit(line);
-                }}>
-                  <Edit3 size={20} color="#2563eb" /> <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 600 }}>Sửa chữ</span>
-                </button>
+                  const note = (currentDoc.texts || []).find(t => t.id === selectedId);
+                  if (line) handleTextEdit(line); else if (note) handleTextNoteEdit(note);
+                }}><Edit3 size={20} color="#2563eb" /> <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 600 }}>Sửa</span></button>
                 <div style={{ width: 1, backgroundColor: '#e2e8f0', height: 24, margin: '0 12px' }}></div>
                 <button className="btn btn-icon" style={{ flexDirection: 'column', gap: 4 }} onClick={() => {
-                  commitHistory(currentDoc.lines.filter(l => l.id !== selectedId));
+                  const isLine = currentDoc.lines.some(l => l.id === selectedId);
+                  if (isLine) commitHistory(currentDoc.lines.filter(l => l.id !== selectedId), currentDoc.texts || []);
+                  else commitHistory(currentDoc.lines, (currentDoc.texts || []).filter(t => t.id !== selectedId));
                   setSelectedId(null);
-                }}>
-                  <Trash2 size={20} color="#ef4444" /> <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>Xóa Dim</span>
-                </button>
+                }}><Trash2 size={20} color="#ef4444" /> <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>Xóa</span></button>
               </div>
             )}
           </>
         )}
       </div>
 
+      {/* Mobile bottom bar */}
       {isMobile && currentDoc && (
         <div className="bottom-bar">
           <div className="bottom-tools">
-            <button className="btn btn-icon" onClick={() => setShowMobileHistory(true)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-              <Images size={22} />
-            </button>
+            <button className="btn btn-icon" onClick={() => setCurrentProjectId(null)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}><ArrowLeft size={22} /></button>
+            <button className="btn btn-icon" onClick={() => setShowMobileHistory(true)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}><Images size={22} /></button>
             <div className="divider"></div>
-
-            <div className="file-input-wrapper">
-              <button className="btn btn-icon btn-primary"><Camera size={22} /></button>
-              <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
-            </div>
-
-            <div className="file-input-wrapper">
-              <button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }}><ImagePlus size={22} /></button>
-              <input type="file" multiple onChange={handleUpload} accept="image/*" />
-            </div>
-
+            <div className="file-input-wrapper"><button className="btn btn-icon btn-primary"><Camera size={22} /></button><input type="file" onChange={handleUpload} accept="image/*" capture="environment" /></div>
+            <div className="file-input-wrapper"><button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }}><ImagePlus size={22} /></button><input type="file" multiple onChange={handleUpload} accept="image/*" /></div>
             <div className="divider"></div>
-
-            <button className={`btn btn-icon ${isDrawingMode ? 'active-tool' : ''}`} onClick={() => { setIsDrawingMode(!isDrawingMode); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}>
-              <PencilRuler size={22} />
-            </button>
-            <button className="btn btn-icon" onClick={handleMagicDim} style={{ color: '#d946ef' }}>
-              <Wand2 size={22} />
-            </button>
-
+            <button className={`btn btn-icon ${isDrawingMode ? 'active-tool' : ''}`} onClick={() => { setIsDrawingMode(!isDrawingMode); setIsTextMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}><PencilRuler size={22} /></button>
+            <button className="btn btn-icon" onClick={handleMagicDim} style={{ color: '#d946ef' }}><Wand2 size={22} /></button>
+            <button className={`btn btn-icon ${isTextMode ? 'active-tool' : ''}`} onClick={() => { setIsTextMode(!isTextMode); setIsDrawingMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isTextMode ? 'text' : 'default'; setSelectedId(null); }} style={{ background: isTextMode ? '#dbeafe' : 'transparent', color: isTextMode ? '#2563eb' : '#475569' }}><Type size={22} /></button>
             <div className="divider"></div>
-
-            <button className="btn btn-icon" onClick={() => handleShare(currentDoc)} style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }} title="Chia sẻ">
-              <Share2 size={22} color="#2563eb" />
-            </button>
-
-            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }} title="Lưu">
-              <Download size={22} color="#059669" />
-            </button>
+            <button className="btn btn-icon" onClick={() => handleShare(currentDoc)} style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }}><Share2 size={22} color="#2563eb" /></button>
+            <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }}><Download size={22} color="#059669" /></button>
           </div>
         </div>
       )}
 
-      {/* Popup Quản lý Lịch sử (Mobile) */}
+      {/* Mobile history popup */}
       {isMobile && showMobileHistory && (
         <div className="mobile-history-overlay" onClick={() => setShowMobileHistory(false)}>
           <div className="mobile-history-modal" onClick={e => e.stopPropagation()}>
             <div className="mobile-history-header">
-              <h3 style={{ margin: 0, fontSize: '16px', color: '#1e293b' }}>Lịch sử ảnh ({docs.length})</h3>
+              <h3 style={{ margin: 0, fontSize: '16px', color: '#1e293b' }}>Ảnh trong dự án ({docs.length})</h3>
               <button className="btn btn-icon" onClick={() => setShowMobileHistory(false)} style={{ padding: '4px' }}><X size={20} /></button>
             </div>
-
             <div className="mobile-history-list">
               {docs.map(doc => (
                 <div key={doc.id} className={`thumb-item ${doc.id === activeDocId ? 'active' : ''}`} onClick={() => { setActiveDocId(doc.id); setShowMobileHistory(false); }}>
