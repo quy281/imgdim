@@ -1,6 +1,6 @@
 ﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Stage, Layer, Image as KonvaImage, Line as KonvaLine, Rect as KonvaRect, Text, Group } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2, Type, ArrowLeft } from 'lucide-react';
+import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2, Type, ArrowLeft, Crown } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
@@ -9,6 +9,9 @@ import DimensionLine from './components/DimensionLine';
 import FrameOverlay from './components/FrameOverlay';
 import TextNote from './components/TextNote';
 import ProjectList from './components/ProjectList';
+import UpgradeModal from './components/UpgradeModal';
+import PricingPage from './components/PricingPage';
+import { useTier } from './TierContext';
 import { loadProjects, saveProjects, loadDocs, saveDocs, deleteProjectDocs } from './db';
 import './App.css';
 
@@ -35,6 +38,9 @@ export default function App() {
   const [customWatermark, setCustomWatermark] = useState(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [showMobileHistory, setShowMobileHistory] = useState(false);
+  const [showPricing, setShowPricing] = useState(false);
+
+  const { canUse, requireFeature, limits, showUpgrade, upgradeFeature, dismissUpgrade, currentTier, setCurrentTier } = useTier();
 
   const mainAreaRef = useRef();
   const stageRef = useRef();
@@ -379,6 +385,7 @@ export default function App() {
 
   const handleMagicDim = () => {
     if (!currentDoc || !currentDoc.img) return;
+    if (!requireFeature('magicDim')) return;
     const w = currentDoc.img.width; const h = currentDoc.img.height;
     const pad = Math.min(w, h) * 0.05;
     const newLines = [
@@ -454,6 +461,7 @@ export default function App() {
 
   const handleBatchExport = async () => {
     if (docs.length === 0) return;
+    if (!requireFeature('batchExport')) return;
     setIsExportingAll(true); setSelectedId(null); setIsEditFrameMode(false);
     for (let i = 0; i < docs.length; i++) {
       setActiveDocId(docs[i].id);
@@ -490,9 +498,14 @@ export default function App() {
   // === Loading ===
   if (loadingDB) return <div className="loading-screen"><div className="loading-spinner" /><p>Đang tải...</p></div>;
 
+  // === Pricing page ===
+  if (showPricing) {
+    return <PricingPage currentTier={currentTier} onBack={() => setShowPricing(false)} onSelectTier={(tier) => { setCurrentTier(tier); setShowPricing(false); }} />;
+  }
+
   // === Project list view ===
   if (!currentProjectId) {
-    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} />;
+    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} onShowPricing={() => setShowPricing(true)} currentTier={currentTier} maxProjects={limits.maxProjects} />;
   }
 
   // === Editor view ===
@@ -522,7 +535,8 @@ export default function App() {
               <button className="btn btn-primary w-full" style={{ justifyContent: 'center', width: '100%' }}><ImagePlus size={18} /> Thêm ảnh</button>
               <input type="file" multiple onChange={handleUpload} accept="image/*" />
             </div>
-            <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ justifyContent: 'center', width: '100%', color: '#059669', background: '#ecfdf5', border: '1px solid #34d399' }}>
+            <button className="btn" onClick={handleBatchExport} disabled={docs.length === 0 || isExportingAll} style={{ justifyContent: 'center', width: '100%', color: canUse('batchExport') ? '#059669' : '#94a3b8', background: canUse('batchExport') ? '#ecfdf5' : '#f1f5f9', border: `1px solid ${canUse('batchExport') ? '#34d399' : '#e2e8f0'}` }}>
+              {!canUse('batchExport') && <Crown size={14} color="#eab308" />}
               <SaveAll size={18} /> {isExportingAll ? 'Đang xuất...' : 'Xuất Toàn Bộ'}
             </button>
           </div>
@@ -549,7 +563,7 @@ export default function App() {
         {!isMobile && currentDoc && (
           <div className="toolbar">
             <button className="btn" onClick={() => { setIsDrawingMode(!isDrawingMode); setIsTextMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}><PencilRuler size={18} /> {isDrawingMode ? 'Đang vẽ...' : 'Vẽ Dim'}</button>
-            <button className="btn" onClick={handleMagicDim} style={{ color: '#d946ef' }}><Wand2 size={18} /> Magic Dim</button>
+            <button className="btn" onClick={handleMagicDim} style={{ color: canUse('magicDim') ? '#d946ef' : '#94a3b8' }}>{!canUse('magicDim') && <Crown size={14} color="#eab308" />}<Wand2 size={18} /> Magic Dim</button>
             <button className="btn" onClick={() => { setIsTextMode(!isTextMode); setIsDrawingMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isTextMode ? 'text' : 'default'; setSelectedId(null); }} style={{ background: isTextMode ? '#dbeafe' : 'transparent', color: isTextMode ? '#2563eb' : '#475569' }}><Type size={18} /> {isTextMode ? 'Đang ghi chú...' : 'Ghi chú'}</button>
             <div className="divider"></div>
             <button className="btn" onClick={() => { setShowFrame(!showFrame); setIsEditFrameMode(false); }} style={{ background: showFrame ? '#fee2e2' : 'transparent', color: showFrame ? '#b91c1c' : '#475569' }}><Frame size={18} /> {showFrame ? 'Tắt Khung' : 'Bật Khung'}</button>
@@ -702,10 +716,10 @@ export default function App() {
             <div className="file-input-wrapper"><button className="btn btn-icon" style={{ border: '1px dashed #cbd5e1' }}><ImagePlus size={22} /></button><input type="file" multiple onChange={handleUpload} accept="image/*" /></div>
             <div className="divider"></div>
             <button className={`btn btn-icon ${isDrawingMode ? 'active-tool' : ''}`} onClick={() => { setIsDrawingMode(!isDrawingMode); setIsTextMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isDrawingMode ? 'crosshair' : 'default'; setSelectedId(null); }} style={{ background: isDrawingMode ? '#fef08a' : 'transparent', color: isDrawingMode ? '#ca8a04' : '#475569' }}><PencilRuler size={22} /></button>
-            <button className="btn btn-icon" onClick={handleMagicDim} style={{ color: '#d946ef' }}><Wand2 size={22} /></button>
+            <button className="btn btn-icon" onClick={handleMagicDim} style={{ color: canUse('magicDim') ? '#d946ef' : '#94a3b8', position: 'relative' }}><Wand2 size={22} />{!canUse('magicDim') && <Crown size={10} color="#eab308" style={{ position: 'absolute', top: 4, right: 4 }} />}</button>
             <button className={`btn btn-icon ${isTextMode ? 'active-tool' : ''}`} onClick={() => { setIsTextMode(!isTextMode); setIsDrawingMode(false); setIsEditFrameMode(false); document.body.style.cursor = !isTextMode ? 'text' : 'default'; setSelectedId(null); }} style={{ background: isTextMode ? '#dbeafe' : 'transparent', color: isTextMode ? '#2563eb' : '#475569' }}><Type size={22} /></button>
             <div className="divider"></div>
-            <button className="btn btn-icon" onClick={() => handleShare(currentDoc)} style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }}><Share2 size={22} color="#2563eb" /></button>
+            <button className="btn btn-icon" onClick={() => { if (requireFeature('share')) handleShare(currentDoc); }} style={{ background: '#eff6ff', border: '1px solid #bfdbfe', position: 'relative' }}><Share2 size={22} color={canUse('share') ? '#2563eb' : '#94a3b8'} />{!canUse('share') && <Crown size={10} color="#eab308" style={{ position: 'absolute', top: 4, right: 4 }} />}</button>
             <button className="btn btn-icon" onClick={() => { setSelectedId(null); setIsEditFrameMode(false); setTimeout(() => executeDownload(currentDoc), 100); }}><Download size={22} color="#059669" /></button>
           </div>
         </div>
@@ -735,6 +749,11 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Upgrade Modal */}
+      {showUpgrade && (
+        <UpgradeModal feature={upgradeFeature} onClose={dismissUpgrade} onShowPricing={() => { dismissUpgrade(); setShowPricing(true); }} />
       )}
     </div>
   );

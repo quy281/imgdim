@@ -1,14 +1,26 @@
 import React, { useState } from 'react';
-import { FolderPlus, FolderOpen, Trash2, Edit3, Camera } from 'lucide-react';
+import { FolderPlus, FolderOpen, Trash2, Edit3, Camera, Crown } from 'lucide-react';
 
-export default function ProjectList({ projects, onOpenProject, onCreateProject, onDeleteProject, onRenameProject }) {
+export default function ProjectList({ projects, onOpenProject, onCreateProject, onDeleteProject, onRenameProject, onShowPricing, currentTier, maxProjects }) {
     const [newName, setNewName] = useState('');
+    const isAtLimit = projects.length >= maxProjects;
 
     const handleCreate = () => {
-        const name = newName.trim() || `Dự án ${new Date().toLocaleDateString('vi-VN')}`;
+        if (isAtLimit) {
+            onShowPricing?.();
+            return;
+        }
+        const name = newName.trim() || `D\u1ef1 \u00e1n ${new Date().toLocaleDateString('vi-VN')}`;
         onCreateProject(name);
         setNewName('');
     };
+
+    const tierBadge = {
+        free: { label: 'Free', color: '#64748b', bg: '#f1f5f9' },
+        pro: { label: 'Pro', color: '#2563eb', bg: '#eff6ff' },
+        ultra: { label: 'Ultra', color: '#9333ea', bg: '#faf5ff' },
+    };
+    const badge = tierBadge[currentTier] || tierBadge.free;
 
     return (
         <div className="project-list-page">
@@ -17,30 +29,37 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
                     <img src="/img/mkg-dim-icon.png" alt="logo" className="project-logo" />
                     <div>
                         <h1>MKG - Dim</h1>
-                        <p>Quản lý dự án đo kích thước</p>
+                        <p>Qu\u1ea3n l\u00fd d\u1ef1 \u00e1n \u0111o k\u00edch th\u01b0\u1edbc</p>
                     </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button className="btn" onClick={onShowPricing}
+                        style={{ padding: '6px 12px', background: badge.bg, color: badge.color, border: `1px solid ${badge.color}33`, fontWeight: 600, fontSize: 12, borderRadius: 20 }}>
+                        <Crown size={14} /> {badge.label}
+                    </button>
                 </div>
             </div>
 
             <div className="project-create-bar">
                 <input
                     type="text"
-                    placeholder="Tên dự án mới..."
+                    placeholder="T\u00ean d\u1ef1 \u00e1n m\u1edbi..."
                     value={newName}
                     onChange={e => setNewName(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') handleCreate(); }}
                     className="project-input"
                 />
-                <button className="btn btn-primary" onClick={handleCreate}>
-                    <FolderPlus size={18} /> Tạo mới
+                <button className="btn btn-primary" onClick={handleCreate} style={isAtLimit ? { background: '#94a3b8' } : {}}>
+                    {isAtLimit ? <><Crown size={18} /> N\u00e2ng c\u1ea5p</> : <><FolderPlus size={18} /> T\u1ea1o m\u1edbi</>}
                 </button>
+                {isAtLimit && <div style={{ fontSize: 11, color: '#ef4444', whiteSpace: 'nowrap' }}>{projects.length}/{maxProjects} d\u1ef1 \u00e1n</div>}
             </div>
 
             {projects.length === 0 ? (
                 <div className="project-empty">
                     <Camera size={48} style={{ color: '#94a3b8', marginBottom: 10 }} />
-                    <p>Chưa có dự án nào</p>
-                    <p style={{ fontSize: 13, color: '#94a3b8' }}>Tạo dự án mới để bắt đầu chụp và ghi kích thước</p>
+                    <p>Ch\u01b0a c\u00f3 d\u1ef1 \u00e1n n\u00e0o</p>
+                    <p style={{ fontSize: 13, color: '#94a3b8' }}>T\u1ea1o d\u1ef1 \u00e1n m\u1edbi \u0111\u1ec3 b\u1eaft \u0111\u1ea7u ch\u1ee5p v\u00e0 ghi k\u00edch th\u01b0\u1edbc</p>
                 </div>
             ) : (
                 <div className="project-grid">
@@ -50,16 +69,16 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
                             <div className="project-card-info">
                                 <div className="project-card-name">{p.name}</div>
                                 <div className="project-card-date">{new Date(p.createdAt).toLocaleDateString('vi-VN')}</div>
-                                {p.docCount > 0 && <div className="project-card-count">{p.docCount} ảnh</div>}
+                                {p.docCount > 0 && <div className="project-card-count">{p.docCount} \u1ea3nh</div>}
                             </div>
                             <div className="project-card-actions" onClick={e => e.stopPropagation()}>
                                 <button className="btn btn-icon btn-sm" onClick={() => {
-                                    const n = prompt('Đổi tên dự án:', p.name);
+                                    const n = prompt('\u0110\u1ed5i t\u00ean d\u1ef1 \u00e1n:', p.name);
                                     if (n && n.trim()) onRenameProject(p.id, n.trim());
-                                }} title="Đổi tên"><Edit3 size={14} /></button>
+                                }} title="\u0110\u1ed5i t\u00ean"><Edit3 size={14} /></button>
                                 <button className="btn btn-icon btn-sm btn-danger" onClick={() => {
-                                    if (confirm(`Xóa dự án "${p.name}"?`)) onDeleteProject(p.id);
-                                }} title="Xóa"><Trash2 size={14} /></button>
+                                    if (confirm(`X\u00f3a d\u1ef1 \u00e1n "${p.name}"?`)) onDeleteProject(p.id);
+                                }} title="X\u00f3a"><Trash2 size={14} /></button>
                             </div>
                         </div>
                     ))}
