@@ -10,7 +10,7 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
             onShowPricing?.();
             return;
         }
-        const name = newName.trim() || `D\u1ef1 \u00e1n ${new Date().toLocaleDateString('vi-VN')}`;
+        const name = newName.trim() || `Dự án ${new Date().toLocaleDateString('vi-VN')}`;
         onCreateProject(name);
         setNewName('');
     };
@@ -29,7 +29,7 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
                     <img src="/img/mkg-dim-icon.png" alt="logo" className="project-logo" />
                     <div>
                         <h1>MKG - Dim</h1>
-                        <p>Qu\u1ea3n l\u00fd d\u1ef1 \u00e1n \u0111o k\u00edch th\u01b0\u1edbc</p>
+                        <p>Quản lý dự án đo kích thước</p>
                     </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -51,23 +51,23 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
             <div className="project-create-bar">
                 <input
                     type="text"
-                    placeholder="T\u00ean d\u1ef1 \u00e1n m\u1edbi..."
+                    placeholder="Tên dự án mới..."
                     value={newName}
                     onChange={e => setNewName(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') handleCreate(); }}
                     className="project-input"
                 />
                 <button className="btn btn-primary" onClick={handleCreate} style={isAtLimit ? { background: '#94a3b8' } : {}}>
-                    {isAtLimit ? <><Crown size={18} /> N\u00e2ng c\u1ea5p</> : <><FolderPlus size={18} /> T\u1ea1o m\u1edbi</>}
+                    {isAtLimit ? <><Crown size={18} /> Nâng cấp</> : <><FolderPlus size={18} /> Tạo mới</>}
                 </button>
-                {isAtLimit && <div style={{ fontSize: 11, color: '#ef4444', whiteSpace: 'nowrap' }}>{projects.length}/{maxProjects} d\u1ef1 \u00e1n</div>}
+                {isAtLimit && <div style={{ fontSize: 11, color: '#ef4444', whiteSpace: 'nowrap' }}>{projects.length}/{maxProjects} dự án</div>}
             </div>
 
             {projects.length === 0 ? (
                 <div className="project-empty">
                     <Camera size={48} style={{ color: '#94a3b8', marginBottom: 10 }} />
-                    <p>Ch\u01b0a c\u00f3 d\u1ef1 \u00e1n n\u00e0o</p>
-                    <p style={{ fontSize: 13, color: '#94a3b8' }}>T\u1ea1o d\u1ef1 \u00e1n m\u1edbi \u0111\u1ec3 b\u1eaft \u0111\u1ea7u ch\u1ee5p v\u00e0 ghi k\u00edch th\u01b0\u1edbc</p>
+                    <p>Chưa có dự án nào</p>
+                    <p style={{ fontSize: 13, color: '#94a3b8' }}>Tạo dự án mới để bắt đầu chụp và ghi kích thước</p>
                 </div>
             ) : (
                 <div className="project-grid">
@@ -77,16 +77,16 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
                             <div className="project-card-info">
                                 <div className="project-card-name">{p.name}</div>
                                 <div className="project-card-date">{new Date(p.createdAt).toLocaleDateString('vi-VN')}</div>
-                                {p.docCount > 0 && <div className="project-card-count">{p.docCount} \u1ea3nh</div>}
+                                {p.docCount > 0 && <div className="project-card-count">{p.docCount} ảnh</div>}
                             </div>
                             <div className="project-card-actions" onClick={e => e.stopPropagation()}>
                                 <button className="btn btn-icon btn-sm" onClick={() => {
-                                    const n = prompt('\u0110\u1ed5i t\u00ean d\u1ef1 \u00e1n:', p.name);
+                                    const n = prompt('Đổi tên dự án:', p.name);
                                     if (n && n.trim()) onRenameProject(p.id, n.trim());
-                                }} title="\u0110\u1ed5i t\u00ean"><Edit3 size={14} /></button>
+                                }} title="Đổi tên"><Edit3 size={14} /></button>
                                 <button className="btn btn-icon btn-sm btn-danger" onClick={() => {
-                                    if (confirm(`X\u00f3a d\u1ef1 \u00e1n "${p.name}"?`)) onDeleteProject(p.id);
-                                }} title="X\u00f3a"><Trash2 size={14} /></button>
+                                    if (confirm(`Xóa dự án "${p.name}"?`)) onDeleteProject(p.id);
+                                }} title="Xóa"><Trash2 size={14} /></button>
                             </div>
                         </div>
                     ))}
