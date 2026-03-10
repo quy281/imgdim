@@ -3,7 +3,7 @@
  * Handles OAuth2 authentication and file upload to Google Drive
  */
 
-const GOOGLE_CLIENT_ID = localStorage.getItem('gdrive_client_id') || '';
+const GOOGLE_CLIENT_ID = '952724184418-57smt6dnqfgnhot709vtratklbp7qo0r.apps.googleusercontent.com';
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 const GDRIVE_FOLDER_NAME = 'MKG-Dim';
 
@@ -62,14 +62,10 @@ export async function getUserInfo() {
 }
 
 // Connect to Google Drive
-export async function connect(clientId) {
-    if (clientId) {
-        localStorage.setItem('gdrive_client_id', clientId);
-    }
-    const cid = clientId || localStorage.getItem('gdrive_client_id');
-    if (!cid) throw new Error('Client ID chưa được cấu hình');
+export async function connect() {
+    if (!GOOGLE_CLIENT_ID) throw new Error('Client ID chưa được cấu hình');
 
-    await initTokenClient(cid);
+    await initTokenClient(GOOGLE_CLIENT_ID);
     return new Promise((resolve, reject) => {
         try {
             tokenClient.callback = (response) => {
