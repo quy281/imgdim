@@ -4,6 +4,7 @@ import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, 
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import DimensionLine from './components/DimensionLine';
 import FrameOverlay from './components/FrameOverlay';
 import TextNote from './components/TextNote';
@@ -45,9 +46,28 @@ export default function App() {
     (async () => {
       const p = await loadProjects();
       setProjects(p);
+      // Auto-open most recent project (collection view, not a specific photo)
+      if (p.length > 0) {
+        const sorted = [...p].sort((a, b) => b.createdAt - a.createdAt);
+        setCurrentProjectId(sorted[0].id);
+      }
       setLoadingDB(false);
     })();
   }, []);
+
+  // === Android back button ===
+  useEffect(() => {
+    const handler = CapApp.addListener('backButton', () => {
+      if (showMobileHistory) {
+        setShowMobileHistory(false);
+      } else if (currentProjectId) {
+        setCurrentProjectId(null);
+      } else {
+        CapApp.exitApp();
+      }
+    });
+    return () => { handler.then(h => h.remove()); };
+  }, [showMobileHistory, currentProjectId]);
 
   // === Load docs when project changes ===
   useEffect(() => {
@@ -338,9 +358,18 @@ export default function App() {
         try {
           const uri = getExportURI(doc);
           if (Capacitor.isNativePlatform()) {
+            // Ensure filesystem permissions
+            let permStatus = await Filesystem.checkPermissions();
+            if (permStatus.publicStorage !== 'granted') {
+              permStatus = await Filesystem.requestPermissions();
+              if (permStatus.publicStorage !== 'granted') {
+                if (!isBatch) alert('Cần cấp quyền lưu trữ để lưu ảnh!');
+                resolve(); return;
+              }
+            }
             const base64Data = uri.split(',')[1];
             const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
-            await Filesystem.writeFile({ path: fileName, data: base64Data, directory: Directory.Documents });
+            await Filesystem.writeFile({ path: fileName, data: base64Data, directory: Directory.Documents, recursive: true });
             if (!isBatch) alert("Lưu thành công ảnh vào thư mục Documents!");
           } else {
             const link = document.createElement('a'); link.download = `[DIM]_${doc.name}`; link.href = uri; link.click();
@@ -355,6 +384,11 @@ export default function App() {
     setSelectedId(null); setIsEditFrameMode(false);
     setTimeout(async () => {
       try {
+        // Ensure filesystem permissions
+        let permStatus = await Filesystem.checkPermissions();
+        if (permStatus.publicStorage !== 'granted') {
+          permStatus = await Filesystem.requestPermissions();
+        }
         const uri = getExportURI(doc);
         const base64Data = uri.split(',')[1];
         const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
