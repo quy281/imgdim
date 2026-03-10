@@ -190,15 +190,15 @@ export default function App() {
     return { x: (baseImg.width - fw) / 2, y: (baseImg.height - fh) / 2, width: fw, height: fh };
   };
 
-  // === Upload handlers ===
   const handleUpload = (e) => {
     const files = Array.from(e.target.files);
+    e.target.value = ''; // Reset so same file can be selected again
     if (!files.length) return;
     // Enforce photo limit
     const currentCount = docs.length;
     const maxPhotos = limits.maxPhotosPerProject;
     if (currentCount >= maxPhotos) {
-      requireFeature('uploadPhoto');
+      alert(`Đã đạt giới hạn ${maxPhotos} ảnh/dự án. Nâng cấp để thêm!`);
       return;
     }
     const allowedFiles = files.slice(0, maxPhotos - currentCount);
@@ -223,7 +223,7 @@ export default function App() {
             stagePos: { x: (w - image.width * autoScale) / 2, y: (h - image.height * autoScale) / 2 + 20 }
           };
           setDocs(prev => [...prev, newDoc]);
-          setActiveDocId(null);
+          // Stay in gallery view (don't auto-open editor)
           // Update project doc count
           setProjects(prev => {
             const updated = prev.map(p => p.id === currentProjectId ? { ...p, docCount: (p.docCount || 0) + 1 } : p);
