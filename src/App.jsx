@@ -40,6 +40,8 @@ export default function App() {
   const stageRef = useRef();
   const currentDoc = docs.find(d => d.id === activeDocId);
   const saveTimeoutRef = useRef(null);
+  const lastTouchDistRef = useRef(null);
+  const lastTouchCenterRef = useRef(null);
 
   // === Load projects on mount ===
   useEffect(() => {
@@ -269,8 +271,29 @@ export default function App() {
     return stage.getPointerPosition();
   };
 
+  const getTouchDist = (touches) => {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  const getTouchCenter = (touches, rect) => {
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2 - rect.left,
+      y: (touches[0].clientY + touches[1].clientY) / 2 - rect.top
+    };
+  };
+
   const handleStageMouseDown = (e) => {
     if (isEditFrameMode) return;
+    // Pinch zoom start: 2 fingers
+    if (e.evt?.touches?.length === 2) {
+      if (e.evt.cancelable) e.evt.preventDefault();
+      lastTouchDistRef.current = getTouchDist(e.evt.touches);
+      const rect = stageRef.current.container().getBoundingClientRect();
+      lastTouchCenterRef.current = getTouchCenter(e.evt.touches, rect);
+      return;
+    }
     if (e.target.name() === 'handle' || e.target.name() === 'dim-group') return;
 
     // Text mode: place text on click
@@ -297,6 +320,31 @@ export default function App() {
   };
 
   const handleStageMouseMove = (e) => {
+    // Pinch zoom move: 2 fingers
+    if (e.evt?.touches?.length === 2 && lastTouchDistRef.current !== null) {
+      if (e.evt.cancelable) e.evt.preventDefault();
+      const stage = stageRef.current;
+      const newDist = getTouchDist(e.evt.touches);
+      const rect = stage.container().getBoundingClientRect();
+      const newCenter = getTouchCenter(e.evt.touches, rect);
+      const oldScale = currentDoc.stageScale;
+      const scale = oldScale * (newDist / lastTouchDistRef.current);
+      // Zoom toward pinch center
+      const pointTo = { x: (newCenter.x - stage.x()) / oldScale, y: (newCenter.y - stage.y()) / oldScale };
+      // Pan offset
+      const dx = newCenter.x - lastTouchCenterRef.current.x;
+      const dy = newCenter.y - lastTouchCenterRef.current.y;
+      updateDoc({
+        stageScale: scale,
+        stagePos: {
+          x: newCenter.x - pointTo.x * scale + dx,
+          y: newCenter.y - pointTo.y * scale + dy
+        }
+      });
+      lastTouchDistRef.current = newDist;
+      lastTouchCenterRef.current = newCenter;
+      return;
+    }
     if (!isDrawingMode || !tempLine || isEditFrameMode) return;
     if (e.evt && e.evt.cancelable) e.evt.preventDefault();
     const stage = stageRef.current; const pos = getPointerPos(e); if (!pos) return;
@@ -313,6 +361,9 @@ export default function App() {
   };
 
   const handleStageMouseUp = () => {
+    // Reset pinch state
+    lastTouchDistRef.current = null;
+    lastTouchCenterRef.current = null;
     if (!isDrawingMode || !tempLine || isEditFrameMode) return;
     const dx = tempLine.end.x - tempLine.start.x; const dy = tempLine.end.y - tempLine.start.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
