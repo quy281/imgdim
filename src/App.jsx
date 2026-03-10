@@ -12,7 +12,9 @@ import ProjectList from './components/ProjectList';
 import UpgradeModal from './components/UpgradeModal';
 import PricingPage from './components/PricingPage';
 import AuthPage from './components/AuthPage';
+import SettingsPage from './components/SettingsPage';
 import { useTier } from './TierContext';
+import * as GDrive from './googleDriveService';
 import { loadProjects, saveProjects, loadDocs, saveDocs, deleteProjectDocs } from './db';
 import './App.css';
 
@@ -41,6 +43,7 @@ export default function App() {
   const [showMobileHistory, setShowMobileHistory] = useState(false);
   const [showPricing, setShowPricing] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const { canUse, requireFeature, limits, showUpgrade, upgradeFeature, dismissUpgrade, currentTier, setCurrentTier, user, setUser, logout } = useTier();
 
@@ -443,9 +446,24 @@ export default function App() {
             const base64Data = uri.split(',')[1];
             const fileName = `DIM_${doc.name.replace(/\.[^/.]+$/, "")}_${Date.now()}.png`;
             await Filesystem.writeFile({ path: fileName, data: base64Data, directory: Directory.Documents, recursive: true });
+            // Auto-upload to Google Drive if connected
+            if (GDrive.isConnected() && localStorage.getItem('gdrive_auto_upload') === 'true') {
+              try {
+                const projectName = projects.find(p => p.id === currentProjectId)?.name || '';
+                await GDrive.uploadImage(base64Data, fileName, projectName);
+              } catch (driveErr) { console.warn('GDrive upload failed:', driveErr); }
+            }
             if (!isBatch) alert("Lưu thành công ảnh vào thư mục Documents!");
           } else {
             const link = document.createElement('a'); link.download = `[DIM]_${doc.name}`; link.href = uri; link.click();
+            // Auto-upload to Google Drive for web too
+            if (GDrive.isConnected() && localStorage.getItem('gdrive_auto_upload') === 'true') {
+              try {
+                const base64Data = uri.split(',')[1];
+                const projectName = projects.find(p => p.id === currentProjectId)?.name || '';
+                await GDrive.uploadImage(base64Data, `[DIM]_${doc.name}`, projectName);
+              } catch (driveErr) { console.warn('GDrive upload failed:', driveErr); }
+            }
           }
         } catch (err) { if (!isBatch) alert("Lỗi lưu ảnh: " + err.message); }
         resolve();
@@ -520,9 +538,14 @@ export default function App() {
     return <AuthPage onBack={() => setShowAuth(false)} user={user} onLogin={(u) => { setUser(u); setShowAuth(false); }} onLogout={() => { logout(); setShowAuth(false); }} currentTier={currentTier} />;
   }
 
+  // === Settings page ===
+  if (showSettings) {
+    return <SettingsPage onBack={() => setShowSettings(false)} />;
+  }
+
   // === Project list view ===
   if (!currentProjectId) {
-    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} onShowPricing={() => setShowPricing(true)} currentTier={currentTier} maxProjects={limits.maxProjects} onShowAuth={() => setShowAuth(true)} user={user} />;
+    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} onShowPricing={() => setShowPricing(true)} currentTier={currentTier} maxProjects={limits.maxProjects} onShowAuth={() => setShowAuth(true)} user={user} onShowSettings={() => setShowSettings(true)} />;
   }
 
   // === Editor view ===
