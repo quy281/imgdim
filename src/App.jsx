@@ -11,6 +11,7 @@ import TextNote from './components/TextNote';
 import ProjectList from './components/ProjectList';
 import UpgradeModal from './components/UpgradeModal';
 import PricingPage from './components/PricingPage';
+import AuthPage from './components/AuthPage';
 import { useTier } from './TierContext';
 import { loadProjects, saveProjects, loadDocs, saveDocs, deleteProjectDocs } from './db';
 import './App.css';
@@ -39,8 +40,9 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [showMobileHistory, setShowMobileHistory] = useState(false);
   const [showPricing, setShowPricing] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
 
-  const { canUse, requireFeature, limits, showUpgrade, upgradeFeature, dismissUpgrade, currentTier, setCurrentTier } = useTier();
+  const { canUse, requireFeature, limits, showUpgrade, upgradeFeature, dismissUpgrade, currentTier, setCurrentTier, user, setUser, logout } = useTier();
 
   const mainAreaRef = useRef();
   const stageRef = useRef();
@@ -189,7 +191,15 @@ export default function App() {
   const handleUpload = (e) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
-    files.forEach(file => {
+    // Enforce photo limit
+    const currentCount = docs.length;
+    const maxPhotos = limits.maxPhotosPerProject;
+    if (currentCount >= maxPhotos) {
+      requireFeature('uploadPhoto');
+      return;
+    }
+    const allowedFiles = files.slice(0, maxPhotos - currentCount);
+    allowedFiles.forEach(file => {
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = reader.result;
@@ -225,6 +235,7 @@ export default function App() {
   };
 
   const handleUploadCustomFrame = (e) => {
+    if (!requireFeature('customFrame')) { e.target.value = ''; return; }
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = () => { const image = new window.Image(); image.src = reader.result; image.onload = () => { setCustomFrame(image); setShowFrame(true); setDocs(prev => prev.map(d => ({ ...d, frameAttrs: initFrameAttrs(d.img, image) }))); }; };
@@ -232,6 +243,7 @@ export default function App() {
   };
 
   const handleUploadCustomWatermark = (e) => {
+    if (!requireFeature('customWatermark')) { e.target.value = ''; return; }
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = () => { const image = new window.Image(); image.src = reader.result; image.onload = () => setCustomWatermark(image); };
@@ -503,9 +515,14 @@ export default function App() {
     return <PricingPage currentTier={currentTier} onBack={() => setShowPricing(false)} onSelectTier={(tier) => { setCurrentTier(tier); setShowPricing(false); }} />;
   }
 
+  // === Auth page ===
+  if (showAuth) {
+    return <AuthPage onBack={() => setShowAuth(false)} user={user} onLogin={(u) => { setUser(u); setShowAuth(false); }} onLogout={() => { logout(); setShowAuth(false); }} currentTier={currentTier} />;
+  }
+
   // === Project list view ===
   if (!currentProjectId) {
-    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} onShowPricing={() => setShowPricing(true)} currentTier={currentTier} maxProjects={limits.maxProjects} />;
+    return <ProjectList projects={projects} onOpenProject={setCurrentProjectId} onCreateProject={handleCreateProject} onDeleteProject={handleDeleteProject} onRenameProject={handleRenameProject} onShowPricing={() => setShowPricing(true)} currentTier={currentTier} maxProjects={limits.maxProjects} onShowAuth={() => setShowAuth(true)} user={user} />;
   }
 
   // === Editor view ===

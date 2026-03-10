@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { FolderPlus, FolderOpen, Trash2, Edit3, Camera, Crown } from 'lucide-react';
+import { FolderPlus, FolderOpen, Trash2, Edit3, Camera, Crown, User } from 'lucide-react';
 
-export default function ProjectList({ projects, onOpenProject, onCreateProject, onDeleteProject, onRenameProject, onShowPricing, currentTier, maxProjects }) {
+export default function ProjectList({ projects, onOpenProject, onCreateProject, onDeleteProject, onRenameProject, onShowPricing, currentTier, maxProjects, onShowAuth, user }) {
     const [newName, setNewName] = useState('');
     const isAtLimit = projects.length >= maxProjects;
 
@@ -36,6 +36,10 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
                     <button className="btn" onClick={onShowPricing}
                         style={{ padding: '6px 12px', background: badge.bg, color: badge.color, border: `1px solid ${badge.color}33`, fontWeight: 600, fontSize: 12, borderRadius: 20 }}>
                         <Crown size={14} /> {badge.label}
+                    </button>
+                    <button className="btn btn-icon" onClick={onShowAuth}
+                        style={{ padding: 6, borderRadius: '50%', background: user ? '#dbeafe' : '#f1f5f9', border: '1px solid #e2e8f0', width: 36, height: 36, minWidth: 36, minHeight: 36 }}>
+                        {user ? <span style={{ fontWeight: 700, fontSize: 14, color: '#2563eb' }}>{user.name?.charAt(0).toUpperCase()}</span> : <User size={18} color="#94a3b8" />}
                     </button>
                 </div>
             </div>
