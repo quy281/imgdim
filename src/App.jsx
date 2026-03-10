@@ -190,15 +190,15 @@ export default function App() {
     return { x: (baseImg.width - fw) / 2, y: (baseImg.height - fh) / 2, width: fw, height: fh };
   };
 
+  // === Upload handlers ===
   const handleUpload = (e) => {
     const files = Array.from(e.target.files);
-    e.target.value = ''; // Reset so same file can be selected again
     if (!files.length) return;
     // Enforce photo limit
     const currentCount = docs.length;
     const maxPhotos = limits.maxPhotosPerProject;
     if (currentCount >= maxPhotos) {
-      alert(`Đã đạt giới hạn ${maxPhotos} ảnh/dự án. Nâng cấp để thêm!`);
+      requireFeature('uploadPhoto');
       return;
     }
     const allowedFiles = files.slice(0, maxPhotos - currentCount);
@@ -223,20 +223,18 @@ export default function App() {
             stagePos: { x: (w - image.width * autoScale) / 2, y: (h - image.height * autoScale) / 2 + 20 }
           };
           setDocs(prev => [...prev, newDoc]);
-          // Stay in gallery view (don't auto-open editor)
+          setActiveDocId(newDoc.id);
           // Update project doc count
           setProjects(prev => {
             const updated = prev.map(p => p.id === currentProjectId ? { ...p, docCount: (p.docCount || 0) + 1 } : p);
             saveProjects(updated);
             return updated;
           });
-          // Auto-upload original photo to Google Drive
+          // Auto-upload original image to Google Drive
           if (GDrive.isConnected() && localStorage.getItem('gdrive_auto_upload') === 'true') {
-            try {
-              const b64 = base64.split(',')[1];
-              const projectName = projects.find(p => p.id === currentProjectId)?.name || '';
-              GDrive.uploadImage(b64, file.name, projectName).catch(err => console.warn('GDrive upload:', err));
-            } catch (err) { console.warn('GDrive upload error:', err); }
+            const projectName = projects.find(p => p.id === currentProjectId)?.name || '';
+            const b64 = base64.split(',')[1];
+            GDrive.uploadImage(b64, file.name, projectName).catch(err => console.warn('GDrive upload:', err));
           }
         };
       };

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, CloudOff, Cloud, HardDrive, CheckCircle, Settings2 } from 'lucide-react';
+import { ArrowLeft, CloudOff, Cloud, HardDrive, CheckCircle, AlertCircle, Settings2, ExternalLink } from 'lucide-react';
 import * as GDrive from '../googleDriveService';
 
-export default function SettingsPage({ onBack }) {
+export default function SettingsPage({ onBack, onGDriveChange }) {
+    const [clientId, setClientId] = useState(localStorage.getItem('gdrive_client_id') || '');
     const [connected, setConnected] = useState(GDrive.isConnected());
     const [userInfo, setUserInfo] = useState(null);
     const [connecting, setConnecting] = useState(false);
@@ -16,16 +17,15 @@ export default function SettingsPage({ onBack }) {
     }, [connected]);
 
     const handleConnect = async () => {
+        if (!clientId.trim()) { setError('Vui lòng nhập Google Client ID'); return; }
         setError('');
         setConnecting(true);
         try {
-            await GDrive.connect();
+            await GDrive.connect(clientId.trim());
             setConnected(true);
             const info = await GDrive.getUserInfo();
             setUserInfo(info);
-            // Auto-enable upload on connect
-            setAutoUpload(true);
-            localStorage.setItem('gdrive_auto_upload', 'true');
+            onGDriveChange?.(true);
         } catch (err) {
             setError('Kết nối thất bại: ' + err.message);
         }
@@ -36,8 +36,7 @@ export default function SettingsPage({ onBack }) {
         GDrive.disconnect();
         setConnected(false);
         setUserInfo(null);
-        setAutoUpload(false);
-        localStorage.setItem('gdrive_auto_upload', 'false');
+        onGDriveChange?.(false);
     };
 
     const toggleAutoUpload = () => {
@@ -74,16 +73,16 @@ export default function SettingsPage({ onBack }) {
                             <div className="settings-item" onClick={toggleAutoUpload}>
                                 <div>
                                     <div style={{ fontWeight: 500, fontSize: 14 }}>Tự động lưu lên Drive</div>
-                                    <div style={{ fontSize: 12, color: '#94a3b8' }}>Upload ảnh khi thêm vào dự án</div>
+                                    <div style={{ fontSize: 12, color: '#94a3b8' }}>Tự động upload khi xuất ảnh</div>
                                 </div>
                                 <div className={`toggle ${autoUpload ? 'active' : ''}`}>
                                     <div className="toggle-knob" />
                                 </div>
                             </div>
 
-                            <div className="settings-item" style={{ color: '#94a3b8', fontSize: 12, cursor: 'default' }}>
+                            <div className="settings-item" style={{ color: '#94a3b8', fontSize: 12 }}>
                                 <Cloud size={16} />
-                                <span>Ảnh lưu vào thư mục <strong>MKG-Dim</strong> trên Google Drive</span>
+                                <span>Ảnh sẽ lưu vào thư mục <strong>MKG-Dim</strong> trên Google Drive</span>
                             </div>
 
                             <button className="btn settings-disconnect" onClick={handleDisconnect}>
@@ -93,20 +92,32 @@ export default function SettingsPage({ onBack }) {
                     ) : (
                         <div className="gdrive-setup">
                             <div className="gdrive-info">
-                                <Cloud size={40} color="#4285f4" />
-                                <p style={{ fontSize: 14, marginTop: 12 }}>Sao lưu ảnh tự động lên Google Drive</p>
-                                <p style={{ fontSize: 12, color: '#94a3b8' }}>Ảnh sẽ được lưu an toàn trên cloud</p>
+                                <Cloud size={32} color="#4285f4" />
+                                <p>Kết nối Google Drive để tự động lưu ảnh lên cloud</p>
+                            </div>
+
+                            <div className="settings-input-group">
+                                <label>Google Client ID</label>
+                                <input
+                                    type="text"
+                                    value={clientId}
+                                    onChange={e => setClientId(e.target.value)}
+                                    placeholder="xxxx.apps.googleusercontent.com"
+                                    className="settings-input"
+                                />
+                                <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="settings-help-link">
+                                    <ExternalLink size={12} /> Lấy Client ID từ Google Cloud Console
+                                </a>
                             </div>
 
                             {error && (
                                 <div className="settings-error">
-                                    {error}
+                                    <AlertCircle size={14} /> {error}
                                 </div>
                             )}
 
                             <button className="btn btn-primary settings-connect-btn" onClick={handleConnect} disabled={connecting}>
-                                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" style={{ width: 20, height: 20 }} />
-                                {connecting ? 'Đang kết nối...' : 'Kết nối Google Drive'}
+                                <HardDrive size={18} /> {connecting ? 'Đang kết nối...' : 'Kết nối Google Drive'}
                             </button>
                         </div>
                     )}
@@ -118,10 +129,10 @@ export default function SettingsPage({ onBack }) {
                         <Settings2 size={20} color="#64748b" />
                         <h3>Thông tin</h3>
                     </div>
-                    <div className="settings-item" style={{ fontSize: 13, color: '#64748b', cursor: 'default' }}>
+                    <div className="settings-item" style={{ fontSize: 13, color: '#64748b' }}>
                         <span>Phiên bản: <strong>1.0.0</strong></span>
                     </div>
-                    <div className="settings-item" style={{ fontSize: 13, color: '#64748b', cursor: 'default' }}>
+                    <div className="settings-item" style={{ fontSize: 13, color: '#64748b' }}>
                         <span>MKG - Dim © 2024</span>
                     </div>
                 </div>
