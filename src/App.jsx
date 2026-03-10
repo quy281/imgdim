@@ -60,6 +60,8 @@ export default function App() {
     const handler = CapApp.addListener('backButton', () => {
       if (showMobileHistory) {
         setShowMobileHistory(false);
+      } else if (activeDocId) {
+        setActiveDocId(null);
       } else if (currentProjectId) {
         setCurrentProjectId(null);
       } else {
@@ -67,7 +69,7 @@ export default function App() {
       }
     });
     return () => { handler.then(h => h.remove()); };
-  }, [showMobileHistory, currentProjectId]);
+  }, [showMobileHistory, activeDocId, currentProjectId]);
 
   // === Load docs when project changes ===
   useEffect(() => {
@@ -83,7 +85,8 @@ export default function App() {
         image.src = d.imgBase64;
       })));
       setDocs(hydrated.filter(d => d.img));
-      setActiveDocId(hydrated.length > 0 ? hydrated[0].id : null);
+      // Don't auto-open a doc; show gallery view instead
+      setActiveDocId(null);
     })();
   }, [currentProjectId]);
 
@@ -510,24 +513,41 @@ export default function App() {
         )}
 
         {!currentDoc ? (
-          <div className="empty-state">
-            <div className="upload-box">
-              <Camera size={64} style={{ marginBottom: 10, color: '#3b82f6' }} />
-              <h2 style={{ fontSize: '18px', margin: '5px 0' }}>Chụp ảnh hoặc Tải ảnh lên</h2>
-              <div style={{ display: 'flex', gap: '10px', marginTop: '10px', width: '100%', padding: '0 20px', boxSizing: 'border-box' }}>
-                <div className="file-input-wrapper" style={{ flex: 1 }}>
-                  <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}><Camera size={18} /> {isMobile ? '' : 'Chụp'}</button>
+          <div className="gallery-view">
+            <div className="gallery-header">
+              <button className="btn btn-icon" onClick={() => setCurrentProjectId(null)} style={{ padding: 4 }}><ArrowLeft size={20} /></button>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 'bold', fontSize: 16 }}>{currentProject?.name}</div>
+                <div style={{ fontSize: 12, color: '#94a3b8' }}>{docs.length} ảnh</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <div className="file-input-wrapper">
+                  <button className="btn btn-primary" style={{ padding: '8px 14px' }}><Camera size={18} /> {isMobile ? '' : 'Chụp'}</button>
                   <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
                 </div>
-                <div className="file-input-wrapper" style={{ flex: 1 }}>
-                  <button className="btn" style={{ width: '100%', justifyContent: 'center', border: '1px solid #cbd5e1' }}><ImagePlus size={18} /> {isMobile ? '' : 'Thư viện'}</button>
+                <div className="file-input-wrapper">
+                  <button className="btn" style={{ padding: '8px 14px', border: '1px solid #cbd5e1' }}><ImagePlus size={18} /> {isMobile ? '' : 'Thư viện'}</button>
                   <input type="file" multiple onChange={handleUpload} accept="image/*" />
                 </div>
               </div>
-              {isMobile && (
-                <button className="btn" onClick={() => setCurrentProjectId(null)} style={{ marginTop: 16, color: '#64748b', fontSize: 13 }}><ArrowLeft size={16} /> Về danh sách dự án</button>
-              )}
             </div>
+            {docs.length === 0 ? (
+              <div className="empty-state">
+                <div className="upload-box">
+                  <Camera size={64} style={{ marginBottom: 10, color: '#3b82f6' }} />
+                  <h2 style={{ fontSize: '18px', margin: '5px 0' }}>Chụp ảnh hoặc Tải ảnh lên</h2>
+                </div>
+              </div>
+            ) : (
+              <div className="gallery-grid">
+                {docs.map(doc => (
+                  <div key={doc.id} className="gallery-item" onClick={() => setActiveDocId(doc.id)}>
+                    <img src={doc.img.src} alt={doc.name} />
+                    <div className="gallery-item-name">{doc.name}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -537,11 +557,10 @@ export default function App() {
               </div>
             )}
             <Stage width={stageSize.width} height={stageSize.height} ref={stageRef} scaleX={currentDoc.stageScale} scaleY={currentDoc.stageScale} x={currentDoc.stagePos.x} y={currentDoc.stagePos.y}
-              draggable={!isDrawingMode && !isEditFrameMode && !isTextMode}
+              draggable={false}
               onWheel={handleWheel}
               onMouseDown={handleStageMouseDown} onMouseMove={handleStageMouseMove} onMouseUp={handleStageMouseUp}
               onTouchStart={handleStageMouseDown} onTouchMove={handleStageMouseMove} onTouchEnd={handleStageMouseUp}
-              onDragEnd={(e) => { if (e.target === stageRef.current) updateDoc({ stagePos: { x: e.target.x(), y: e.target.y() } }); }}
             >
               <Layer>
                 <KonvaImage image={currentDoc.img} x={0} y={0} />
@@ -625,7 +644,7 @@ export default function App() {
       {isMobile && currentDoc && (
         <div className="bottom-bar">
           <div className="bottom-tools">
-            <button className="btn btn-icon" onClick={() => setCurrentProjectId(null)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}><ArrowLeft size={22} /></button>
+            <button className="btn btn-icon" onClick={() => setActiveDocId(null)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}><ArrowLeft size={22} /></button>
             <button className="btn btn-icon" onClick={() => setShowMobileHistory(true)} style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}><Images size={22} /></button>
             <div className="divider"></div>
             <div className="file-input-wrapper"><button className="btn btn-icon btn-primary"><Camera size={22} /></button><input type="file" onChange={handleUpload} accept="image/*" capture="environment" /></div>
