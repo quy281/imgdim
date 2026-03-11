@@ -92,20 +92,28 @@ export function disconnect() {
     }
     accessToken = null;
     tokenExpiry = 0;
+    _rootFolderIdCache = null;
+    Object.keys(_subFolderCache).forEach(k => delete _subFolderCache[k]);
     localStorage.removeItem('gdrive_token');
     localStorage.removeItem('gdrive_token_expiry');
 }
 
-// Find or create MKG-Dim folder
+// Find or create MKG-Dim folder (with cache)
+let _rootFolderIdCache = null;
+const _subFolderCache = {};
+
 async function getOrCreateFolder() {
+    if (_rootFolderIdCache) return _rootFolderIdCache;
     // Search for existing folder
+    const q = encodeURIComponent(`name='${GDRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
     const searchRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${GDRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
     );
     const searchData = await searchRes.json();
     if (searchData.files && searchData.files.length > 0) {
-        return searchData.files[0].id;
+        _rootFolderIdCache = searchData.files[0].id;
+        return _rootFolderIdCache;
     }
 
     // Create folder
@@ -121,18 +129,24 @@ async function getOrCreateFolder() {
         }),
     });
     const folder = await createRes.json();
-    return folder.id;
+    _rootFolderIdCache = folder.id;
+    return _rootFolderIdCache;
 }
 
 // Find or create subfolder (project folder)
 async function getOrCreateSubFolder(parentId, folderName) {
+    const cacheKey = `${parentId}_${folderName}`;
+    if (_subFolderCache[cacheKey]) return _subFolderCache[cacheKey];
+
+    const q = encodeURIComponent(`name='${folderName}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
     const searchRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
     );
     const searchData = await searchRes.json();
     if (searchData.files && searchData.files.length > 0) {
-        return searchData.files[0].id;
+        _subFolderCache[cacheKey] = searchData.files[0].id;
+        return _subFolderCache[cacheKey];
     }
 
     const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
@@ -148,7 +162,8 @@ async function getOrCreateSubFolder(parentId, folderName) {
         }),
     });
     const folder = await createRes.json();
-    return folder.id;
+    _subFolderCache[cacheKey] = folder.id;
+    return _subFolderCache[cacheKey];
 }
 
 // Upload image to Google Drive
