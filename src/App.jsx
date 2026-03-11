@@ -59,11 +59,7 @@ export default function App() {
     (async () => {
       const p = await loadProjects();
       setProjects(p);
-      // Auto-open most recent project (collection view, not a specific photo)
-      if (p.length > 0) {
-        const sorted = [...p].sort((a, b) => b.createdAt - a.createdAt);
-        setCurrentProjectId(sorted[0].id);
-      }
+      // Always start from project list screen, not auto-open last project
       setLoadingDB(false);
     })();
   }, []);
