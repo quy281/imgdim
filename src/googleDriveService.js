@@ -204,3 +204,22 @@ export async function getStorageInfo() {
         return data.storageQuota;
     } catch { return null; }
 }
+
+// List files in project folder on Google Drive
+export async function listFiles(projectName = '') {
+    if (!isConnected()) return [];
+    try {
+        const rootFolderId = await getOrCreateFolder();
+        let targetFolderId = rootFolderId;
+        if (projectName) {
+            targetFolderId = await getOrCreateSubFolder(rootFolderId, projectName);
+        }
+        const res = await fetch(
+            `https://www.googleapis.com/drive/v3/files?q='${targetFolderId}' in parents and trashed=false&fields=files(id,name)&pageSize=1000`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.files || [];
+    } catch { return []; }
+}

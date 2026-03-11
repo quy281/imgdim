@@ -1,6 +1,6 @@
 ﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Stage, Layer, Image as KonvaImage, Line as KonvaLine, Rect as KonvaRect, Text, Group } from 'react-konva';
-import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2, Type, ArrowLeft, Crown } from 'lucide-react';
+import { ImagePlus, Download, PencilRuler, Frame, Stamp, SaveAll, Unlock, Lock, Camera, Images, X, Share2, Wand2, Edit3, Trash2, Type, ArrowLeft, Crown, RefreshCw, CheckSquare, Square } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
@@ -44,6 +44,12 @@ export default function App() {
   const [showPricing, setShowPricing] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // === Gallery select & sync state ===
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedDocs, setSelectedDocs] = useState(new Set());
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState('');
 
   const { canUse, requireFeature, limits, showUpgrade, upgradeFeature, dismissUpgrade, currentTier, setCurrentTier, user, setUser, logout } = useTier();
 
@@ -504,6 +510,73 @@ export default function App() {
     if (Capacitor.isNativePlatform()) alert("Đã lưu xong toàn bộ ảnh vào thư mục Documents!");
   };
 
+  // === Multi-select save ===
+  const handleSelectSave = async () => {
+    if (selectedDocs.size === 0) return;
+    const docsToSave = docs.filter(d => selectedDocs.has(d.id));
+    setIsExportingAll(true);
+    for (let i = 0; i < docsToSave.length; i++) {
+      setActiveDocId(docsToSave[i].id);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await executeDownload(docsToSave[i], true);
+    }
+    setActiveDocId(null);
+    setIsExportingAll(false);
+    setSelectMode(false);
+    setSelectedDocs(new Set());
+    if (Capacitor.isNativePlatform()) alert(`Đã lưu ${docsToSave.length} ảnh!`);
+  };
+
+  const toggleSelectDoc = (docId) => {
+    setSelectedDocs(prev => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId); else next.add(docId);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selectedDocs.size === docs.length) setSelectedDocs(new Set());
+    else setSelectedDocs(new Set(docs.map(d => d.id)));
+  };
+
+  // === GDrive Sync ===
+  const handleSync = async () => {
+    if (!GDrive.isConnected()) { alert('Vui lòng kết nối Google Drive trong Cài đặt trước!'); return; }
+    if (docs.length === 0) { alert('Chưa có ảnh để sync!'); return; }
+    const projectName = projects.find(p => p.id === currentProjectId)?.name || '';
+    setSyncing(true); setSyncProgress('Đang kiểm tra folder...');
+    try {
+      const driveFiles = await GDrive.listFiles(projectName);
+      const driveNames = new Set(driveFiles.map(f => f.name));
+      const missingDocs = docs.filter(d => {
+        const dimName = `DIM_${d.name.replace(/\.[^/.]+$/, "")}`;
+        return !driveNames.has(d.name) && !driveNames.has(dimName + '.png') && !driveNames.has(`[DIM]_${d.name}`);
+      });
+      if (missingDocs.length === 0) {
+        setSyncProgress(''); setSyncing(false);
+        alert('Tất cả ảnh đã được sync!'); return;
+      }
+      for (let i = 0; i < missingDocs.length; i++) {
+        const doc = missingDocs[i];
+        setSyncProgress(`Đang upload ${i + 1}/${missingDocs.length}: ${doc.name}`);
+        // Set active doc to render then export
+        setActiveDocId(doc.id);
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const uri = getExportURI(doc);
+        const b64 = uri.split(',')[1];
+        const fileName = `[DIM]_${doc.name}`;
+        await GDrive.uploadImage(b64, fileName, projectName);
+      }
+      setActiveDocId(null);
+      setSyncProgress(''); setSyncing(false);
+      alert(`Đã sync ${missingDocs.length} ảnh lên Google Drive!`);
+    } catch (err) {
+      setSyncProgress(''); setSyncing(false);
+      alert('Lỗi sync: ' + err.message);
+    }
+  };
+
   // === Project CRUD ===
   const handleCreateProject = (name) => {
     const p = { id: Date.now(), name, createdAt: Date.now(), docCount: 0 };
@@ -622,22 +695,41 @@ export default function App() {
         {!currentDoc ? (
           <div className="gallery-view">
             <div className="gallery-header">
-              <button className="btn btn-icon" onClick={() => setCurrentProjectId(null)} style={{ padding: 4 }}><ArrowLeft size={20} /></button>
+              <button className="btn btn-icon" onClick={() => { setCurrentProjectId(null); setSelectMode(false); setSelectedDocs(new Set()); }} style={{ padding: 4 }}><ArrowLeft size={20} /></button>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 'bold', fontSize: 16 }}>{currentProject?.name}</div>
-                <div style={{ fontSize: 12, color: '#94a3b8' }}>{docs.length} ảnh</div>
+                <div style={{ fontSize: 12, color: '#94a3b8' }}>{selectMode ? `Đã chọn ${selectedDocs.size}/${docs.length}` : `${docs.length} ảnh`}</div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div className="file-input-wrapper">
-                  <button className="btn btn-primary" style={{ padding: '8px 14px' }}><Camera size={18} /> {isMobile ? '' : 'Chụp'}</button>
-                  <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
-                </div>
-                <div className="file-input-wrapper">
-                  <button className="btn" style={{ padding: '8px 14px', border: '1px solid #cbd5e1' }}><ImagePlus size={18} /> {isMobile ? '' : 'Thư viện'}</button>
-                  <input type="file" multiple onChange={handleUpload} accept="image/*" />
-                </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {docs.length > 0 && !selectMode && (
+                  <>
+                    <button className="btn btn-icon" onClick={() => { setSelectMode(true); setSelectedDocs(new Set()); }} style={{ padding: 6, background: '#ecfdf5', border: '1px solid #34d399' }} title="Lưu ảnh"><Download size={18} color="#059669" /></button>
+                    <button className="btn btn-icon" onClick={handleSync} disabled={syncing} style={{ padding: 6, background: '#eff6ff', border: '1px solid #93c5fd' }} title="Sync Google Drive"><RefreshCw size={18} color="#2563eb" className={syncing ? 'spin-icon' : ''} /></button>
+                  </>
+                )}
+                {selectMode && (
+                  <button className="btn" onClick={() => { setSelectMode(false); setSelectedDocs(new Set()); }} style={{ padding: '6px 12px', fontSize: 12, color: '#ef4444' }}><X size={16} /> Hủy</button>
+                )}
+                {!selectMode && (
+                  <>
+                    <div className="file-input-wrapper">
+                      <button className="btn btn-primary" style={{ padding: '8px 14px' }}><Camera size={18} /> {isMobile ? '' : 'Chụp'}</button>
+                      <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
+                    </div>
+                    <div className="file-input-wrapper">
+                      <button className="btn" style={{ padding: '8px 14px', border: '1px solid #cbd5e1' }}><ImagePlus size={18} /> {isMobile ? '' : 'Thư viện'}</button>
+                      <input type="file" multiple onChange={handleUpload} accept="image/*" />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
+            {/* Sync progress bar */}
+            {syncing && syncProgress && (
+              <div className="sync-progress-bar">
+                <RefreshCw size={14} className="spin-icon" /> {syncProgress}
+              </div>
+            )}
             {docs.length === 0 ? (
               <div className="empty-state">
                 <div className="upload-box">
@@ -659,11 +751,30 @@ export default function App() {
             ) : (
               <div className="gallery-grid">
                 {docs.map(doc => (
-                  <div key={doc.id} className="gallery-item" onClick={() => setActiveDocId(doc.id)}>
+                  <div key={doc.id} className={`gallery-item ${selectMode && selectedDocs.has(doc.id) ? 'selected' : ''}`}
+                    onClick={() => selectMode ? toggleSelectDoc(doc.id) : setActiveDocId(doc.id)}>
                     <img src={doc.img.src} alt={doc.name} />
+                    {selectMode && (
+                      <div className="select-overlay">
+                        {selectedDocs.has(doc.id) ? <CheckSquare size={24} color="#2563eb" /> : <Square size={24} color="#94a3b8" />}
+                      </div>
+                    )}
                     <div className="gallery-item-name">{doc.name}</div>
                   </div>
                 ))}
+              </div>
+            )}
+            {/* Select mode bottom bar */}
+            {selectMode && docs.length > 0 && (
+              <div className="gallery-select-bar">
+                <button className="btn" onClick={selectAll} style={{ fontSize: 13 }}>
+                  {selectedDocs.size === docs.length ? <CheckSquare size={18} color="#2563eb" /> : <Square size={18} />}
+                  {selectedDocs.size === docs.length ? 'Bỏ chọn' : 'Chọn tất cả'}
+                </button>
+                <button className="btn btn-primary" onClick={handleSelectSave} disabled={selectedDocs.size === 0 || isExportingAll}
+                  style={{ padding: '10px 20px', fontSize: 14, borderRadius: 12 }}>
+                  <Download size={18} /> {isExportingAll ? 'Đang lưu...' : `Lưu ${selectedDocs.size} ảnh`}
+                </button>
               </div>
             )}
           </div>
