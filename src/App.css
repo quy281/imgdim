@@ -295,14 +295,12 @@ body {
 
 /* Empty state styles */
 .empty-state {
-    position: absolute;
-    inset: 0;
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-direction: column;
     background: #f8fafc;
-    z-index: 30;
     padding: 20px;
     box-sizing: border-box;
 }

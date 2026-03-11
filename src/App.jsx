@@ -643,6 +643,17 @@ export default function App() {
                 <div className="upload-box">
                   <Camera size={64} style={{ marginBottom: 10, color: '#3b82f6' }} />
                   <h2 style={{ fontSize: '18px', margin: '5px 0' }}>Chụp ảnh hoặc Tải ảnh lên</h2>
+                  <p style={{ fontSize: 13, color: '#94a3b8', margin: '0 0 16px' }}>Chạm nút bên dưới để bắt đầu</p>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <div className="file-input-wrapper">
+                      <button className="btn btn-primary" style={{ padding: '10px 20px', fontSize: 14 }}><Camera size={18} /> Chụp ảnh</button>
+                      <input type="file" onChange={handleUpload} accept="image/*" capture="environment" />
+                    </div>
+                    <div className="file-input-wrapper">
+                      <button className="btn" style={{ padding: '10px 20px', fontSize: 14, border: '1px solid #cbd5e1' }}><ImagePlus size={18} /> Thư viện</button>
+                      <input type="file" multiple onChange={handleUpload} accept="image/*" />
+                    </div>
+                  </div>
                 </div>
               </div>
             ) : (
