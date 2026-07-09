@@ -1,106 +1,91 @@
 import React from 'react';
 import { Group, Line, Arc, Circle, Label, Tag, Text } from 'react-konva';
-import { wallQuad, dist } from './planGeometry';
+import { wallQuad, dist } from '../lib/geometry';
 
 const WALL_FILL = '#334155';
 const WALL_SELECTED = '#2563eb';
+const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
 
 /**
- * Renders the wall graph: thick wall quads + node joint patches + live dimension labels.
- * Also renders door/window openings on each wall.
- * editKTMode: wall body tap → edit dimension directly.
- * placeOpeningType: 'door'|'window'|null — in this mode, tapping wall body places an opening.
+ * Wall graph renderer: thick wall quads, joint patches, dimension labels,
+ * door/window openings, node handles for the selected wall.
+ *
+ * Taps are delegated upward — the editor decides what a tap means per mode:
+ *   onWallTap(wallId, t)  — wall body (t = param along centerline 0..1)
+ *   onLabelTap(wallId)    — dimension label
+ *   onOpeningTap(wallId, openingId)
+ *   onNodeDrag(nodeId, pos, commit)
  */
 const WallsLayer = ({
-    plan, stageScale, selectedId, interactive,
-    onSelect, onLabelEdit, onNodeDrag, snapFn,
-    editKTMode, placeOpeningType, onPlaceOpening, onSelectOpening, selectedOpeningId
+    plan, scale, sel, listening, showHandles,
+    onWallTap, onLabelTap, onOpeningTap, onNodeDrag, snapFn,
 }) => {
-    const invScale = 1 / stageScale;
+    const inv = 1 / scale;
     const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
     const nodeTh = new Map();
     for (const w of plan.walls) {
         for (const id of [w.a, w.b]) nodeTh.set(id, Math.max(nodeTh.get(id) || 0, w.thickness));
     }
-    const selWall = plan.walls.find(w => w.id === selectedId);
+    const selWallId = sel?.kind === 'wall' ? sel.id : null;
+    const selOpeningId = sel?.kind === 'opening' ? sel.id : null;
+    const selWall = plan.walls.find(w => w.id === selWallId);
     const selNodeIds = selWall ? [...new Set([selWall.a, selWall.b])] : [];
 
-    const handleWallTap = (w, e) => {
+    const tapWall = (w, e) => {
         e.cancelBubble = true;
-        if (placeOpeningType) {
-            // Compute t param from tap position
-            const stage = e.target.getStage();
-            const pos = stage.getPointerPosition();
-            const a = nodeById.get(w.a), b = nodeById.get(w.b);
-            if (!a || !b) return;
-            const wx = (pos.x - stage.x()) / stage.scaleX();
-            const wy = (pos.y - stage.y()) / stage.scaleY();
-            const dx = b.x - a.x, dy = b.y - a.y;
-            const len2 = dx * dx + dy * dy;
-            let t = len2 > 0 ? ((wx - a.x) * dx + (wy - a.y) * dy) / len2 : 0.5;
-            t = Math.max(0.05, Math.min(0.95, t));
-            onPlaceOpening?.(w.id, t);
-            return;
-        }
-        if (editKTMode) { onLabelEdit(w.id); return; }
-        onSelect(w.id);
+        const stage = e.target.getStage();
+        const pos = stage.getPointerPosition();
+        const a = nodeById.get(w.a), b = nodeById.get(w.b);
+        if (!a || !b) return;
+        const wx = (pos.x - stage.x()) / stage.scaleX();
+        const wy = (pos.y - stage.y()) / stage.scaleY();
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        let t = len2 > 0 ? ((wx - a.x) * dx + (wy - a.y) * dy) / len2 : 0.5;
+        t = Math.max(0.05, Math.min(0.95, t));
+        onWallTap(w.id, t);
     };
 
     return (
-        <Group listening={interactive}>
+        <Group listening={listening}>
             {plan.walls.map(w => {
                 const a = nodeById.get(w.a);
                 const b = nodeById.get(w.b);
                 if (!a || !b) return null;
-                const isSel = w.id === selectedId;
+                const isSel = w.id === selWallId;
                 const quad = wallQuad(a, b, w.thickness);
-                const openings = w.openings || [];
-
-                // Build clip path: wall with door/window gaps
                 const wallLen = dist(a, b);
+                if (wallLen <= 0) return null;
                 const ux = (b.x - a.x) / wallLen;
                 const uy = (b.y - a.y) / wallLen;
+                const nx = -uy, ny = ux;
                 const h = w.thickness / 2;
 
                 return (
                     <Group key={w.id}>
-                        {/* Main wall quad */}
                         <Line
                             points={quad.flatMap(p => [p.x, p.y])}
                             closed
                             fill={isSel ? WALL_SELECTED : WALL_FILL}
-                            hitStrokeWidth={Math.max(w.thickness, 20 * invScale)}
-                            onClick={(e) => handleWallTap(w, e)}
-                            onTap={(e) => handleWallTap(w, e)}
-                            onTouchStart={(e) => handleWallTap(w, e)}
-                            onMouseEnter={(e) => {
-                                const cursor = placeOpeningType ? 'copy' : editKTMode ? 'text' : 'pointer';
-                                e.target.getStage().container().style.cursor = cursor;
-                            }}
+                            hitStrokeWidth={Math.max(w.thickness, 26 * inv)}
+                            onClick={(e) => tapWall(w, e)}
+                            onTap={(e) => tapWall(w, e)}
+                            onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'pointer'; }}
                             onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
                         />
-                        {/* Opening gaps + symbols */}
-                        {openings.map(op => {
-                            const ct = op.t;
-                            const cx = a.x + ct * (b.x - a.x);
-                            const cy = a.y + ct * (b.y - a.y);
+                        {(w.openings || []).map(op => {
+                            const cx = a.x + op.t * (b.x - a.x);
+                            const cy = a.y + op.t * (b.y - a.y);
                             const hw = op.width / 2;
-                            // Endpoints of opening along wall
                             const p1x = cx - hw * ux, p1y = cy - hw * uy;
                             const p2x = cx + hw * ux, p2y = cy + hw * uy;
-                            // Normal direction (for arc/window line)
-                            const nx = -uy, ny = ux;
-                            const flip = op.flipped ? -1 : 1;
-                            const isSelOp = op.id === selectedOpeningId;
-
-                            const opColor = isSelOp ? '#2563eb' : '#f8fafc';
-                            const opBg = isSelOp ? '#dbeafe' : 'white';
+                            const isSelOp = op.id === selOpeningId;
+                            const opColor = isSelOp ? WALL_SELECTED : '#64748b';
+                            const tapOp = (e) => { e.cancelBubble = true; onOpeningTap(w.id, op.id); };
 
                             return (
-                                <Group key={op.id}
-                                    onClick={(e) => { e.cancelBubble = true; onSelectOpening?.(w.id, op.id); }}
-                                    onTap={(e) => { e.cancelBubble = true; onSelectOpening?.(w.id, op.id); }}>
-                                    {/* White gap covers the wall */}
+                                <Group key={op.id} onClick={tapOp} onTap={tapOp}>
+                                    {/* white gap in the wall */}
                                     <Line
                                         points={[
                                             p1x + nx * h, p1y + ny * h,
@@ -108,46 +93,42 @@ const WallsLayer = ({
                                             p2x - nx * h, p2y - ny * h,
                                             p1x - nx * h, p1y - ny * h,
                                         ]}
-                                        closed fill={opBg} listening={false}
+                                        closed fill={isSelOp ? '#dbeafe' : '#ffffff'}
+                                        hitStrokeWidth={Math.max(w.thickness * 1.5, 30 * inv)}
                                     />
                                     {op.type === 'door' ? (
                                         <>
-                                            {/* Door panel line */}
                                             <Line points={[p1x, p1y, p2x, p2y]}
-                                                stroke={opColor} strokeWidth={2 * invScale} listening={false} />
-                                            {/* Door swing arc */}
+                                                stroke={opColor} strokeWidth={2 * inv} listening={false} />
                                             <Arc
                                                 x={p1x} y={p1y}
                                                 innerRadius={0}
                                                 outerRadius={op.width}
                                                 angle={90}
-                                                rotation={Math.atan2(uy, ux) * 180 / Math.PI + (flip > 0 ? 0 : -90)}
-                                                fill="rgba(37,99,235,0.08)"
-                                                stroke={opColor} strokeWidth={1.5 * invScale}
+                                                rotation={Math.atan2(uy, ux) * 180 / Math.PI + (op.flipped ? -90 : 0)}
+                                                fill="rgba(37,99,235,0.07)"
+                                                stroke={opColor} strokeWidth={1.5 * inv}
                                                 listening={false}
                                             />
                                         </>
                                     ) : (
                                         <>
-                                            {/* Window: 3 lines */}
                                             <Line points={[p1x + nx * h * 0.6, p1y + ny * h * 0.6, p2x + nx * h * 0.6, p2y + ny * h * 0.6]}
-                                                stroke={opColor} strokeWidth={2 * invScale} listening={false} />
+                                                stroke={opColor} strokeWidth={2 * inv} listening={false} />
                                             <Line points={[p1x - nx * h * 0.6, p1y - ny * h * 0.6, p2x - nx * h * 0.6, p2y - ny * h * 0.6]}
-                                                stroke={opColor} strokeWidth={2 * invScale} listening={false} />
+                                                stroke={opColor} strokeWidth={2 * inv} listening={false} />
                                             <Line points={[p1x, p1y, p2x, p2y]}
-                                                stroke={opColor} strokeWidth={1 * invScale} dash={[4 * invScale, 3 * invScale]} listening={false} />
+                                                stroke={opColor} strokeWidth={1 * inv} dash={[4 * inv, 3 * inv]} listening={false} />
                                         </>
                                     )}
-                                    {/* KT label */}
                                     <Label
-                                        x={cx + nx * (h + 14 * invScale)}
-                                        y={cy + ny * (h + 14 * invScale)}
-                                        offsetX={((String(op.width).length * 6 + 16) / 2) * invScale}
-                                        offsetY={10 * invScale}
-                                        onClick={(e) => { e.cancelBubble = true; onSelectOpening?.(w.id, op.id); }}
-                                        onTap={(e) => { e.cancelBubble = true; onSelectOpening?.(w.id, op.id); }}>
-                                        <Tag fill={isSelOp ? 'rgba(37,99,235,0.9)' : 'rgba(100,116,139,0.85)'} cornerRadius={8 * invScale} />
-                                        <Text text={String(op.width)} fill="#f8fafc" fontSize={10 * invScale} padding={5 * invScale} fontFamily="Inter" fontStyle="600" />
+                                        x={cx + nx * (h + 14 * inv)}
+                                        y={cy + ny * (h + 14 * inv)}
+                                        offsetX={((String(op.width).length * 6 + 14) / 2) * inv}
+                                        offsetY={9 * inv}
+                                        listening={false}>
+                                        <Tag fill={isSelOp ? 'rgba(37,99,235,0.92)' : 'rgba(100,116,139,0.85)'} cornerRadius={7 * inv} />
+                                        <Text text={String(op.width)} fill="#fff" fontSize={10 * inv} padding={4 * inv} fontFamily={FONT} fontStyle="600" />
                                     </Label>
                                 </Group>
                             );
@@ -172,33 +153,35 @@ const WallsLayer = ({
                 const label = String(Math.round(len));
                 const nx = -(b.y - a.y) / len;
                 const ny = (b.x - a.x) / len;
-                const off = w.thickness / 2 + 16 * invScale;
-                const isSel = w.id === selectedId;
+                const off = w.thickness / 2 + 16 * inv;
+                const isSel = w.id === selWallId;
+                const tapLbl = (e) => { e.cancelBubble = true; onLabelTap(w.id); };
                 return (
                     <Label key={`lbl-${w.id}`}
                         x={(a.x + b.x) / 2 + nx * off}
                         y={(a.y + b.y) / 2 + ny * off}
-                        offsetX={((label.length * 6 + 16) / 2) * invScale}
-                        offsetY={12 * invScale}
-                        onClick={(e) => { e.cancelBubble = true; onLabelEdit(w.id); }}
-                        onTap={(e) => { e.cancelBubble = true; onLabelEdit(w.id); }}
+                        offsetX={((label.length * 6.5 + 18) / 2) * inv}
+                        offsetY={13 * inv}
+                        onClick={tapLbl}
+                        onTap={tapLbl}
                         onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
                         onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
                     >
-                        <Tag fill={isSel ? 'rgba(37,99,235,0.9)' : w.edited ? '#fecaca' : 'rgba(0,0,0,0.75)'} cornerRadius={12 * invScale} />
-                        <Text text={label} fill={isSel ? '#fef08a' : w.edited ? '#dc2626' : '#fef08a'} fontSize={11 * invScale} padding={6 * invScale} fontFamily="Inter" fontStyle="600" />
+                        <Tag fill={isSel ? 'rgba(37,99,235,0.92)' : w.edited ? '#fecaca' : 'rgba(15,23,42,0.78)'} cornerRadius={12 * inv} />
+                        <Text text={label} fill={isSel ? '#fef08a' : w.edited ? '#dc2626' : '#fef08a'}
+                            fontSize={11.5 * inv} padding={6 * inv} fontFamily={FONT} fontStyle="700" />
                     </Label>
                 );
             })}
 
             {/* node handles of the selected wall */}
-            {selWall && selNodeIds.map(id => {
+            {showHandles && selWall && selNodeIds.map(id => {
                 const n = nodeById.get(id);
                 if (!n) return null;
                 return (
                     <Circle key={`h-${id}`} name="handle" x={n.x} y={n.y}
-                        radius={10 * invScale} fill="#10b981" stroke="#fff" strokeWidth={2 * invScale}
-                        hitStrokeWidth={26 * invScale} draggable
+                        radius={11 * inv} fill="#10b981" stroke="#fff" strokeWidth={2.5 * inv}
+                        hitStrokeWidth={30 * inv} draggable
                         onDragStart={(e) => { e.cancelBubble = true; }}
                         onDragMove={(e) => {
                             const p = snapFn({ x: e.target.x(), y: e.target.y() });

@@ -2,12 +2,11 @@ import React from 'react';
 import { Shape } from 'react-konva';
 
 /**
- * White "paper" background + mm grid for plan docs, drawn in world coordinates.
- * Covers union(current viewport, content bbox + 2000mm) so exports (which reset the
- * stage transform without re-rendering React) always have grid under the crop box.
+ * White "paper" + mm grid, drawn in world coordinates.
+ * Covers union(viewport, content bbox + 2000mm) so exports (which reset the stage
+ * transform without re-rendering React) always have grid under the crop box.
  */
 const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 100, gridMajor = 1000 }) => {
-    // Viewport in world coords
     let x1 = -stagePos.x / stageScale;
     let y1 = -stagePos.y / stageScale;
     let x2 = (stageSize.width - stagePos.x) / stageScale;
@@ -24,7 +23,6 @@ const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 
     return (
         <Shape
             name="plan-grid"
-            fill="#ffffff"
             sceneFunc={(ctx) => {
                 ctx.beginPath();
                 ctx.rect(x1, y1, x2 - x1, y2 - y1);

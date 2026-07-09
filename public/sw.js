@@ -1,38 +1,42 @@
-const CACHE_NAME = 'mkg-dim-v1';
-const PRECACHE_URLS = [
-    '/',
-    '/index.html',
-    '/img/mkg-dim-icon.png'
-];
+// MKG Khảo Sát — minimal offline-first service worker.
+// Navigation: network-first, cache fallback (works offline after first load).
+// Hashed assets: cache-first (content-addressed, safe forever).
+const CACHE = 'ks-v1';
 
-self.addEventListener('install', (event) => {
-    event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS))
+self.addEventListener('install', () => self.skipWaiting());
+
+self.addEventListener('activate', (e) => {
+    e.waitUntil(
+        caches.keys()
+            .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+            .then(() => self.clients.claim())
     );
-    self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys().then((keys) =>
-            Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-        )
-    );
-    self.clients.claim();
-});
+self.addEventListener('fetch', (e) => {
+    const url = new URL(e.request.url);
+    if (e.request.method !== 'GET' || url.origin !== location.origin) return;
 
-self.addEventListener('fetch', (event) => {
-    if (event.request.method !== 'GET') return;
-    event.respondWith(
-        caches.match(event.request).then((cached) => {
-            const fetched = fetch(event.request).then((response) => {
-                if (response && response.status === 200) {
-                    const clone = response.clone();
-                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-                }
-                return response;
-            }).catch(() => cached);
-            return cached || fetched;
-        })
-    );
+    if (e.request.mode === 'navigate') {
+        e.respondWith(
+            fetch(e.request)
+                .then(res => {
+                    const copy = res.clone();
+                    caches.open(CACHE).then(c => c.put('/index.html', copy));
+                    return res;
+                })
+                .catch(() => caches.match('/index.html'))
+        );
+        return;
+    }
+
+    if (url.pathname.startsWith('/assets/') || /\.(svg|png|webmanifest)$/.test(url.pathname)) {
+        e.respondWith(
+            caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
+                const copy = res.clone();
+                caches.open(CACHE).then(c => c.put(e.request, copy));
+                return res;
+            }))
+        );
+    }
 });

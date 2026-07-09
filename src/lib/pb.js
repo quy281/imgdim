@@ -1,0 +1,173 @@
+// PocketBase sync client — https://db.mkg.vn, collection `survey_items`.
+// One record per item: kind 'project' | 'doc'. `data` holds the full serialized object.
+// Conflict resolution: last-write-wins on data.updatedAt (client clock).
+
+const BASE = 'https://db.mkg.vn';
+const COL = 'survey_items';
+const AUTH_KEY = 'ks_auth';
+
+// ===== Auth =====
+export function getAuth() {
+    try { return JSON.parse(localStorage.getItem(AUTH_KEY)); } catch { return null; }
+}
+
+export function isLoggedIn() { return !!getAuth()?.token; }
+export function me() { return getAuth()?.model || null; }
+
+function saveAuth(token, model) {
+    localStorage.setItem(AUTH_KEY, JSON.stringify({ token, model }));
+}
+
+export function logout() { localStorage.removeItem(AUTH_KEY); }
+
+async function api(path, opts = {}) {
+    const auth = getAuth();
+    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+    if (auth?.token) headers.Authorization = auth.token;
+    const res = await fetch(`${BASE}/api/${path}`, { ...opts, headers });
+    if (res.status === 401 || res.status === 403) {
+        logout();
+        throw new Error('Phiên đăng nhập hết hạn — vui lòng đăng nhập lại');
+    }
+    if (!res.ok) {
+        let msg = res.statusText;
+        try { const j = await res.json(); msg = j.message || msg; } catch { /* keep statusText */ }
+        throw new Error(msg);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+}
+
+export async function login(email, password) {
+    const res = await fetch(`${BASE}/api/collections/users/auth-with-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identity: email, password }),
+    });
+    if (!res.ok) {
+        let msg = 'Sai email hoặc mật khẩu';
+        try { const j = await res.json(); if (j.message && res.status !== 400) msg = j.message; } catch { /* default */ }
+        throw new Error(msg);
+    }
+    const data = await res.json();
+    saveAuth(data.token, data.record);
+    return data.record;
+}
+
+// ===== Records =====
+async function listRemote() {
+    const items = [];
+    let page = 1;
+    for (; ;) {
+        const res = await api(`collections/${COL}/records?page=${page}&perPage=200&sort=-updated`);
+        items.push(...(res.items || []));
+        if (page >= (res.totalPages || 1)) break;
+        page++;
+    }
+    return items;
+}
+
+/** Upsert a single item. kind: 'project'|'doc'. item must have .id and .updatedAt. */
+export async function pushItem(kind, item, projectId) {
+    const owner = me()?.id;
+    if (!owner) throw new Error('Chưa đăng nhập');
+    const payload = {
+        owner,
+        item_id: String(item.id),
+        kind,
+        project_id: String(projectId || item.projectId || item.id),
+        name: item.name || '',
+        data: item,
+    };
+    const found = await api(`collections/${COL}/records?filter=(item_id='${item.id}')&perPage=1&fields=id`);
+    if (found.items?.length) {
+        return api(`collections/${COL}/records/${found.items[0].id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    }
+    return api(`collections/${COL}/records`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function deleteRemote(itemId) {
+    const found = await api(`collections/${COL}/records?filter=(item_id='${itemId}')&perPage=1&fields=id`);
+    if (found.items?.length) {
+        await api(`collections/${COL}/records/${found.items[0].id}`, { method: 'DELETE' });
+    }
+}
+
+/**
+ * Full two-way sync (last-write-wins on data.updatedAt).
+ * local = { projects: [], docs: [], tombstones: [] }
+ * Returns { pulledProjects, pulledDocs, pushed, deleted, clearedTombstones }
+ */
+export async function fullSync(local, onProgress) {
+    onProgress?.('Đang tải dữ liệu cloud...');
+    const remote = await listRemote();
+    const remoteMap = new Map(remote.map(r => [r.item_id, r]));
+    const localMap = new Map([
+        ...local.projects.map(p => [String(p.id), { kind: 'project', item: p }]),
+        ...local.docs.map(d => [String(d.id), { kind: 'doc', item: d }]),
+    ]);
+    const tombstoneMap = new Map(local.tombstones.map(t => [t.item_id, t]));
+
+    // 1. Deletions: remove remote records whose tombstone is newer than the remote copy
+    const clearedTombstones = [];
+    let deleted = 0;
+    for (const t of local.tombstones) {
+        const rec = remoteMap.get(t.item_id);
+        if (rec && (rec.data?.updatedAt || 0) <= t.deletedAt) {
+            onProgress?.('Đang xóa trên cloud...');
+            try {
+                await api(`collections/${COL}/records/${rec.id}`, { method: 'DELETE' });
+                remoteMap.delete(t.item_id);
+                deleted++;
+                clearedTombstones.push(t.item_id);
+            } catch { /* retry next sync */ }
+        } else {
+            // nothing remote (or remote is newer and wins) — tombstone done
+            clearedTombstones.push(t.item_id);
+        }
+    }
+
+    // 2. Pull: remote records newer than local (skip items just tombstoned locally)
+    const pulledProjects = [];
+    const pulledDocs = [];
+    for (const rec of remoteMap.values()) {
+        if (!rec.data) continue;
+        const t = tombstoneMap.get(rec.item_id);
+        if (t && (rec.data.updatedAt || 0) <= t.deletedAt) continue;
+        const loc = localMap.get(rec.item_id);
+        if (!loc || (rec.data.updatedAt || 0) > (loc.item.updatedAt || 0)) {
+            if (rec.kind === 'project') pulledProjects.push(rec.data);
+            else pulledDocs.push(rec.data);
+        }
+    }
+
+    // 3. Push: local items newer than remote
+    let pushed = 0;
+    const toPush = [];
+    for (const [id, loc] of localMap) {
+        const rec = remoteMap.get(id);
+        if (!rec || (loc.item.updatedAt || 0) > (rec.data?.updatedAt || 0)) toPush.push({ ...loc, rec });
+    }
+    const owner = me()?.id;
+    for (let i = 0; i < toPush.length; i++) {
+        const { kind, item, rec } = toPush[i];
+        onProgress?.(`Đang đẩy lên ${i + 1}/${toPush.length}...`);
+        const payload = {
+            owner,
+            item_id: String(item.id),
+            kind,
+            project_id: String(item.projectId || item.id),
+            name: item.name || '',
+            data: item,
+        };
+        try {
+            if (rec) await api(`collections/${COL}/records/${rec.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+            else await api(`collections/${COL}/records`, { method: 'POST', body: JSON.stringify(payload) });
+            pushed++;
+        } catch (err) {
+            console.warn('push failed:', item.name, err.message);
+        }
+    }
+
+    return { pulledProjects, pulledDocs, pushed, deleted, clearedTombstones };
+}
