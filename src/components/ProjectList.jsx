@@ -26,7 +26,7 @@ export default function ProjectList({ projects, onOpenProject, onCreateProject, 
         <div className="project-list-page">
             <div className="project-header">
                 <div className="project-header-left">
-                    <img src="/img/mkg-dim-icon.png" alt="logo" className="project-logo" />
+                    <img src="/img/mkg-dim-icon.svg" alt="logo" className="project-logo" />
                     <div>
                         <h1>MKG - Dim</h1>
                         <p>Quản lý dự án đo kích thước</p>
