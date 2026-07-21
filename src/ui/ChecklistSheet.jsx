@@ -39,8 +39,7 @@ export default function ChecklistSheet({ cfg, onClose }) {
     const doneCount = items.filter(it => it.done).length;
 
     return (
-        <>
-            <div className="sheet-backdrop" onClick={onClose} />
+        <div className="sheet-backdrop" onClick={onClose}>
             <div className="sheet" onClick={e => e.stopPropagation()}>
                 <div className="sheet-grip" />
                 <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px 4px', gap: 8 }}>
@@ -113,6 +112,6 @@ export default function ChecklistSheet({ cfg, onClose }) {
                     </button>
                 </div>
             </div>
-        </>
+        </div>
     );
 }

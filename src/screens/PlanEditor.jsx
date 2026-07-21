@@ -3,6 +3,7 @@ import { Stage, Layer, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
+    ClipboardList, Check,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -51,6 +52,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [openingSheet, setOpeningSheet] = useState(null); // {wallId, openingId}
     const [showExport, setShowExport] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
+    const [showNotes, setShowNotes] = useState(false);
     const [, bumpHist] = useState(0);
 
     const stageRef = useRef(null);
@@ -224,11 +226,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             }
             const res = addWallSegment(plan, chain.anchor, end, docRef.current.settings?.thickness || 110);
             if (res.added) {
-                const newPlan = recomputeRooms(res.plan);
-                commit(newPlan, undefined);
-                if (!newPlan.calibrated && newPlan.walls.length === 1) {
-                    openWallNumPad(newPlan.walls[0].id, newPlan, true);
-                }
+                commit(recomputeRooms(res.plan), undefined);
             }
             if (res.closed) {
                 setChain(null);
@@ -296,6 +294,14 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         const p = moveNode(docRef.current.plan, nodeId, pos);
         if (commitFlag) commit(recomputeRooms(p), undefined);
         else onChange({ ...docRef.current, plan: p });
+    };
+
+    const toggleNoteItem = (noteId, itemId) => {
+        const notes = (docRef.current.notes || []).map(n => {
+            if (n.id !== noteId) return n;
+            return { ...n, items: (n.items || []).map(it => it.id === itemId ? { ...it, done: !it.done } : it) };
+        });
+        commit(undefined, notes);
     };
 
     // ===== Pointer / gesture handling (tap-end pattern: drag pans, clean tap acts) =====
@@ -454,6 +460,14 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="icon-btn" style={{ opacity: canUndo ? 1 : .3 }} onClick={undo}><Undo2 size={20} /></button>
                 <button className="icon-btn" style={{ opacity: canRedo ? 1 : .3 }} onClick={redo}><Redo2 size={20} /></button>
                 <button className="icon-btn" onClick={() => setShowSettings(true)}><Settings2 size={20} /></button>
+                <button className={`icon-btn${showNotes ? ' icon-btn-on' : ''}`}
+                    style={showNotes ? { color: 'var(--blue)', background: 'var(--blue-soft)' } : {}}
+                    onClick={() => setShowNotes(v => !v)}>
+                    <ClipboardList size={20} />
+                    {(doc.notes || []).length > 0 && (
+                        <span style={{ position: 'absolute', top: 5, right: 5, width: 8, height: 8, borderRadius: '50%', background: 'var(--blue)' }} />
+                    )}
+                </button>
                 <button className="icon-btn" style={{ color: 'var(--red-dark)' }} onClick={() => setShowExport(true)}><Share2 size={20} /></button>
             </div>
 
@@ -553,6 +567,44 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                         </button>
                         <div className="fb-sep" />
                         <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
+                    </div>
+                )}
+
+                {/* Notes side panel */}
+                {showNotes && (
+                    <div className="notes-panel">
+                        <div className="notes-panel-hdr">
+                            <ClipboardList size={15} />
+                            <span style={{ flex: 1 }}>Ghi chú ({(doc.notes || []).length})</span>
+                            <button className="icon-btn" style={{ width: 28, height: 28 }} onClick={() => setShowNotes(false)}>
+                                <X size={15} />
+                            </button>
+                        </div>
+                        <div className="notes-panel-body">
+                            {(doc.notes || []).length === 0 ? (
+                                <div className="notes-empty">Chưa có ghi chú</div>
+                            ) : (doc.notes || []).map(note => {
+                                const items = note.items || (note.text ? [{ id: '_', text: note.text, done: false }] : []);
+                                const done = items.filter(it => it.done).length;
+                                return (
+                                    <div key={note.id} className="note-card">
+                                        {items.length > 0 && (
+                                            <div className="note-card-meta">{done}/{items.length} xong</div>
+                                        )}
+                                        {items.map(it => (
+                                            <button key={it.id} className="note-item" onClick={() => toggleNoteItem(note.id, it.id)}>
+                                                <span className={`note-cb${it.done ? ' done' : ''}`}>
+                                                    {it.done && <Check size={10} strokeWidth={3} color="#fff" />}
+                                                </span>
+                                                <span className="note-text" style={{ textDecoration: it.done ? 'line-through' : 'none', color: it.done ? 'var(--muted)' : 'var(--ink)' }}>
+                                                    {it.text}
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 )}
             </div>
