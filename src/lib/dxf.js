@@ -1,11 +1,10 @@
 // Hand-written DXF R12 (AC1009) ASCII generator — zero dependencies.
 // Coordinates in real millimeters. Screen y points down, DXF y up -> emit y' = -y.
 // R12 has no Unicode: non-ASCII escaped as \U+XXXX (AutoCAD reads this).
-import { wallQuad, dist, bboxOfPlan } from './geometry';
+import { dist, bboxOfPlan } from './geometry';
 
 const LAYERS = [
     { name: 'WALL', color: 7 },
-    { name: 'WALL-AXIS', color: 8 },
     { name: 'DIM', color: 3 },
     { name: 'TEXT', color: 2 },
     { name: 'ROOM', color: 4 },
@@ -91,8 +90,7 @@ export function generateDxf(doc) {
             const a = nodeById.get(w.a);
             const b = nodeById.get(w.b);
             if (!a || !b) continue;
-            closedPolyline('WALL', wallQuad(a, b, w.thickness));
-            line('WALL-AXIS', a, b);
+            line('WALL', a, b);
             const len = dist(a, b);
             if (len > 0) {
                 const nx = -(b.y - a.y) / len;
@@ -135,7 +133,10 @@ export function generateDxf(doc) {
         }
     }
     for (const n of (doc.notes || [])) {
-        text('TEXT', { x: n.x, y: n.y }, 180, n.text);
+        const items = n.items || (n.text ? [{ text: n.text, done: false }] : []);
+        items.forEach((it, i) => {
+            text('TEXT', { x: n.x, y: n.y + i * 220 }, 150, `${it.done ? '[X]' : '[ ]'} ${it.text}`);
+        });
     }
     text('TEXT', { x: bb.x, y: bb.y - 300 }, 200, 'Don vi: mm (MKG Khao Sat)');
 

@@ -108,6 +108,20 @@ export function applyWallLength(plan, wallId, L) {
                 const n = nodeById.get(id);
                 if (n && (n[axis] - bCoord) * dirSign >= -EPS) moved.add(id);
             }
+            // Respect edited walls: don't split an edited wall by moving only one of its endpoints.
+            // If exactly one endpoint of an edited wall is in moved, pull it out (lock it).
+            // Iterate until stable — removing one node can expose another edited wall violation.
+            let stable = false;
+            while (!stable) {
+                stable = true;
+                for (const w of plan.walls) {
+                    if (!w.edited || w.id === wallId) continue;
+                    const aIn = moved.has(w.a);
+                    const bIn = moved.has(w.b);
+                    if (aIn && !bIn) { moved.delete(w.a); stable = false; break; }
+                    if (bIn && !aIn) { moved.delete(w.b); stable = false; break; }
+                }
+            }
         } else {
             moved = new Set([wall.b]);
             warning = 'Tường nằm trong vòng khép kín và không thẳng trục — kích thước các tường kề sẽ thay đổi theo.';

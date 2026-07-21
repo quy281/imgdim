@@ -12,6 +12,7 @@ import NoteMarker from '../photo/NoteMarker';
 import Sheet from '../ui/Sheet';
 import NumPad from '../ui/NumPad';
 import TextSheet from '../ui/TextSheet';
+import ChecklistSheet from '../ui/ChecklistSheet';
 import Confirm from '../ui/Confirm';
 import { toast } from '../ui/Toast';
 import {
@@ -45,6 +46,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
     const [numpad, setNumpad] = useState(null);
     const [textSheet, setTextSheet] = useState(null);
+    const [checklistSheet, setChecklistSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const [openingSheet, setOpeningSheet] = useState(null); // {wallId, openingId}
     const [showExport, setShowExport] = useState(false);
@@ -238,12 +240,12 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             return;
         }
         if (mode === 'note') {
-            setTextSheet({
-                title: 'Ghi chú',
-                placeholder: 'VD: Trần thạch cao hỏng, ổ điện lệch...',
-                onOK: (text) => {
-                    const d = docRef.current;
-                    commit(undefined, [...(d.notes || []), { id: genId('t'), x: w.x, y: w.y, text }]);
+            const newNote = { id: genId('t'), x: w.x, y: w.y, items: [] };
+            setChecklistSheet({
+                note: newNote,
+                onSave: (note) => {
+                    if (!note.items?.length) return;
+                    commit(undefined, [...(docRef.current.notes || []), note]);
                 },
             });
             return;
@@ -499,9 +501,9 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                                     <NoteMarker key={n.id} note={n} scale={view.scale}
                                         isSelected={sel?.kind === 'note' && sel.id === n.id}
                                         onSelect={(id) => { setSel({ kind: 'note', id }); setOpeningSheet(null); }}
-                                        onEdit={(note) => setTextSheet({
-                                            title: 'Sửa ghi chú', initial: note.text,
-                                            onOK: (text) => commit(undefined, (docRef.current.notes || []).map(x => x.id === note.id ? { ...x, text } : x)),
+                                        onEdit={(note) => setChecklistSheet({
+                                            note,
+                                            onSave: (updated) => commit(undefined, (docRef.current.notes || []).map(x => x.id === updated.id ? updated : x)),
                                         })}
                                         onChange={(nn, commitFlag) => {
                                             const notes = (docRef.current.notes || []).map(x => x.id === nn.id ? nn : x);
@@ -538,9 +540,9 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 )}
                 {selNote && mode === 'select' && (
                     <div className="float-bar">
-                        <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => setTextSheet({
-                            title: 'Sửa ghi chú', initial: selNote.text,
-                            onOK: (text) => commit(undefined, (docRef.current.notes || []).map(x => x.id === selNote.id ? { ...x, text } : x)),
+                        <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => setChecklistSheet({
+                            note: selNote,
+                            onSave: (updated) => commit(undefined, (docRef.current.notes || []).map(x => x.id === updated.id ? updated : x)),
                         })}>
                             <Pencil size={16} /> Sửa
                         </button>
@@ -573,6 +575,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             {/* ===== Sheets ===== */}
             <NumPad cfg={numpad} onClose={() => setNumpad(null)} />
             <TextSheet cfg={textSheet} onClose={() => setTextSheet(null)} />
+            <ChecklistSheet cfg={checklistSheet} onClose={() => setChecklistSheet(null)} />
             <Confirm cfg={confirm} onClose={() => setConfirm(null)} />
 
             {/* Opening detail */}
