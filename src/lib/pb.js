@@ -86,6 +86,22 @@ export async function pushItem(kind, item, projectId) {
     return api(`collections/${COL}/records`, { method: 'POST', body: JSON.stringify(payload) });
 }
 
+/** Lightweight status fetch — trả về danh sách item trên remote để so sánh với local. */
+export async function fetchRemoteStatus() {
+    if (!isLoggedIn()) return { items: [], account: null };
+    const remote = await listRemote();
+    return {
+        account: me()?.email || me()?.username || '(unknown)',
+        items: remote.map(r => ({
+            item_id: r.item_id,
+            kind: r.kind,
+            project_id: r.project_id,
+            name: r.name,
+            updatedAt: r.data?.updatedAt || 0,
+        })),
+    };
+}
+
 export async function deleteRemote(itemId) {
     const found = await api(`collections/${COL}/records?filter=(item_id='${itemId}')&perPage=1&fields=id`);
     if (found.items?.length) {
@@ -143,6 +159,7 @@ export async function fullSync(local, onProgress) {
 
     // 3. Push: local items newer than remote
     let pushed = 0;
+    const failedIds = [];
     const toPush = [];
     for (const [id, loc] of localMap) {
         const rec = remoteMap.get(id);
@@ -165,9 +182,10 @@ export async function fullSync(local, onProgress) {
             else await api(`collections/${COL}/records`, { method: 'POST', body: JSON.stringify(payload) });
             pushed++;
         } catch (err) {
+            failedIds.push(String(item.id));
             console.warn('push failed:', item.name, err.message);
         }
     }
 
-    return { pulledProjects, pulledDocs, pushed, deleted, clearedTombstones };
+    return { pulledProjects, pulledDocs, pushed, deleted, clearedTombstones, failedIds };
 }

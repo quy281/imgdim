@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
+    Share2, ListChecks,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
 import Confirm from '../ui/Confirm';
+import { toast } from '../ui/Toast';
 import * as pb from '../lib/pb';
+import * as db from '../lib/db';
 
 const fmtSince = (ts) => {
     if (!ts) return 'Cloud';
@@ -17,7 +20,7 @@ const fmtSince = (ts) => {
     return `${Math.floor(m / 60)} giờ trước`;
 };
 
-export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen, onCreate, onRename, onDelete, onSync, onLogin, onLogout }) {
+export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen, onCreate, onRename, onDelete, onSync, onOpenSyncStatus, onLogin, onLogout }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const [menuFor, setMenuFor] = useState(null); // project object
@@ -28,6 +31,30 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
 
     const logged = pb.isLoggedIn();
     const account = pb.me();
+
+    const shareProject = async (p) => {
+        setMenuFor(null);
+        try {
+            const docs = await db.listDocs(p.id);
+            const planDocs = docs.filter(d => d.type === 'plan');
+            if (planDocs.length === 0) { toast('Dự án chưa có mặt bằng nào để chia sẻ', 'err'); return; }
+            const payload = JSON.stringify({
+                v: 1,
+                projectName: p.name,
+                docs: planDocs.map(d => ({ id: d.id, name: d.name, plan: d.plan, notes: d.notes || [] })),
+            });
+            const b64 = btoa(unescape(encodeURIComponent(payload)));
+            const url = `${window.location.origin}/?view=${b64}`;
+            if (navigator.share) {
+                await navigator.share({ title: p.name, text: `Mặt bằng: ${p.name}`, url });
+            } else {
+                await navigator.clipboard.writeText(url);
+                toast('Đã copy link — dán vào Zalo/Messenger để gửi', 'ok');
+            }
+        } catch (err) {
+            if (err.name !== 'AbortError') toast('Không thể chia sẻ: ' + err.message, 'err');
+        }
+    };
 
     const doLogin = async () => {
         if (!email.trim() || !password) return;
@@ -102,6 +129,13 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                     <Pencil size={19} style={{ color: 'var(--blue)' }} />
                     <div style={{ flex: 1 }}>Đổi tên</div>
                 </button>
+                <button className="sheet-row" onClick={() => shareProject(menuFor)}>
+                    <Share2 size={19} style={{ color: 'var(--blue)' }} />
+                    <div style={{ flex: 1 }}>
+                        Chia sẻ link xem
+                        <div className="sub">Gửi cho khách hàng hoặc đồng nghiệp</div>
+                    </div>
+                </button>
                 <button className="sheet-row" style={{ color: '#dc2626' }} onClick={() => {
                     const p = menuFor;
                     setMenuFor(null);
@@ -132,6 +166,10 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                         <button className="sheet-row" onClick={() => { setShowSettings(false); onSync(); }}>
                             <RefreshCw size={19} style={{ color: 'var(--blue)' }} className={syncBusy ? 'spin' : ''} />
                             <div style={{ flex: 1 }}>Đồng bộ ngay<div className="sub">Kéo về + đẩy lên toàn bộ</div></div>
+                        </button>
+                        <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenSyncStatus?.(); }}>
+                            <ListChecks size={19} style={{ color: 'var(--blue)' }} />
+                            <div style={{ flex: 1 }}>Kiểm tra đồng bộ<div className="sub">So sánh local ↔ cloud từng dự án</div></div>
                         </button>
                         <button className="sheet-row" style={{ color: '#dc2626' }} onClick={() => { onLogout(); setShowSettings(false); }}>
                             <LogOut size={19} />

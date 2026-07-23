@@ -3,6 +3,8 @@ import ProjectsScreen from './screens/ProjectsScreen';
 import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
+import SyncStatusSheet from './ui/SyncStatusSheet';
+import ShareViewer from './screens/ShareViewer';
 import { ToastHost, toast } from './ui/Toast';
 import * as db from './lib/db';
 import * as pb from './lib/pb';
@@ -15,6 +17,15 @@ export default function App() {
     const [docs, setDocs] = useState([]); // docs of the open project
     const [syncBusy, setSyncBusy] = useState(false);
     const [lastSyncAt, setLastSyncAt] = useState(null);
+    const [showSyncStatus, setShowSyncStatus] = useState(false);
+    // share viewer — decode ?view=<b64> từ URL
+    const shareData = (() => {
+        try {
+            const v = new URLSearchParams(window.location.search).get('view');
+            if (!v) return null;
+            return JSON.parse(atob(v));
+        } catch { return null; }
+    })();
 
     const projectsRef = useRef([]);
     useEffect(() => { projectsRef.current = projects || []; }, [projects]);
@@ -23,6 +34,7 @@ export default function App() {
 
     const saveTimers = useRef(new Map()); // docId -> timeout
     const syncTimer = useRef(null);       // single debounced sync trigger
+    const syncBusyRef = useRef(false);    // guard chống concurrent sync (stale closure)
 
     // ===== Boot =====
     useEffect(() => {
@@ -183,7 +195,8 @@ export default function App() {
 
     // ===== Cloud sync =====
     const syncAll = async (silent) => {
-        if (!pb.isLoggedIn() || syncBusy) return;
+        if (!pb.isLoggedIn() || syncBusyRef.current) return;
+        syncBusyRef.current = true;
         setSyncBusy(true);
         try {
             const [localProjects, localDocs, tombstones] = await Promise.all([
@@ -200,24 +213,33 @@ export default function App() {
             }
             for (const d of res.pulledDocs) await db.putDoc(d);
             if (res.clearedTombstones.length) await db.removeTombstones(res.clearedTombstones);
-            // clear pending queue — fullSync đã push tất cả newer-than-remote
+            // clear pending — chỉ xóa item đã push thành công (không xóa item bị lỗi)
             const pending = await db.getPending();
-            if (pending.length) await db.clearPending(pending.map(p => p.item_id));
+            if (pending.length) {
+                const failSet = new Set(res.failedIds || []);
+                const toClear = pending.filter(p => !failSet.has(p.item_id)).map(p => p.item_id);
+                if (toClear.length) await db.clearPending(toClear);
+            }
             setLastSyncAt(Date.now());
             // refresh open project view
             const r = routeRef.current;
             if (r.projectId) setDocs(await db.listDocs(r.projectId));
             const changed = res.pulledProjects.length + res.pulledDocs.length + res.pushed + res.deleted;
-            if (!silent || changed > 0) {
-                toast(changed > 0
-                    ? `Đồng bộ xong: ${res.pulledProjects.length + res.pulledDocs.length} tải về, ${res.pushed} đẩy lên`
-                    : 'Dữ liệu đã mới nhất', 'ok');
+            const failCount = res.failedIds?.length || 0;
+            if (!silent || changed > 0 || failCount > 0) {
+                if (failCount > 0)
+                    toast(`Sync: ${res.pushed} đẩy lên, ${res.pulledProjects.length + res.pulledDocs.length} tải về — ${failCount} lỗi`, 'err');
+                else if (changed > 0)
+                    toast(`Đồng bộ xong: ${res.pulledProjects.length + res.pulledDocs.length} tải về, ${res.pushed} đẩy lên`, 'ok');
+                else if (!silent)
+                    toast('Dữ liệu đã mới nhất', 'ok');
             }
         } catch (err) {
             if (!silent) toast('Lỗi đồng bộ: ' + err.message, 'err');
             else toast('Sync thất bại — kiểm tra mạng', 'err');
             console.warn('sync:', err);
         } finally {
+            syncBusyRef.current = false;
             setSyncBusy(false);
         }
     };
@@ -282,15 +304,28 @@ export default function App() {
                 onRename={renameProject}
                 onDelete={deleteProject}
                 onSync={() => syncAll(false)}
+                onOpenSyncStatus={() => setShowSyncStatus(true)}
                 onLogin={login}
                 onLogout={logout}
             />
         );
     }
 
+    if (shareData) return (
+        <div className="app">
+            <ShareViewer data={shareData} />
+            <ToastHost />
+        </div>
+    );
+
     return (
         <div className="app">
             {screen}
+            <SyncStatusSheet
+                open={showSyncStatus}
+                onClose={() => setShowSyncStatus(false)}
+                onSync={() => { setShowSyncStatus(false); syncAll(false); }}
+            />
             <ToastHost />
         </div>
     );
