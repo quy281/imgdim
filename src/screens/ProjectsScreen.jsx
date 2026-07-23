@@ -8,7 +8,16 @@ import TextSheet from '../ui/TextSheet';
 import Confirm from '../ui/Confirm';
 import * as pb from '../lib/pb';
 
-export default function ProjectsScreen({ projects, syncBusy, onOpen, onCreate, onRename, onDelete, onSync, onLogin, onLogout }) {
+const fmtSince = (ts) => {
+    if (!ts) return 'Cloud';
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return 'vừa xong';
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m} phút trước`;
+    return `${Math.floor(m / 60)} giờ trước`;
+};
+
+export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen, onCreate, onRename, onDelete, onSync, onLogin, onLogout }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const [menuFor, setMenuFor] = useState(null); // project object
@@ -45,7 +54,7 @@ export default function ProjectsScreen({ projects, syncBusy, onOpen, onCreate, o
                 </div>
                 <div className={`sync-chip ${syncBusy ? 'busy' : logged ? 'on' : 'off'}`}>
                     {syncBusy ? <RefreshCw size={13} className="spin" /> : logged ? <Cloud size={13} /> : <CloudOff size={13} />}
-                    {syncBusy ? 'Đang sync' : logged ? 'Cloud' : 'Offline'}
+                    {syncBusy ? 'Đang sync' : logged ? fmtSince(lastSyncAt) : 'Offline'}
                 </div>
                 <button className="icon-btn" onClick={() => setShowSettings(true)}><Settings size={21} /></button>
             </div>

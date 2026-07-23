@@ -85,3 +85,25 @@ export async function removeTombstones(itemIds) {
     const list = (await localforage.getItem(TOMBSTONES_KEY)) || [];
     await localforage.setItem(TOMBSTONES_KEY, list.filter(t => !set.has(t.item_id)));
 }
+
+// ===== Pending push queue (survives app close; cleared on successful sync) =====
+const PENDING_KEY = 'pending_push';
+
+export async function markPending(itemId, kind) {
+    const list = (await localforage.getItem(PENDING_KEY)) || [];
+    const id = String(itemId);
+    if (!list.some(p => p.item_id === id)) {
+        list.push({ item_id: id, kind });
+        await localforage.setItem(PENDING_KEY, list);
+    }
+}
+
+export async function getPending() {
+    return (await localforage.getItem(PENDING_KEY)) || [];
+}
+
+export async function clearPending(itemIds) {
+    const set = new Set(itemIds.map(String));
+    const list = (await localforage.getItem(PENDING_KEY)) || [];
+    await localforage.setItem(PENDING_KEY, list.filter(p => !set.has(p.item_id)));
+}

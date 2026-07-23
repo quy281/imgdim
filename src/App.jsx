@@ -14,6 +14,7 @@ export default function App() {
     const [route, setRoute] = useState({ screen: 'projects' });
     const [docs, setDocs] = useState([]); // docs of the open project
     const [syncBusy, setSyncBusy] = useState(false);
+    const [lastSyncAt, setLastSyncAt] = useState(null);
 
     const projectsRef = useRef([]);
     useEffect(() => { projectsRef.current = projects || []; }, [projects]);
@@ -21,19 +22,26 @@ export default function App() {
     useEffect(() => { routeRef.current = route; }, [route]);
 
     const saveTimers = useRef(new Map()); // docId -> timeout
-    const pushTimers = useRef(new Map()); // itemId -> timeout
+    const syncTimer = useRef(null);       // single debounced sync trigger
 
     // ===== Boot =====
     useEffect(() => {
         (async () => {
             const p = await db.loadProjects();
             setProjects(p);
-            if (pb.isLoggedIn()) syncAll(true);
+            if (pb.isLoggedIn()) syncAll(false); // false = hiện lỗi nếu có
         })();
         history.replaceState({ screen: 'projects' }, '');
         const onPop = (e) => setRoute(e.state || { screen: 'projects' });
         window.addEventListener('popstate', onPop);
-        return () => window.removeEventListener('popstate', onPop);
+        const onVisible = () => {
+            if (document.visibilityState === 'visible' && pb.isLoggedIn()) syncAll(true);
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            window.removeEventListener('popstate', onPop);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -43,16 +51,16 @@ export default function App() {
     };
     const goBack = () => history.back();
 
-    // ===== Auto-push to cloud (debounced per item) =====
-    const schedulePush = (kind, item) => {
+    // ===== Dirty-flag + debounced sync =====
+    // Ghi pending vào IndexedDB ngay (không mất khi app đóng), sau 5s trigger syncAll.
+    const markDirty = (kind, item) => {
+        db.markPending(item.id, kind);
         if (!pb.isLoggedIn()) return;
-        const key = String(item.id);
-        const timers = pushTimers.current;
-        if (timers.has(key)) clearTimeout(timers.get(key));
-        timers.set(key, setTimeout(() => {
-            timers.delete(key);
-            pb.pushItem(kind, item).catch(err => console.warn('auto-push:', err.message));
-        }, 4000));
+        if (syncTimer.current) clearTimeout(syncTimer.current);
+        syncTimer.current = setTimeout(() => {
+            syncTimer.current = null;
+            syncAll(true);
+        }, 5000);
     };
 
     // ===== Projects CRUD =====
@@ -64,7 +72,7 @@ export default function App() {
     const createProject = (name) => {
         const p = newProject(name);
         persistProjects([p, ...projectsRef.current]);
-        schedulePush('project', p);
+        markDirty('project', p);
         setDocs([]);
         navigate({ screen: 'project', projectId: p.id });
     };
@@ -73,7 +81,7 @@ export default function App() {
         const list = projectsRef.current.map(p => p.id === id ? { ...p, name, updatedAt: Date.now() } : p);
         persistProjects(list);
         const p = list.find(x => x.id === id);
-        if (p) schedulePush('project', p);
+        if (p) markDirty('project', p);
     };
 
     const deleteProject = async (id) => {
@@ -112,7 +120,7 @@ export default function App() {
             const toSave = doc.type === 'plan' ? { ...doc, thumb: makePlanThumb(doc.plan) } : doc;
             db.putDoc(toSave);
             setDocs(prev => prev.map(d => d.id === toSave.id ? toSave : d));
-            schedulePush('doc', toSave);
+            markDirty('doc', toSave);
         }, 400));
     }, []);
 
@@ -122,7 +130,7 @@ export default function App() {
         const doc = newPlanDoc(projectId, `Mặt bằng ${count}`);
         await db.putDoc(doc);
         setDocs(prev => [...prev, doc]);
-        schedulePush('doc', doc);
+        markDirty('doc', doc);
         navigate({ screen: 'plan', projectId, docId: doc.id });
     };
 
@@ -137,7 +145,7 @@ export default function App() {
                 const doc = newPhotoDoc(projectId, `Ảnh ${count}`, photo);
                 await db.putDoc(doc);
                 created.push(doc);
-                schedulePush('doc', doc);
+                markDirty('doc', doc);
             } catch (err) {
                 console.warn('import photo:', err);
                 toast(`Không đọc được ảnh ${f.name}`, 'err');
@@ -158,7 +166,7 @@ export default function App() {
         const next = { ...doc, name, updatedAt: Date.now() };
         setDocs(prev => prev.map(d => d.id === id ? next : d));
         await db.putDoc(next);
-        schedulePush('doc', next);
+        markDirty('doc', next);
     };
 
     const deleteDoc = async (id) => {
@@ -192,6 +200,10 @@ export default function App() {
             }
             for (const d of res.pulledDocs) await db.putDoc(d);
             if (res.clearedTombstones.length) await db.removeTombstones(res.clearedTombstones);
+            // clear pending queue — fullSync đã push tất cả newer-than-remote
+            const pending = await db.getPending();
+            if (pending.length) await db.clearPending(pending.map(p => p.item_id));
+            setLastSyncAt(Date.now());
             // refresh open project view
             const r = routeRef.current;
             if (r.projectId) setDocs(await db.listDocs(r.projectId));
@@ -203,6 +215,7 @@ export default function App() {
             }
         } catch (err) {
             if (!silent) toast('Lỗi đồng bộ: ' + err.message, 'err');
+            else toast('Sync thất bại — kiểm tra mạng', 'err');
             console.warn('sync:', err);
         } finally {
             setSyncBusy(false);
@@ -263,6 +276,7 @@ export default function App() {
             <ProjectsScreen
                 projects={projects}
                 syncBusy={syncBusy}
+                lastSyncAt={lastSyncAt}
                 onOpen={openProject}
                 onCreate={createProject}
                 onRename={renameProject}
