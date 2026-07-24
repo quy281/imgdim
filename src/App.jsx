@@ -99,13 +99,10 @@ export default function App() {
     const deleteProject = async (id) => {
         const docIds = await db.deleteProjectDocs(id);
         persistProjects(projectsRef.current.filter(p => p.id !== id));
-        const allIds = [id, ...docIds];
-        for (const itemId of allIds) {
-            await db.addTombstone(String(itemId));
-            if (pb.isLoggedIn()) {
-                pb.deleteRemote(String(itemId))
-                    .then(() => db.removeTombstones([String(itemId)]))
-                    .catch(() => { /* fullSync will retry */ });
+        if (pb.isLoggedIn()) {
+            pb.deleteRemote(String(id), 'project').catch(() => db.addTombstone(String(id)));
+            for (const docId of docIds) {
+                pb.deleteRemote(String(docId), 'doc').catch(() => db.addTombstone(String(docId)));
             }
         }
         toast('Đã xóa dự án', 'ok');
@@ -182,13 +179,11 @@ export default function App() {
     };
 
     const deleteDoc = async (id) => {
+        const doc = docs.find(d => d.id === id);
         setDocs(prev => prev.filter(d => d.id !== id));
         await db.deleteDoc(id);
-        await db.addTombstone(String(id));
         if (pb.isLoggedIn()) {
-            pb.deleteRemote(String(id))
-                .then(() => db.removeTombstones([String(id)]))
-                .catch(() => { /* fullSync will retry */ });
+            pb.deleteRemote(String(id), 'doc').catch(() => db.addTombstone(String(id)));
         }
         toast('Đã xóa', 'ok');
     };
@@ -203,15 +198,20 @@ export default function App() {
                 db.loadProjects(), db.listAllDocs(), db.getTombstones(),
             ]);
             const res = await pb.fullSync({ projects: localProjects, docs: localDocs, tombstones });
-            // apply pulled data locally
-            if (res.pulledProjects.length) {
+            // apply pulled + deleted data locally
+            const delDocSet = new Set((res.deletedDocs || []).map(String));
+            const delProjSet = new Set((res.deletedProjects || []).map(String));
+            const needsProjUpdate = res.pulledProjects.length > 0 || delProjSet.size > 0;
+            if (needsProjUpdate) {
                 const map = new Map(localProjects.map(p => [String(p.id), p]));
                 for (const p of res.pulledProjects) map.set(String(p.id), p);
+                for (const id of delProjSet) { map.delete(id); await db.deleteProjectDocs(id); }
                 const merged = [...map.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
                 await db.saveProjects(merged);
                 setProjects(merged);
             }
             for (const d of res.pulledDocs) await db.putDoc(d);
+            for (const id of delDocSet) await db.deleteDoc(id);
             if (res.clearedTombstones.length) await db.removeTombstones(res.clearedTombstones);
             // clear pending — chỉ xóa item đã push thành công (không xóa item bị lỗi)
             const pending = await db.getPending();
@@ -223,8 +223,12 @@ export default function App() {
             setLastSyncAt(Date.now());
             // refresh open project view
             const r = routeRef.current;
-            if (r.projectId) setDocs(await db.listDocs(r.projectId));
-            const changed = res.pulledProjects.length + res.pulledDocs.length + res.pushed + res.deleted;
+            if (r.projectId) {
+                if (delProjSet.has(String(r.projectId))) setDocs([]);
+                else setDocs(await db.listDocs(r.projectId));
+            }
+            const remoteDels = delDocSet.size + delProjSet.size;
+            const changed = res.pulledProjects.length + res.pulledDocs.length + res.pushed + res.deleted + remoteDels;
             const failCount = res.failedIds?.length || 0;
             if (!silent || changed > 0 || failCount > 0) {
                 if (failCount > 0)

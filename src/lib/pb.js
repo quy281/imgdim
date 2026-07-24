@@ -102,10 +102,25 @@ export async function fetchRemoteStatus() {
     };
 }
 
-export async function deleteRemote(itemId) {
+/** Soft-delete: đánh dấu _deleted=true thay vì xóa record để thiết bị khác biết và xóa local. */
+export async function deleteRemote(itemId, kind) {
+    const owner = me()?.id;
+    if (!owner) return;
+    const deletedAt = Date.now();
+    const payload = {
+        owner,
+        item_id: String(itemId),
+        kind: kind || 'doc',
+        project_id: String(itemId),
+        name: '_deleted_',
+        data: { id: itemId, _deleted: true, updatedAt: deletedAt },
+    };
     const found = await api(`collections/${COL}/records?filter=(item_id='${itemId}')&perPage=1&fields=id`);
     if (found.items?.length) {
-        await api(`collections/${COL}/records/${found.items[0].id}`, { method: 'DELETE' });
+        await api(`collections/${COL}/records/${found.items[0].id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    } else {
+        // Chưa từng lên remote — tạo marker để thiết bị khác biết item này đã bị xóa
+        await api(`collections/${COL}/records`, { method: 'POST', body: JSON.stringify(payload) });
     }
 }
 
@@ -124,45 +139,63 @@ export async function fullSync(local, onProgress) {
     ]);
     const tombstoneMap = new Map(local.tombstones.map(t => [t.item_id, t]));
 
-    // 1. Deletions: remove remote records whose tombstone is newer than the remote copy
+    // 1. Deletions (tombstone fallback): soft-delete remote records whose tombstone is newer
     const clearedTombstones = [];
     let deleted = 0;
     for (const t of local.tombstones) {
         const rec = remoteMap.get(t.item_id);
-        if (rec && (rec.data?.updatedAt || 0) <= t.deletedAt) {
+        if (rec && !rec.data?._deleted && (rec.data?.updatedAt || 0) <= t.deletedAt) {
             onProgress?.('Đang xóa trên cloud...');
             try {
-                await api(`collections/${COL}/records/${rec.id}`, { method: 'DELETE' });
-                remoteMap.delete(t.item_id);
+                const payload = {
+                    owner,
+                    item_id: t.item_id,
+                    kind: rec.kind,
+                    project_id: rec.project_id,
+                    name: '_deleted_',
+                    data: { id: t.item_id, _deleted: true, updatedAt: t.deletedAt },
+                };
+                await api(`collections/${COL}/records/${rec.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
                 deleted++;
                 clearedTombstones.push(t.item_id);
             } catch { /* retry next sync */ }
         } else {
-            // nothing remote (or remote is newer and wins) — tombstone done
             clearedTombstones.push(t.item_id);
         }
     }
 
-    // 2. Pull: remote records newer than local (skip items just tombstoned locally)
+    // 2. Pull: remote records newer than local; detect remote deletions
     const pulledProjects = [];
     const pulledDocs = [];
+    const deletedProjects = []; // bị xóa trên remote → cần xóa local
+    const deletedDocs = [];
     for (const rec of remoteMap.values()) {
         if (!rec.data) continue;
         const t = tombstoneMap.get(rec.item_id);
         if (t && (rec.data.updatedAt || 0) <= t.deletedAt) continue;
         const loc = localMap.get(rec.item_id);
+        if (rec.data._deleted) {
+            // Remote đánh dấu xóa — xóa local nếu remote mới hơn hoặc local không có
+            if (!loc || (rec.data.updatedAt || 0) >= (loc.item.updatedAt || 0)) {
+                if (rec.kind === 'project') deletedProjects.push(rec.item_id);
+                else deletedDocs.push(rec.item_id);
+            }
+            continue;
+        }
         if (!loc || (rec.data.updatedAt || 0) > (loc.item.updatedAt || 0)) {
             if (rec.kind === 'project') pulledProjects.push(rec.data);
             else pulledDocs.push(rec.data);
         }
     }
 
-    // 3. Push: local items newer than remote
+    // 3. Push: local items newer than remote (bỏ qua item đã bị remote xóa)
     let pushed = 0;
     const failedIds = [];
     const toPush = [];
     for (const [id, loc] of localMap) {
         const rec = remoteMap.get(id);
+        // Nếu remote đã soft-delete với timestamp >= local → không push lại
+        if (rec?.data?._deleted && (rec.data.updatedAt || 0) >= (loc.item.updatedAt || 0)) continue;
         if (!rec || (loc.item.updatedAt || 0) > (rec.data?.updatedAt || 0)) toPush.push({ ...loc, rec });
     }
     const owner = me()?.id;
@@ -187,5 +220,5 @@ export async function fullSync(local, onProgress) {
         }
     }
 
-    return { pulledProjects, pulledDocs, pushed, deleted, clearedTombstones, failedIds };
+    return { pulledProjects, pulledDocs, pushed, deleted, clearedTombstones, failedIds, deletedProjects, deletedDocs };
 }
