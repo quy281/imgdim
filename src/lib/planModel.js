@@ -16,7 +16,11 @@ export function newPlanDoc(projectId, name) {
         name,
         plan: { nodes: [], walls: [], rooms: [], calibrated: false },
         notes: [],
-        settings: { thickness: 110, ortho: true, gridSnap: true, gridMinor: 100, gridMajor: 1000 },
+        furniture: [],
+        settings: {
+            thickness: 110, ortho: true, gridSnap: true, gridMinor: 100, gridMajor: 1000,
+            doorWidth: 900, windowWidth: 1200, furnitureDefaults: {},
+        },
         view: null, // computed on first open
         thumb: null,
         createdAt: now,
@@ -133,6 +137,39 @@ export function recomputeRooms(plan) {
 
 // ===== Openings (doors/windows) =====
 // wall.openings = [{ id, type:'door'|'window', t:0..1, width, flipped }]
+/**
+ * Chèn template phòng: góc trên-trái bbox của template đặt tại `at`.
+ * Node mới nằm trong `tol` mm của node có sẵn → dùng lại node cũ, và tường trùng
+ * thì bỏ qua — nhờ vậy chèn phòng cạnh phòng cũ sẽ dùng chung tường, không đè 2 lớp.
+ */
+export function insertTemplate(plan, tpl, at, thickness, tol = 150) {
+    const idMap = new Map();
+    const nodes = [...plan.nodes];
+    for (const tn of tpl.nodes) {
+        const p = { x: Math.round(at.x + tn.x), y: Math.round(at.y + tn.y) };
+        const hit = nodes.find(n => Math.hypot(n.x - p.x, n.y - p.y) <= tol);
+        if (hit) {
+            idMap.set(tn.id, hit.id);
+        } else {
+            const nid = genId('n');
+            nodes.push({ id: nid, x: p.x, y: p.y });
+            idMap.set(tn.id, nid);
+        }
+    }
+    const walls = [...plan.walls];
+    let added = 0;
+    let shared = 0;
+    for (const tw of tpl.walls) {
+        const a = idMap.get(tw.a);
+        const b = idMap.get(tw.b);
+        if (!a || !b || a === b) continue;
+        if (walls.some(w => (w.a === a && w.b === b) || (w.a === b && w.b === a))) { shared++; continue; }
+        walls.push({ id: genId('w'), a, b, thickness, openings: [] });
+        added++;
+    }
+    return { plan: { ...plan, nodes, walls }, added, shared };
+}
+
 export function addOpening(plan, wallId, t, type, width) {
     const openingId = genId('op');
     const walls = plan.walls.map(w => {

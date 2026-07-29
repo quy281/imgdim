@@ -1,6 +1,6 @@
 import React from 'react';
 import { Group, Line, Arc, Circle, Label, Tag, Text } from 'react-konva';
-import { wallQuad, dist } from '../lib/geometry';
+import { wallQuad, dist, wallSegments } from '../lib/geometry';
 
 const WALL_FILL = '#334155';
 const WALL_SELECTED = '#2563eb';
@@ -18,7 +18,7 @@ const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
  */
 const WallsLayer = ({
     plan, scale, sel, listening, showHandles,
-    onWallTap, onLabelTap, onOpeningTap, onNodeDrag, snapFn,
+    onWallTap, onLabelTap, onOpeningTap, onSegmentTap, onNodeDrag, snapFn,
 }) => {
     const inv = 1 / scale;
     const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
@@ -122,13 +122,13 @@ const WallsLayer = ({
                                         </>
                                     )}
                                     <Label
-                                        x={cx + nx * (h + 14 * inv)}
-                                        y={cy + ny * (h + 14 * inv)}
+                                        x={cx + nx * (h + 16 * inv)}
+                                        y={cy + ny * (h + 16 * inv)}
                                         offsetX={((String(op.width).length * 6 + 14) / 2) * inv}
-                                        offsetY={9 * inv}
+                                        offsetY={11 * inv}
                                         listening={false}>
-                                        <Tag fill={isSelOp ? 'rgba(37,99,235,0.92)' : 'rgba(100,116,139,0.85)'} cornerRadius={7 * inv} />
-                                        <Text text={String(op.width)} fill="#fff" fontSize={10 * inv} padding={4 * inv} fontFamily={FONT} fontStyle="600" />
+                                        <Tag fill={isSelOp ? 'rgba(37,99,235,0.92)' : 'rgba(100,116,139,0.88)'} cornerRadius={6 * inv} />
+                                        <Text text={String(op.width)} fill="#fff" fontSize={10 * inv} padding={4.5 * inv} fontFamily={FONT} fontStyle="700" />
                                     </Label>
                                 </Group>
                             );
@@ -143,34 +143,63 @@ const WallsLayer = ({
                     fill={selNodeIds.includes(n.id) ? WALL_SELECTED : WALL_FILL} listening={false} />
             ) : null)}
 
-            {/* dimension labels */}
+            {/* dimension labels: nhãn tổng tường + nhãn từng đoạn giữa các cửa */}
             {plan.walls.map(w => {
                 const a = nodeById.get(w.a);
                 const b = nodeById.get(w.b);
                 if (!a || !b) return null;
                 const len = dist(a, b);
                 if (len <= 0) return null;
-                const label = String(Math.round(len));
-                const nx = -(b.y - a.y) / len;
-                const ny = (b.x - a.x) / len;
-                const off = w.thickness / 2 + 16 * inv;
+                const ux = (b.x - a.x) / len;
+                const uy = (b.y - a.y) / len;
+                const nx = -uy, ny = ux;
                 const isSel = w.id === selWallId;
+                const hasOps = (w.openings || []).length > 0;
+                // Có cửa → nhãn tổng đẩy ra ngoài, chuỗi đoạn/cửa nằm sát tường (chuẩn dimension chain)
+                const totalOff = w.thickness / 2 + (hasOps ? 42 : 16) * inv;
+                const segOff = w.thickness / 2 + 16 * inv;
+                const label = String(Math.round(len));
                 const tapLbl = (e) => { e.cancelBubble = true; onLabelTap(w.id); };
+                const segs = hasOps
+                    ? wallSegments(w, len).filter(s => s.kind === 'seg' && s.len >= 1)
+                    : [];
                 return (
-                    <Label key={`lbl-${w.id}`}
-                        x={(a.x + b.x) / 2 + nx * off}
-                        y={(a.y + b.y) / 2 + ny * off}
-                        offsetX={((label.length * 6.5 + 18) / 2) * inv}
-                        offsetY={13 * inv}
-                        onClick={tapLbl}
-                        onTap={tapLbl}
-                        onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
-                        onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
-                    >
-                        <Tag fill={isSel ? 'rgba(37,99,235,0.92)' : w.edited ? '#fecaca' : 'rgba(15,23,42,0.78)'} cornerRadius={12 * inv} />
-                        <Text text={label} fill={isSel ? '#fef08a' : w.edited ? '#dc2626' : '#fef08a'}
-                            fontSize={11.5 * inv} padding={6 * inv} fontFamily={FONT} fontStyle="700" />
-                    </Label>
+                    <Group key={`lbl-${w.id}`}>
+                        <Label
+                            x={(a.x + b.x) / 2 + nx * totalOff}
+                            y={(a.y + b.y) / 2 + ny * totalOff}
+                            offsetX={((label.length * 6.5 + 18) / 2) * inv}
+                            offsetY={13 * inv}
+                            onClick={tapLbl}
+                            onTap={tapLbl}
+                            onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
+                            onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
+                        >
+                            <Tag fill={isSel ? 'rgba(37,99,235,0.92)' : w.edited ? '#fecaca' : 'rgba(15,23,42,0.78)'} cornerRadius={12 * inv} />
+                            <Text text={label} fill={isSel ? '#fef08a' : w.edited ? '#dc2626' : '#fef08a'}
+                                fontSize={11.5 * inv} padding={6 * inv} fontFamily={FONT} fontStyle="700" />
+                        </Label>
+                        {segs.map(s => {
+                            const c = s.from + s.len / 2;
+                            const txt = String(Math.round(s.len));
+                            const tapSeg = (e) => { e.cancelBubble = true; onSegmentTap?.(w.id, s.idx, Math.round(s.len)); };
+                            return (
+                                <Label key={`sg-${w.id}-${s.idx}`}
+                                    x={a.x + ux * c + nx * segOff}
+                                    y={a.y + uy * c + ny * segOff}
+                                    offsetX={((txt.length * 6 + 14) / 2) * inv}
+                                    offsetY={11 * inv}
+                                    onClick={tapSeg}
+                                    onTap={tapSeg}
+                                    onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
+                                    onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
+                                >
+                                    <Tag fill="#ffffff" stroke="#2563eb" strokeWidth={1.2 * inv} cornerRadius={6 * inv} />
+                                    <Text text={txt} fill="#1e40af" fontSize={10 * inv} padding={4.5 * inv} fontFamily={FONT} fontStyle="700" />
+                                </Label>
+                            );
+                        })}
+                    </Group>
                 );
             })}
 

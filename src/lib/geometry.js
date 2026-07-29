@@ -83,6 +83,11 @@ export function applyWallLength(plan, wallId, L) {
     if (!a || !b) return { plan, warning: null };
     const len = dist(a, b);
     if (len <= 0 || L <= 0) return { plan, warning: null };
+    // Tường không được co ngắn hơn tổng bề rộng cửa đang có
+    const opsSum = (wall.openings || []).reduce((s, op) => s + op.width, 0);
+    if (opsSum > 0 && L < opsSum) {
+        return { plan, warning: `Tường phải dài hơn tổng bề rộng cửa (${Math.round(opsSum)}mm)` };
+    }
     const ux = (b.x - a.x) / len;
     const uy = (b.y - a.y) / len;
     const dl = L - len;
@@ -132,6 +137,135 @@ export function applyWallLength(plan, wallId, L) {
     return { plan: { ...plan, nodes: newNodes, walls: newWalls }, warning };
 }
 
+// ===== Segment dimensions: đoạn tường xen kẽ cửa =====
+// Luật: tổng chiều dài tường CỐ ĐỊNH. Sửa 1 đoạn → cửa kề bù chênh lệch.
+// Ngược lại, sửa nhãn TỔNG tường (applyWallLength) → tường dãn/co, cửa giữ bề rộng.
+
+export const MIN_OPENING = 300; // mm — bề rộng cửa nhỏ nhất còn có nghĩa
+
+/**
+ * Chuỗi đoạn/cửa dọc tim tường theo thứ tự node a → b.
+ * Trả về [{ kind:'seg'|'op', idx, len, from, to, opId?, type? }]
+ * Luôn bắt đầu và kết thúc bằng 'seg' (có thể len = 0).
+ */
+export function wallSegments(wall, wallLen) {
+    const ops = (wall.openings || [])
+        .map(op => ({ ...op, c: op.t * wallLen }))
+        .sort((x, y) => x.c - y.c);
+    const out = [];
+    let cursor = 0;
+    let segIdx = 0;
+    ops.forEach((op, i) => {
+        const start = op.c - op.width / 2;
+        const end = op.c + op.width / 2;
+        out.push({ kind: 'seg', idx: segIdx++, len: start - cursor, from: cursor, to: start });
+        out.push({ kind: 'op', idx: i, opId: op.id, type: op.type, len: op.width, from: start, to: end });
+        cursor = end;
+    });
+    out.push({ kind: 'seg', idx: segIdx, len: wallLen - cursor, from: cursor, to: wallLen });
+    return out;
+}
+
+// Rebuild openings từ mảng chiều dài mới của chuỗi; validate trước khi ghi.
+function rebuildChain(wall, wallLen, chain, newLens) {
+    for (let i = 0; i < chain.length; i++) {
+        const min = chain[i].kind === 'op' ? MIN_OPENING : 0;
+        if (newLens[i] < min - 0.5) {
+            return {
+                error: chain[i].kind === 'op'
+                    ? `Cửa sẽ chỉ còn ${Math.round(newLens[i])}mm — tối thiểu ${MIN_OPENING}mm`
+                    : 'Số đo vượt quá chiều dài tường',
+            };
+        }
+    }
+    const byId = new Map((wall.openings || []).map(o => [o.id, o]));
+    const openings = [];
+    let cur = 0;
+    for (let i = 0; i < chain.length; i++) {
+        const L = newLens[i];
+        if (chain[i].kind === 'op') {
+            const orig = byId.get(chain[i].opId);
+            openings.push({ ...orig, width: Math.round(L), t: (cur + L / 2) / wallLen });
+        }
+        cur += L;
+    }
+    return { openings };
+}
+
+/**
+ * Sửa chiều dài 1 đoạn tường (giữa 2 cửa, hoặc từ góc tới cửa).
+ * Tổng tường không đổi — cửa kề bên phải bù, không có thì cửa kề bên trái.
+ */
+export function applySegmentLength(plan, wallId, segIdx, newLen) {
+    const wall = plan.walls.find(w => w.id === wallId);
+    if (!wall) return { plan, warning: null };
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    const a = nodeById.get(wall.a);
+    const b = nodeById.get(wall.b);
+    if (!a || !b) return { plan, warning: null };
+    const wallLen = dist(a, b);
+    if (wallLen <= 0 || newLen < 0) return { plan, warning: null };
+
+    const chain = wallSegments(wall, wallLen);
+    const pos = chain.findIndex(s => s.kind === 'seg' && s.idx === segIdx);
+    if (pos < 0) return { plan, warning: null };
+    const delta = newLen - chain[pos].len;
+    if (Math.abs(delta) < 0.5) return { plan, warning: null };
+
+    // Cửa kề phải bù trước; không có thì cửa kề trái
+    const absorbPos = chain[pos + 1]?.kind === 'op' ? pos + 1
+        : chain[pos - 1]?.kind === 'op' ? pos - 1 : -1;
+    if (absorbPos < 0) {
+        return { plan, warning: 'Tường chưa có cửa — chạm nhãn tổng để sửa chiều dài tường' };
+    }
+
+    const newLens = chain.map(s => s.len);
+    newLens[pos] = newLen;
+    newLens[absorbPos] = chain[absorbPos].len - delta;
+
+    const res = rebuildChain(wall, wallLen, chain, newLens);
+    if (res.error) return { plan, warning: res.error };
+    const walls = plan.walls.map(w => w.id === wallId ? { ...w, openings: res.openings } : w);
+    return { plan: { ...plan, walls }, warning: null };
+}
+
+/**
+ * Sửa bề rộng cửa. Tổng tường không đổi — đoạn kề phải bù, không đủ thì đoạn kề trái.
+ */
+export function applyOpeningWidth(plan, wallId, opId, newWidth) {
+    const wall = plan.walls.find(w => w.id === wallId);
+    if (!wall) return { plan, warning: null };
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    const a = nodeById.get(wall.a);
+    const b = nodeById.get(wall.b);
+    if (!a || !b) return { plan, warning: null };
+    const wallLen = dist(a, b);
+    if (wallLen <= 0) return { plan, warning: null };
+    if (newWidth < MIN_OPENING) return { plan, warning: `Bề rộng tối thiểu ${MIN_OPENING}mm` };
+
+    const chain = wallSegments(wall, wallLen);
+    const pos = chain.findIndex(s => s.kind === 'op' && s.opId === opId);
+    if (pos < 0) return { plan, warning: null };
+    const delta = newWidth - chain[pos].len;
+    if (Math.abs(delta) < 0.5) return { plan, warning: null };
+
+    const newLens = chain.map(s => s.len);
+    newLens[pos] = newWidth;
+    // đoạn kề phải bù; nếu âm thì thử đoạn kề trái
+    if (chain[pos + 1] && chain[pos + 1].len - delta >= -0.5) {
+        newLens[pos + 1] = chain[pos + 1].len - delta;
+    } else if (chain[pos - 1] && chain[pos - 1].len - delta >= -0.5) {
+        newLens[pos - 1] = chain[pos - 1].len - delta;
+    } else {
+        return { plan, warning: 'Không đủ chỗ trên tường cho bề rộng này' };
+    }
+
+    const res = rebuildChain(wall, wallLen, chain, newLens);
+    if (res.error) return { plan, warning: res.error };
+    const walls = plan.walls.map(w => w.id === wallId ? { ...w, openings: res.openings } : w);
+    return { plan: { ...plan, walls }, warning: null };
+}
+
 /**
  * Scale the entire plan by newLen/currentLen of the reference wall (first-time calibration).
  * Marks plan.calibrated so subsequent edits use applyWallLength.
@@ -179,6 +313,46 @@ export function snapToWall(plan, pt, threshold) {
         const py = a.y + t * dy;
         const d = Math.hypot(pt.x - px, pt.y - py);
         if (d < bestDist) { bestDist = d; best = { wallId: w.id, t, x: px, y: py }; }
+    }
+    return best;
+}
+
+/**
+ * Magnet nội thất vào tường: lưng áp sát MẶT TRONG tường, đồng thời quay theo hướng tường.
+ * item = { x, y } (tâm), depth = chiều sâu d (mm), tol = ngưỡng hút (mm).
+ * Trả về { x, y, rot } hoặc null nếu không có tường nào trong ngưỡng.
+ */
+export function snapFurnitureToWall(plan, item, depth, tol) {
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    let best = null;
+    let bestGap = tol;
+    for (const w of plan.walls) {
+        const a = nodeById.get(w.a);
+        const b = nodeById.get(w.b);
+        if (!a || !b) continue;
+        const len = dist(a, b);
+        if (len < 1) continue;
+        const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+        const nx = -uy, ny = ux;
+        const rx = item.x - a.x, ry = item.y - a.y;
+        const along = rx * ux + ry * uy;
+        // chỉ hút khi tâm nằm trong phạm vi dọc tường (cho phép tràn nhẹ ra 2 đầu)
+        if (along < -depth || along > len + depth) continue;
+        const perp = rx * nx + ry * ny;
+        const side = perp >= 0 ? 1 : -1;
+        const rest = w.thickness / 2 + depth / 2; // khoảng cách tâm↔tim tường khi áp sát
+        const gap = Math.abs(Math.abs(perp) - rest);
+        if (gap < bestGap) {
+            // hướng lưng phải chỉ về tường: local (0,-1) sau khi quay θ = (sinθ, -cosθ)
+            const rot = Math.round(Math.atan2(-side * nx, side * ny) * 180 / Math.PI);
+            const aln = Math.round(along / 10) * 10;
+            bestGap = gap;
+            best = {
+                x: a.x + ux * aln + nx * side * rest,
+                y: a.y + uy * aln + ny * side * rest,
+                rot: ((rot % 360) + 360) % 360,
+            };
+        }
     }
     return best;
 }
@@ -350,7 +524,7 @@ export function detectRooms(nodes, walls) {
 }
 
 // Bounding box of a plan (walls + notes), with padding for labels
-export function bboxOfPlan(plan, notes) {
+export function bboxOfPlan(plan, notes, furniture) {
     const xs = [];
     const ys = [];
     const push = (p) => {
@@ -358,6 +532,12 @@ export function bboxOfPlan(plan, notes) {
     };
     (plan?.nodes || []).forEach(push);
     (notes || []).forEach(n => push({ x: n.x, y: n.y }));
+    // Nội thất: lấy bán kính bao (đủ cho mọi góc quay) quanh tâm
+    (furniture || []).forEach(f => {
+        const r = Math.hypot(f.w || 600, f.d || 600) / 2;
+        push({ x: f.x - r, y: f.y - r });
+        push({ x: f.x + r, y: f.y + r });
+    });
     if (!xs.length) return null;
     const maxTh = plan?.walls?.length ? Math.max(...plan.walls.map(w => w.thickness || 0)) : 0;
     const pad = maxTh / 2 + 400;

@@ -2,6 +2,7 @@
 // Coordinates in real millimeters. Screen y points down, DXF y up -> emit y' = -y.
 // R12 has no Unicode: non-ASCII escaped as \U+XXXX (AutoCAD reads this).
 import { dist, bboxOfPlan } from './geometry';
+import { catalogItem } from './furnitureCatalog';
 
 const LAYERS = [
     { name: 'WALL', color: 7 },
@@ -10,6 +11,7 @@ const LAYERS = [
     { name: 'ROOM', color: 4 },
     { name: 'DOOR', color: 1 },
     { name: 'WINDOW', color: 5 },
+    { name: 'FURNITURE', color: 8 },
 ];
 
 const num = (v) => {
@@ -33,7 +35,7 @@ export function generateDxf(doc) {
     const t = [];
     const tag = (code, value) => { t.push(String(code), String(value)); };
 
-    const bb = bboxOfPlan(doc.plan, doc.notes) || { x: 0, y: 0, width: 10000, height: 8000 };
+    const bb = bboxOfPlan(doc.plan, doc.notes, doc.furniture) || { x: 0, y: 0, width: 10000, height: 8000 };
     const extMin = { x: bb.x, y: -(bb.y + bb.height) };
     const extMax = { x: bb.x + bb.width, y: -bb.y };
 
@@ -132,6 +134,22 @@ export function generateDxf(doc) {
             text('ROOM', { x: r.cx, y: r.cy + 350 }, 180, `${(r.area / 1e6).toFixed(1)} m2 - ${(r.perimeter / 1000).toFixed(1)} m`);
         }
     }
+    // Nội thất: hình chữ nhật đã quay + tên (layer FURNITURE để KTS tắt/mở riêng)
+    for (const f of (doc.furniture || [])) {
+        const cat = catalogItem(f.kind);
+        const w = f.w || cat?.w || 600;
+        const d = f.d || cat?.d || 600;
+        const th = ((f.rot || 0) * Math.PI) / 180;
+        const cos = Math.cos(th), sin = Math.sin(th);
+        // local (lx,ly) -> world: khớp phép quay của Konva (y hướng xuống)
+        const pt = (lx, ly) => ({ x: f.x + lx * cos - ly * sin, y: f.y + lx * sin + ly * cos });
+        const hw = w / 2, hd = d / 2;
+        closedPolyline('FURNITURE', [pt(-hw, -hd), pt(hw, -hd), pt(hw, hd), pt(-hw, hd)]);
+        // vạch lưng dày (mặt áp tường)
+        if (cat?.back) line('FURNITURE', pt(-hw, -hd), pt(hw, -hd));
+        if (cat?.name) text('FURNITURE', { x: f.x - hw * 0.8, y: f.y }, 110, cat.name);
+    }
+
     for (const n of (doc.notes || [])) {
         const items = n.items || (n.text ? [{ text: n.text, done: false }] : []);
         items.forEach((it, i) => {

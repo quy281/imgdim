@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>selftest</title>
+<pre id="out">running…</pre>
+<script type="module">
+import {
+    wallSegments, applySegmentLength, applyOpeningWidth,
+    applyWallLength, snapFurnitureToWall,
+} from '/src/lib/geometry.js';
+import { insertTemplate } from '/src/lib/planModel.js';
+
+const lines = [];
+let pass = 0, fail = 0;
+const eq = (name, got, want, tol = 0.6) => {
+    const ok = Math.abs(got - want) <= tol;
+    ok ? pass++ : fail++;
+    lines.push(`${ok ? 'PASS' : 'FAIL'}  ${name}: got ${Math.round(got * 10) / 10}, want ${want}`);
+};
+const ok = (name, cond) => {
+    cond ? pass++ : fail++;
+    lines.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
+};
+
+// ---- Tường ngang 4000, 1 cửa 900 ở giữa ----
+const mk = (ops) => ({
+    nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 4000, y: 0 }],
+    walls: [{ id: 'w1', a: 'a', b: 'b', thickness: 110, openings: ops }],
+    rooms: [],
+});
+const plan1 = mk([{ id: 'o1', type: 'door', t: 0.5, width: 900 }]);
+const ch = wallSegments(plan1.walls[0], 4000);
+eq('chain len', ch.length, 3);
+eq('seg0', ch[0].len, 1550);
+eq('op', ch[1].len, 900);
+eq('seg1', ch[2].len, 1550);
+
+// Sửa seg0 1550 -> 1200: cửa phải bù thành 1250, tổng vẫn 4000
+{
+    const { plan, warning } = applySegmentLength(plan1, 'w1', 0, 1200);
+    ok('seg edit no warning', !warning);
+    const c = wallSegments(plan.walls[0], 4000);
+    eq('after: seg0', c[0].len, 1200);
+    eq('after: op width', c[1].len, 1250);
+    eq('after: seg1 giữ nguyên', c[2].len, 1550);
+    eq('after: tổng', c[0].len + c[1].len + c[2].len, 4000);
+}
+
+// Sửa seg1 (đoạn cuối) -> cửa cũng bù (fallback trái)
+{
+    const { plan, warning } = applySegmentLength(plan1, 'w1', 1, 1000);
+    ok('seg1 edit no warning', !warning);
+    const c = wallSegments(plan.walls[0], 4000);
+    eq('seg1 -> 1000', c[2].len, 1000);
+    eq('op bù -> 1450', c[1].len, 1450);
+    eq('seg0 giữ', c[0].len, 1550);
+}
+
+// Guard: cửa sẽ nhỏ hơn 300 -> chặn, plan không đổi
+{
+    const { plan, warning } = applySegmentLength(plan1, 'w1', 0, 2300);
+    ok('guard min cửa: có warning', !!warning);
+    ok('guard min cửa: plan không đổi', plan === plan1);
+}
+
+// Sửa bề rộng cửa 900 -> 1200: đoạn phải bù
+{
+    const { plan, warning } = applyOpeningWidth(plan1, 'w1', 'o1', 1200);
+    ok('op width no warning', !warning);
+    const c = wallSegments(plan.walls[0], 4000);
+    eq('op -> 1200', c[1].len, 1200);
+    eq('seg1 bù -> 1250', c[2].len, 1250);
+    eq('seg0 giữ', c[0].len, 1550);
+    eq('tổng giữ', c[0].len + c[1].len + c[2].len, 4000);
+}
+
+// Tường không có cửa: sửa đoạn -> báo dùng nhãn tổng
+{
+    const p = mk([]);
+    const { warning } = applySegmentLength(p, 'w1', 0, 1000);
+    ok('không cửa -> hướng dẫn dùng nhãn tổng', !!warning && warning.includes('nhãn tổng'));
+}
+
+// 2 cửa: sửa seg giữa -> chỉ cửa kề PHẢI bù
+{
+    const p = mk([
+        { id: 'o1', type: 'door', t: 800 / 4000, width: 900 },
+        { id: 'o2', type: 'window', t: 2800 / 4000, width: 1200 },
+    ]);
+    const c0 = wallSegments(p.walls[0], 4000);
+    eq('2 cửa: chain', c0.length, 5);
+    // o1: 350..1250 (w900) · o2: 2200..3400 (w1200) → seg giữa = 1250..2200 = 950
+    eq('2 cửa: seg1 giữa', c0[2].len, 950);
+    eq('2 cửa: seg2 cuối', c0[4].len, 600);
+    const { plan } = applySegmentLength(p, 'w1', 1, 1000);
+    const c = wallSegments(plan.walls[0], 4000);
+    eq('seg1 -> 1000', c[2].len, 1000);
+    eq('cửa PHẢI bù -> 1150', c[3].len, 1150);
+    eq('seg2 cuối giữ 600', c[4].len, 600);
+    eq('cửa TRÁI giữ 900', c[1].len, 900);
+    eq('seg0 giữ 350', c[0].len, 350);
+    eq('tổng giữ', c.reduce((s, x) => s + x.len, 0), 4000);
+}
+
+// applyWallLength: guard tường co nhỏ hơn tổng cửa
+{
+    const p = mk([{ id: 'o1', type: 'door', t: 0.5, width: 900 }]);
+    const r = applyWallLength(p, 'w1', 800);
+    ok('guard tường < tổng cửa', !!r.warning && r.plan === p);
+    const r2 = applyWallLength(p, 'w1', 5000);
+    ok('dãn tường OK', !r2.warning);
+}
+
+// ---- Magnet nội thất ----
+// Tường ngang y=0 dày 110. Giường d=2000 ở phía dưới (y>0) -> lưng hướng lên, rot 0
+{
+    const p = mk([]);
+    const hit = snapFurnitureToWall(p, { x: 2000, y: 1010 }, 2000, 400);
+    ok('magnet: bắt được tường', !!hit);
+    eq('magnet: rot = 0 (lưng hướng lên)', hit.rot, 0);
+    eq('magnet: y = 110/2 + 2000/2', hit.y, 1055);
+    eq('magnet: x giữ', hit.x, 2000);
+}
+// Item phía trên tường (y<0) -> rot 180
+{
+    const p = mk([]);
+    const hit = snapFurnitureToWall(p, { x: 2000, y: -1000 }, 2000, 400);
+    eq('magnet: rot = 180', hit.rot, 180);
+    eq('magnet: y = -1055', hit.y, -1055);
+}
+// Tường dọc: a(0,0) -> b(0,4000). Item ở x<0 -> lưng hướng +x -> rot 90
+{
+    const p = {
+        nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 0, y: 4000 }],
+        walls: [{ id: 'w1', a: 'a', b: 'b', thickness: 110, openings: [] }],
+        rooms: [],
+    };
+    const hit = snapFurnitureToWall(p, { x: -320, y: 2000 }, 600, 400);
+    ok('magnet dọc: bắt được', !!hit);
+    eq('magnet dọc: rot = 90', hit.rot, 90);
+    eq('magnet dọc: x = -355', hit.x, -355);
+}
+// Ngoài ngưỡng -> null
+{
+    const p = mk([]);
+    ok('ngoài ngưỡng -> null', snapFurnitureToWall(p, { x: 2000, y: 9000 }, 600, 300) === null);
+}
+
+// ---- Template insert + merge node ----
+{
+    const empty = { nodes: [], walls: [], rooms: [] };
+    const tpl = {
+        name: 'R', w: 3000, d: 2000,
+        nodes: [{ id: 'n0', x: 0, y: 0 }, { id: 'n1', x: 3000, y: 0 }, { id: 'n2', x: 3000, y: 2000 }, { id: 'n3', x: 0, y: 2000 }],
+        walls: [{ a: 'n0', b: 'n1' }, { a: 'n1', b: 'n2' }, { a: 'n2', b: 'n3' }, { a: 'n3', b: 'n0' }],
+    };
+    const r1 = insertTemplate(empty, tpl, { x: 0, y: 0 }, 110);
+    eq('tpl: 4 node', r1.plan.nodes.length, 4);
+    eq('tpl: 4 tường', r1.added, 4);
+    // chèn tiếp phòng kề bên phải, dùng chung 1 tường
+    const r2 = insertTemplate(r1.plan, tpl, { x: 3000, y: 0 }, 110);
+    eq('tpl kề: chỉ thêm 2 node mới', r2.plan.nodes.length, 6);
+    eq('tpl kề: dùng chung 1 tường', r2.shared, 1);
+    eq('tpl kề: thêm 3 tường', r2.added, 3);
+}
+
+document.getElementById('out').textContent =
+    lines.join('\n') + `\n\n===== ${pass} pass, ${fail} fail =====`;
+document.title = fail === 0 ? 'ALL PASS' : `${fail} FAIL`;
+</script>

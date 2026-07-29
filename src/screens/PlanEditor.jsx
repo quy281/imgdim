@@ -3,12 +3,14 @@ import { Stage, Layer, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
-    ClipboardList, Check,
+    ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
 import DrawPreview from '../plan/DrawPreview';
+import FurnitureLayer from '../plan/FurnitureLayer';
+import { GROUPS, FURNITURE, catalogItem, defaultSize } from '../lib/furnitureCatalog';
 import NoteMarker from '../photo/NoteMarker';
 import Sheet from '../ui/Sheet';
 import NumPad from '../ui/NumPad';
@@ -19,11 +21,13 @@ import { toast } from '../ui/Toast';
 import {
     genId, dist, snapToGrid, snapOrtho, findNearbyNode,
     applyWallLength, scaleAllWalls, snapToWall, splitWallAtPoint, bboxOfPlan,
+    applySegmentLength, applyOpeningWidth, wallSegments, snapFurnitureToWall,
 } from '../lib/geometry';
 import {
     addWallSegment, deleteWall, moveNode, renameRoom, recomputeRooms,
-    addOpening, removeOpening, updateOpening,
+    addOpening, removeOpening, updateOpening, insertTemplate,
 } from '../lib/planModel';
+import { loadTemplates, saveTemplateFromRoom, deleteTemplate } from '../lib/roomTemplates';
 import { generateDxf } from '../lib/dxf';
 import { stageToDataURL, downloadDataURL, downloadText, shareDataURL, stamp } from '../lib/export';
 
@@ -32,6 +36,7 @@ const MODES = [
     { id: 'editKT', icon: Ruler, label: 'Sửa KT' },
     { id: 'door', icon: DoorOpen, label: 'Cửa' },
     { id: 'window', icon: AppWindow, label: 'Cửa sổ' },
+    { id: 'furniture', icon: Sofa, label: 'Nội thất' },
     { id: 'note', icon: MessageSquareText, label: 'Ghi chú' },
 ];
 
@@ -53,12 +58,17 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [showExport, setShowExport] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [showNotes, setShowNotes] = useState(false);
+    const [showFurnPicker, setShowFurnPicker] = useState(false);
+    const [furnGroup, setFurnGroup] = useState('bedroom');
+    const [showFurnSizes, setShowFurnSizes] = useState(false);
+    const [templates, setTemplates] = useState(null); // null = chưa mở picker
+    const [roomMenu, setRoomMenu] = useState(null);
     const [, bumpHist] = useState(0);
 
     const stageRef = useRef(null);
     const wrapRef = useRef(null);
     const gestureRef = useRef(null);
-    const historyRef = useRef({ stack: [{ plan: doc.plan, notes: doc.notes || [] }], i: 0 });
+    const historyRef = useRef({ stack: [{ plan: doc.plan, notes: doc.notes || [], furniture: doc.furniture || [] }], i: 0 });
 
     // ===== Stage sizing =====
     useEffect(() => {
@@ -74,7 +84,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     // ===== Initial view fit =====
     useEffect(() => {
         if (view || !stageSize.width || !stageSize.height) return;
-        const bb = bboxOfPlan(doc.plan, doc.notes);
+        const bb = bboxOfPlan(doc.plan, doc.notes, doc.furniture);
         let v;
         if (bb && bb.width > 0) {
             const s = Math.min((stageSize.width - 60) / bb.width, (stageSize.height - 60) / bb.height);
@@ -88,7 +98,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     }, [stageSize, view, doc.plan, doc.notes]);
 
     // ===== Ephemeral state refresh after plan changes =====
-    const syncEphemeral = (plan, notes) => {
+    const syncEphemeral = (plan, notes, furniture) => {
         setChain(c => {
             if (!c) return c;
             if (c.anchor.nodeId) {
@@ -106,28 +116,31 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 if (!w || !(w.openings || []).some(o => o.id === s.id)) return null;
             }
             if (s.kind === 'note' && !notes.some(n => n.id === s.id)) return null;
+            if (s.kind === 'furniture' && !(furniture || []).some(f => f.id === s.id)) return null;
             return s;
         });
     };
 
     // ===== History / commit =====
-    const commit = (plan, notes) => {
+    const commit = (plan, notes, furniture) => {
         const d = docRef.current;
         const p = plan !== undefined ? plan : d.plan;
         const n = notes !== undefined ? notes : (d.notes || []);
+        const f = furniture !== undefined ? furniture : (d.furniture || []);
         const h = historyRef.current;
         h.stack = h.stack.slice(0, h.i + 1);
-        h.stack.push({ plan: p, notes: n });
+        h.stack.push({ plan: p, notes: n, furniture: f });
         if (h.stack.length > 50) h.stack.shift();
         h.i = h.stack.length - 1;
         bumpHist(v => v + 1);
-        onChange({ ...d, plan: p, notes: n, updatedAt: Date.now() });
-        syncEphemeral(p, n);
+        onChange({ ...d, plan: p, notes: n, furniture: f, updatedAt: Date.now() });
+        syncEphemeral(p, n, f);
     };
 
     const applySnapshot = (s) => {
-        onChange({ ...docRef.current, plan: s.plan, notes: s.notes, updatedAt: Date.now() });
-        syncEphemeral(s.plan, s.notes);
+        const f = s.furniture || [];
+        onChange({ ...docRef.current, plan: s.plan, notes: s.notes, furniture: f, updatedAt: Date.now() });
+        syncEphemeral(s.plan, s.notes, f);
         setPreview(null);
         setOpeningSheet(null);
         bumpHist(v => v + 1);
@@ -144,6 +157,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         setSel(null);
         setPreview(null);
         setOpeningSheet(null);
+        if (m === 'furniture') { setChain(null); setShowFurnPicker(true); return; }
         if (m === 'draw') {
             // resume from the end of the last wall so the next segment continues the outline
             const plan = docRef.current.plan;
@@ -204,6 +218,145 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         });
     };
 
+    // ===== NumPad cho đoạn tường giữa các cửa =====
+    // Tổng tường giữ nguyên — cửa kề bù chênh lệch.
+    const openSegmentNumPad = (wallId, segIdx, curLen) => {
+        const plan = docRef.current.plan;
+        const wall = plan.walls.find(w => w.id === wallId);
+        if (!wall) return;
+        const nOps = (wall.openings || []).length;
+        setNumpad({
+            title: 'Đoạn tường',
+            initial: curLen,
+            hint: nOps === 1
+                ? 'Tổng tường giữ nguyên — bề rộng cửa tự bù theo'
+                : 'Tổng tường giữ nguyên — cửa kề bên phải tự bù',
+            onOK: (val) => {
+                const p = docRef.current.plan;
+                const { plan: next, warning } = applySegmentLength(p, wallId, segIdx, val);
+                if (next !== p) commit(recomputeRooms(next), undefined);
+                if (warning) toast(warning, 'err');
+            },
+        });
+    };
+
+    // ===== Nội thất =====
+    const furnList = () => docRef.current.furniture || [];
+
+    // Magnet tường: chỉ áp dụng cho món có mặt lưng; ngoài ngưỡng thì bắt lưới.
+    const placeFurniture = (item, doCommit, node) => {
+        const cat = catalogItem(item.kind);
+        let next;
+        if (cat?.back) {
+            const tol = Math.max(280, 46 / (view?.scale || 1));
+            const hit = snapFurnitureToWall(docRef.current.plan, item, item.d, tol);
+            next = hit ? { ...item, ...hit } : { ...item, ...snapFn({ x: item.x, y: item.y }) };
+        } else {
+            next = { ...item, ...snapFn({ x: item.x, y: item.y }) };
+        }
+        // kéo node Konva về đúng chỗ đã snap để thấy hiệu ứng hút ngay khi đang kéo
+        if (node) {
+            node.x(next.x);
+            node.y(next.y);
+            node.rotation(next.rot || 0);
+        }
+        const list = furnList().map(f => f.id === next.id ? next : f);
+        if (doCommit) commit(undefined, undefined, list);
+        else onChange({ ...docRef.current, furniture: list });
+        return next;
+    };
+
+    const addFurniture = (key) => {
+        const { w, d } = defaultSize(key, docRef.current.settings);
+        // đặt vào giữa vùng đang xem
+        const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
+        const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
+        const item = { id: genId('f'), kind: key, x: Math.round(cx), y: Math.round(cy), w, d, rot: 0 };
+        const cat = catalogItem(key);
+        let placed = item;
+        if (cat?.back) {
+            const hit = snapFurnitureToWall(docRef.current.plan, item, d, Math.max(900, 120 / (view?.scale || 1)));
+            if (hit) placed = { ...item, ...hit };
+        }
+        commit(undefined, undefined, [...furnList(), placed]);
+        setShowFurnPicker(false);
+        setModeRaw('select');
+        setSel({ kind: 'furniture', id: placed.id });
+        toast(`${cat?.name || 'Nội thất'} — kéo để đặt, chạm 2 lần để quay`, 'ok');
+    };
+
+    const rotateFurniture = (item) => {
+        const rot = ((item.rot || 0) + 90) % 360;
+        commit(undefined, undefined, furnList().map(f => f.id === item.id ? { ...f, rot } : f));
+    };
+
+    const removeFurniture = (id) => {
+        commit(undefined, undefined, furnList().filter(f => f.id !== id));
+        setSel(null);
+    };
+
+    const resizeFurniture = (item) => {
+        setNumpad({
+            title: 'Chiều rộng (mm)',
+            initial: item.w,
+            onOK: (wv) => setNumpad({
+                title: 'Chiều sâu (mm)',
+                initial: item.d,
+                onOK: (dv) => {
+                    const upd = { ...item, w: wv, d: dv };
+                    const list = furnList().map(f => f.id === item.id ? upd : f);
+                    commit(undefined, undefined, list);
+                },
+            }),
+        });
+    };
+
+    // ===== Template phòng =====
+    const openTemplatePicker = async () => {
+        setTemplates(await loadTemplates());
+    };
+
+    const insertTpl = (tpl) => {
+        // đặt template vào giữa vùng đang xem, bắt lưới góc trên-trái
+        const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
+        const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
+        const at = snapFn({ x: cx - tpl.w / 2, y: cy - tpl.d / 2 });
+        const { plan, added, shared } = insertTemplate(
+            docRef.current.plan, tpl, at, settings.thickness || 110,
+        );
+        if (!added) { toast('Template trùng hoàn toàn với tường có sẵn', 'err'); return; }
+        commit(recomputeRooms(plan), undefined);
+        setTemplates(null);
+        setModeRaw('select');
+        setChain(null);
+        toast(shared > 0
+            ? `Đã chèn ${tpl.name} — dùng chung ${shared} tường có sẵn`
+            : `Đã chèn ${tpl.name} (${tpl.w}×${tpl.d})`, 'ok');
+    };
+
+    const saveRoomAsTemplate = (room) => {
+        setTextSheet({
+            title: 'Lưu thành template',
+            label: 'Tên template',
+            initial: room.name || '',
+            placeholder: 'VD: Ngủ con 3.2x3.8',
+            onOK: async (name) => {
+                try {
+                    await saveTemplateFromRoom(name, docRef.current.plan, room);
+                    toast(`Đã lưu template "${name}"`, 'ok');
+                } catch (err) {
+                    toast(err.message, 'err');
+                }
+            },
+        });
+    };
+
+    const removeTpl = async (tpl) => {
+        await deleteTemplate(tpl.id);
+        setTemplates(await loadTemplates());
+        toast('Đã xóa template', 'ok');
+    };
+
     // ===== Tap dispatch =====
     const handleTapEmpty = (w) => {
         if (mode === 'draw') {
@@ -262,7 +415,8 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (mode === 'editKT') { openWallNumPad(wallId); return; }
         if (mode === 'door' || mode === 'window') {
             const type = mode === 'door' ? 'door' : 'window';
-            const width = type === 'door' ? 900 : 1200;
+            const s = docRef.current.settings || {};
+            const width = type === 'door' ? (s.doorWidth || 900) : (s.windowWidth || 1200);
             const { plan, openingId } = addOpening(docRef.current.plan, wallId, t, type, width);
             commit(plan, undefined);
             setModeRaw('select');
@@ -283,11 +437,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const onRoomTap = (roomId) => {
         const r = (docRef.current.plan.rooms || []).find(x => x.id === roomId);
         if (!r) return;
-        setTextSheet({
-            title: 'Tên phòng',
-            initial: r.name,
-            onOK: (name) => commit(renameRoom(docRef.current.plan, roomId, name), undefined),
-        });
+        setRoomMenu(r);
     };
 
     const onNodeDrag = (nodeId, pos, commitFlag) => {
@@ -409,7 +559,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             toast('Đã xuất DXF (mm) — mở bằng AutoCAD', 'ok');
             return;
         }
-        const bb = bboxOfPlan(d.plan, d.notes);
+        const bb = bboxOfPlan(d.plan, d.notes, d.furniture);
         if (!bb) { toast('Chưa có gì để xuất', 'err'); return; }
         await new Promise(r => setTimeout(r, 120));
         const crop = { x: bb.x - 500, y: bb.y - 500, width: bb.width + 1000, height: bb.height + 1000 };
@@ -437,14 +587,16 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         ? (doc.plan.walls.find(w => w.id === openingSheet.wallId)?.openings || []).find(o => o.id === openingSheet.openingId)
         : null;
     const selNote = sel?.kind === 'note' ? (doc.notes || []).find(n => n.id === sel.id) : null;
+    const selFurn = sel?.kind === 'furniture' ? (doc.furniture || []).find(f => f.id === sel.id) : null;
 
     const bannerText = () => {
         if (mode === 'draw') return chain
             ? 'Chạm điểm tiếp theo · chạm vào điểm cũ để khép phòng'
             : 'Chạm để đặt điểm bắt đầu tường';
         if (mode === 'editKT') return 'Chạm tường để nhập số đo laser · nhãn đỏ = đã nhập';
-        if (mode === 'door') return 'Chạm vào tường để đặt cửa đi (900mm)';
-        if (mode === 'window') return 'Chạm vào tường để đặt cửa sổ (1200mm)';
+        if (mode === 'door') return `Chạm vào tường để đặt cửa đi (${settings.doorWidth || 900}mm)`;
+        if (mode === 'window') return `Chạm vào tường để đặt cửa sổ (${settings.windowWidth || 1200}mm)`;
+        if (mode === 'furniture') return 'Chọn món trong danh sách để thêm vào mặt bằng';
         if (mode === 'note') return 'Chạm vào vị trí cần ghi chú';
         return doc.plan.walls.length
             ? 'Chạm đối tượng để chọn · kéo để di chuyển · véo để zoom'
@@ -475,6 +627,9 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             <div className={`mode-banner ${mode}`}>
                 <span>{bannerText()}</span>
                 <span className="spacer" />
+                {mode === 'draw' && (
+                    <button className="banner-btn" onClick={openTemplatePicker}>▦ Template</button>
+                )}
                 {mode === 'draw' && chain && (
                     <>
                         <button className="banner-btn" onClick={() => { setChain(null); setPreview(null); }}>Điểm mới</button>
@@ -497,7 +652,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                         <Layer>
                             <PlanGrid
                                 stageScale={view.scale} stagePos={{ x: view.x, y: view.y }} stageSize={stageSize}
-                                contentBounds={bboxOfPlan(doc.plan, doc.notes)}
+                                contentBounds={bboxOfPlan(doc.plan, doc.notes, doc.furniture)}
                                 gridMinor={settings.gridMinor || 100} gridMajor={settings.gridMajor || 1000}
                             />
                             <WallsLayer
@@ -506,10 +661,18 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                                 onWallTap={onWallTap}
                                 onLabelTap={(id) => openWallNumPad(id)}
                                 onOpeningTap={onOpeningTap}
+                                onSegmentTap={openSegmentNumPad}
                                 onNodeDrag={onNodeDrag}
                                 snapFn={snapFn}
                             />
                             <RoomLabels plan={doc.plan} scale={view.scale} listening={mode === 'select'} onTap={onRoomTap} />
+                            <FurnitureLayer
+                                items={doc.furniture} scale={view.scale} sel={sel}
+                                listening={mode === 'select'}
+                                onSelect={(id) => { setSel({ kind: 'furniture', id }); setOpeningSheet(null); }}
+                                onChange={(item, doCommit) => placeFurniture(item, doCommit)}
+                                onRotate={rotateFurniture}
+                            />
                             <Group listening={mode === 'select'}>
                                 {(doc.notes || []).map(n => (
                                     <NoteMarker key={n.id} note={n} scale={view.scale}
@@ -564,6 +727,24 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                         <button className="fb-btn" style={{ color: '#dc2626' }}
                             onClick={() => { commit(undefined, (docRef.current.notes || []).filter(x => x.id !== selNote.id)); setSel(null); }}>
                             <Trash2 size={16} /> Xóa
+                        </button>
+                        <div className="fb-sep" />
+                        <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
+                    </div>
+                )}
+
+                {selFurn && mode === 'select' && (
+                    <div className="float-bar">
+                        <button className="fb-btn" style={{ color: 'var(--violet)' }} onClick={() => rotateFurniture(selFurn)}>
+                            <RotateCw size={16} /> Quay 90°
+                        </button>
+                        <div className="fb-sep" />
+                        <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => resizeFurniture(selFurn)}>
+                            <Maximize2 size={16} /> {selFurn.w}×{selFurn.d}
+                        </button>
+                        <div className="fb-sep" />
+                        <button className="fb-btn" style={{ color: '#dc2626' }} onClick={() => removeFurniture(selFurn.id)}>
+                            <Trash2 size={16} />
                         </button>
                         <div className="fb-sep" />
                         <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
@@ -630,6 +811,137 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             <ChecklistSheet cfg={checklistSheet} onClose={() => setChecklistSheet(null)} />
             <Confirm cfg={confirm} onClose={() => setConfirm(null)} />
 
+            {/* Room menu */}
+            <Sheet open={!!roomMenu} onClose={() => setRoomMenu(null)}
+                title={roomMenu?.name || 'Phòng'}
+                sub={roomMenu ? `${(roomMenu.area / 1e6).toFixed(1)} m² · chu vi ${(roomMenu.perimeter / 1000).toFixed(1)} m (tim tường)` : ''}>
+                <button className="sheet-row" onClick={() => {
+                    const r = roomMenu;
+                    setRoomMenu(null);
+                    setTextSheet({
+                        title: 'Tên phòng',
+                        initial: r.name,
+                        onOK: (name) => commit(renameRoom(docRef.current.plan, r.id, name), undefined),
+                    });
+                }}>
+                    <Pencil size={19} style={{ color: 'var(--blue)' }} />
+                    <div style={{ flex: 1 }}>Đổi tên phòng</div>
+                </button>
+                <button className="sheet-row" onClick={() => {
+                    const r = roomMenu;
+                    setRoomMenu(null);
+                    saveRoomAsTemplate(r);
+                }}>
+                    <LayoutTemplate size={19} style={{ color: 'var(--violet)' }} />
+                    <div style={{ flex: 1 }}>
+                        Lưu thành template
+                        <div className="sub">Dùng lại cho dự án khác</div>
+                    </div>
+                </button>
+            </Sheet>
+
+            {/* Template picker */}
+            <Sheet open={!!templates} onClose={() => setTemplates(null)}
+                title="Template phòng" sub="Chèn vào giữa vùng đang xem · tường trùng sẽ dùng chung">
+                <div style={{ maxHeight: '54vh', overflowY: 'auto' }}>
+                    {(templates || []).map(t => (
+                        <div key={t.id} className="sheet-row" style={{ cursor: 'pointer' }} onClick={() => insertTpl(t)}>
+                            <LayoutTemplate size={18} style={{ color: t.builtin ? 'var(--muted)' : 'var(--violet)' }} />
+                            <div style={{ flex: 1 }}>
+                                {t.name}
+                                <div className="sub">
+                                    {t.w} × {t.d} mm · {t.nodes.length} điểm
+                                    {!t.builtin && ' · của tôi'}
+                                </div>
+                            </div>
+                            {!t.builtin && (
+                                <button className="icon-btn" style={{ color: '#dc2626' }}
+                                    onClick={(e) => { e.stopPropagation(); removeTpl(t); }}>
+                                    <Trash2 size={16} />
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            </Sheet>
+
+            {/* Furniture picker */}
+            <Sheet open={showFurnPicker} onClose={() => { setShowFurnPicker(false); setModeRaw('select'); }}
+                title="Thêm nội thất" sub="Món có mặt lưng sẽ tự hút vào tường khi kéo gần">
+                <div className="chip-row" style={{ marginBottom: 6 }}>
+                    {GROUPS.map(g => (
+                        <button key={g.key} className={`chip ${furnGroup === g.key ? 'on' : ''}`}
+                            onClick={() => setFurnGroup(g.key)}>
+                            {g.name}
+                        </button>
+                    ))}
+                </div>
+                <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
+                    {FURNITURE[furnGroup].map(it => {
+                        const sz = defaultSize(it.key, settings);
+                        return (
+                            <button key={it.key} className="sheet-row" onClick={() => addFurniture(it.key)}>
+                                <Sofa size={18} style={{ color: it.back ? 'var(--blue)' : 'var(--muted)' }} />
+                                <div style={{ flex: 1 }}>
+                                    {it.name}
+                                    <div className="sub">{sz.w} × {sz.d} mm{it.back ? ' · hút tường' : ''}</div>
+                                </div>
+                            </button>
+                        );
+                    })}
+                </div>
+                <button className="sheet-row" style={{ borderTop: '1px solid var(--line)', marginTop: 4 }}
+                    onClick={() => { setShowFurnPicker(false); setShowFurnSizes(true); }}>
+                    <Settings2 size={18} style={{ color: 'var(--ink-2)' }} />
+                    <div style={{ flex: 1 }}>Sửa kích thước mặc định<div className="sub">Áp dụng cho món thêm sau</div></div>
+                </button>
+            </Sheet>
+
+            {/* Furniture default sizes */}
+            <Sheet open={showFurnSizes} onClose={() => setShowFurnSizes(false)}
+                title="Kích thước mặc định" sub="Chạm để sửa — chỉ ảnh hưởng món thêm mới">
+                <div className="chip-row" style={{ marginBottom: 6 }}>
+                    {GROUPS.map(g => (
+                        <button key={g.key} className={`chip ${furnGroup === g.key ? 'on' : ''}`}
+                            onClick={() => setFurnGroup(g.key)}>
+                            {g.name}
+                        </button>
+                    ))}
+                </div>
+                <div style={{ maxHeight: '52vh', overflowY: 'auto' }}>
+                    {FURNITURE[furnGroup].map(it => {
+                        const sz = defaultSize(it.key, settings);
+                        const custom = !!settings.furnitureDefaults?.[it.key];
+                        const saveSize = (w, d) => onChange({
+                            ...docRef.current,
+                            settings: {
+                                ...docRef.current.settings,
+                                furnitureDefaults: { ...(docRef.current.settings?.furnitureDefaults || {}), [it.key]: { w, d } },
+                            },
+                        });
+                        return (
+                            <button key={it.key} className="sheet-row" onClick={() => setNumpad({
+                                title: `${it.name} — chiều rộng`,
+                                initial: sz.w,
+                                onOK: (wv) => setNumpad({
+                                    title: `${it.name} — chiều sâu`,
+                                    initial: sz.d,
+                                    onOK: (dv) => saveSize(wv, dv),
+                                }),
+                            })}>
+                                <div style={{ flex: 1 }}>
+                                    {it.name}
+                                    <div className="sub" style={custom ? { color: 'var(--blue)', fontWeight: 600 } : {}}>
+                                        {sz.w} × {sz.d} mm{custom ? ' · đã sửa' : ''}
+                                    </div>
+                                </div>
+                                <Ruler size={16} style={{ color: 'var(--muted)' }} />
+                            </button>
+                        );
+                    })}
+                </div>
+            </Sheet>
+
             {/* Opening detail */}
             <Sheet open={!!(openingSheet && selOpening)} onClose={() => setOpeningSheet(null)}
                 title={selOpening?.type === 'door' ? 'Cửa đi' : 'Cửa sổ'}>
@@ -638,8 +950,12 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                         <button className="sheet-row" onClick={() => setNumpad({
                             title: `Chiều rộng ${selOpening.type === 'door' ? 'cửa đi' : 'cửa sổ'}`,
                             initial: selOpening.width,
+                            hint: 'Tổng tường giữ nguyên — đoạn tường kề tự bù',
                             onOK: (val) => {
-                                commit(updateOpening(docRef.current.plan, openingSheet.wallId, openingSheet.openingId, { width: val }), undefined);
+                                const p = docRef.current.plan;
+                                const { plan: next, warning } = applyOpeningWidth(p, openingSheet.wallId, openingSheet.openingId, val);
+                                if (next !== p) commit(recomputeRooms(next), undefined);
+                                if (warning) toast(warning, 'err');
                             },
                         })}>
                             <Ruler size={19} style={{ color: 'var(--blue)' }} />
@@ -710,6 +1026,22 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="sheet-row" onClick={() => onChange({ ...docRef.current, settings: { ...settings, gridSnap: settings.gridSnap === false } })}>
                     <div style={{ flex: 1 }}>Bắt lưới 100mm<div className="sub">Điểm vẽ dính vào lưới</div></div>
                     <div className={`sync-chip ${settings.gridSnap !== false ? 'on' : 'off'}`}>{settings.gridSnap !== false ? 'BẬT' : 'TẮT'}</div>
+                </button>
+
+                <div style={{ padding: '12px 0 4px', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Bề rộng cửa mặc định</div>
+                <button className="sheet-row" onClick={() => setNumpad({
+                    title: 'Bề rộng cửa đi', initial: settings.doorWidth || 900,
+                    onOK: (val) => onChange({ ...docRef.current, settings: { ...docRef.current.settings, doorWidth: val } }),
+                })}>
+                    <DoorOpen size={19} style={{ color: 'var(--warn)' }} />
+                    <div style={{ flex: 1 }}>Cửa đi<div className="sub">{settings.doorWidth || 900} mm</div></div>
+                </button>
+                <button className="sheet-row" onClick={() => setNumpad({
+                    title: 'Bề rộng cửa sổ', initial: settings.windowWidth || 1200,
+                    onOK: (val) => onChange({ ...docRef.current, settings: { ...docRef.current.settings, windowWidth: val } }),
+                })}>
+                    <AppWindow size={19} style={{ color: 'var(--ok)' }} />
+                    <div style={{ flex: 1 }}>Cửa sổ<div className="sub">{settings.windowWidth || 1200} mm</div></div>
                 </button>
             </Sheet>
         </div>

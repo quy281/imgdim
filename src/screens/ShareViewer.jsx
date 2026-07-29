@@ -4,12 +4,13 @@ import { ArrowLeft, ExternalLink } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
+import FurnitureLayer from '../plan/FurnitureLayer';
 import NoteMarker from '../photo/NoteMarker';
 import { bboxOfPlan } from '../lib/geometry';
 import { useRef, useEffect } from 'react';
 
-function fitView(plan, notes, w, h) {
-    const bb = bboxOfPlan(plan, notes);
+function fitView(plan, notes, furniture, w, h) {
+    const bb = bboxOfPlan(plan, notes, furniture);
     if (!bb || !w || !h) return { scale: 1 / 10, x: w / 2, y: h / 2 };
     const pad = 60;
     const scale = Math.min((w - pad * 2) / bb.width, (h - pad * 2) / bb.height, 0.15);
@@ -30,7 +31,7 @@ function PlanCanvas({ doc }) {
         return () => ro.disconnect();
     }, []);
 
-    const view = size.width > 0 ? fitView(doc.plan, doc.notes, size.width, size.height) : null;
+    const view = size.width > 0 ? fitView(doc.plan, doc.notes, doc.furniture, size.width, size.height) : null;
 
     return (
         <div ref={wrapRef} style={{ flex: 1, minHeight: 0, background: '#e9edf2', position: 'relative', touchAction: 'none' }}>
@@ -39,11 +40,13 @@ function PlanCanvas({ doc }) {
                     scaleX={view.scale} scaleY={view.scale} x={view.x} y={view.y}>
                     <Layer>
                         <PlanGrid stageScale={view.scale} stagePos={{ x: view.x, y: view.y }} stageSize={size}
-                            contentBounds={bboxOfPlan(doc.plan, doc.notes)}
+                            contentBounds={bboxOfPlan(doc.plan, doc.notes, doc.furniture)}
                             gridMinor={100} gridMajor={1000} />
                         <WallsLayer plan={doc.plan} scale={view.scale} sel={null}
                             listening={false} showHandles={false} />
                         <RoomLabels plan={doc.plan} scale={view.scale} listening={false} />
+                        <FurnitureLayer items={doc.furniture} scale={view.scale} sel={null} listening={false}
+                            onSelect={() => {}} onChange={() => {}} onRotate={() => {}} />
                         <Group listening={false}>
                             {(doc.notes || []).map(n => (
                                 <NoteMarker key={n.id} note={n} scale={view.scale}

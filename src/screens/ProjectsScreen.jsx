@@ -41,7 +41,10 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
             const payload = JSON.stringify({
                 v: 1,
                 projectName: p.name,
-                docs: planDocs.map(d => ({ id: d.id, name: d.name, plan: d.plan, notes: d.notes || [] })),
+                docs: planDocs.map(d => ({
+                    id: d.id, name: d.name, plan: d.plan,
+                    notes: d.notes || [], furniture: d.furniture || [],
+                })),
             });
             const b64 = btoa(unescape(encodeURIComponent(payload)));
             const url = `${window.location.origin}/?view=${b64}`;
