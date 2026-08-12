@@ -1,7 +1,17 @@
 // Pure geometry for plan docs. Coordinate system: 1 unit = 1 mm, y-down (screen).
 
+// Id phải duy nhất GIỮA CÁC THIẾT BỊ, không chỉ trong một phiên: sync khớp record theo
+// item_id, nên hai máy sinh cùng id là hai dự án khác nhau ghi đè nhau trên cloud.
+// Thời gian (sắp xếp được) + số thứ tự phiên + 4 byte ngẫu nhiên từ CSPRNG.
 let __seq = 0;
-export const genId = (prefix) => `${prefix}${Date.now().toString(36)}${(__seq++).toString(36)}`;
+const rand36 = (bytes) => {
+    const b = new Uint8Array(bytes);
+    if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(b);
+    else for (let i = 0; i < bytes; i++) b[i] = Math.floor(Math.random() * 256);
+    return [...b].map(x => x.toString(36).padStart(2, '0')).join('');
+};
+export const genId = (prefix) =>
+    `${prefix}${Date.now().toString(36)}${(__seq++).toString(36)}${rand36(4)}`;
 
 export const dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
 

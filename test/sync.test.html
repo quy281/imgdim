@@ -1,0 +1,418 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sync selftest</title>
+<style>
+    body { font: 13px/1.6 ui-monospace, monospace; padding: 16px; }
+    .FAIL { color: #dc2626; font-weight: 700; }
+    .PASS { color: #16a34a; }
+    h3 { margin: 18px 0 4px; font-family: system-ui; }
+</style>
+<pre id="out">running…</pre>
+<script type="module">
+    // Test tầng sync bằng cách chặn fetch — không chạm server thật.
+    // Mỗi test dựng lại trạng thái, gọi pb.fullSync, rồi soi các request đã phát ra.
+    import * as pb from '/src/lib/pb.js';
+    import { hashString } from '/src/lib/hash.js';
+
+    const lines = [];
+    let pass = 0, fail = 0;
+    try {
+    const ok = (name, cond, extra = '') => {
+        cond ? pass++ : fail++;
+        lines.push(`<span class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</span>  ${name}${extra && !cond ? ` — ${extra}` : ''}`);
+    };
+    const group = (t) => lines.push(`<h3>${t}</h3>`);
+
+    const UID = 'user_aaa';
+    const TEAM = { id: 'team_mkg', name: 'MKG' };
+    const SERVER_NOW = Date.parse('2026-08-13T10:00:00Z');
+
+    // ===== Fetch giả =====
+    let calls = [];
+    let routes = {};
+    const res = (body, status = 200) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: String(status),
+        headers: { get: (h) => (h.toLowerCase() === 'date' ? new Date(SERVER_NOW).toUTCString() : null) },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+        blob: async () => new Blob([new Uint8Array([255, 216, 255, 217])], { type: 'image/jpeg' }),
+    });
+
+    window.fetch = async (url, opts = {}) => {
+        const path = String(url).replace('https://db.mkg.vn/api/', '');
+        let body = opts.body;
+        if (body instanceof FormData) {
+            const o = {};
+            for (const [k, v] of body.entries()) o[k] = v instanceof Blob ? `<blob ${v.size}b>` : v;
+            body = o;
+        } else if (typeof body === 'string') {
+            try { body = JSON.parse(body); } catch { /* để nguyên */ }
+        }
+        calls.push({ path, method: opts.method || 'GET', body, isForm: opts.body instanceof FormData });
+        for (const [pat, fn] of Object.entries(routes)) {
+            if (path.startsWith(pat)) return fn(path, opts);
+        }
+        return res({ items: [], page: 1, totalPages: 1 });
+    };
+
+    // Token khác nhau mỗi lần setup → ensureSession phải xác thực lại, không ăn theo
+    // lần kiểm của test trước (giống thực tế: đăng nhập lại là token mới).
+    let tokSeq = 0;
+    const setup = ({ remote = [], full = {}, legacy = false } = {}) => {
+        calls = [];
+        localStorage.setItem('ks_auth', JSON.stringify({ token: 'tok' + (++tokSeq), model: { id: UID, email: 'a@mkg.vn' }, team: TEAM }));
+        const meta = remote.map(r => {
+            const m = { ...r };
+            if (legacy) { delete m.updated_ms; delete m.deleted; }
+            delete m.data;
+            return m;
+        });
+        routes = {
+            // Phiên còn sống theo mặc định; test nào cần thì ghi đè route này.
+            'collections/users/auth-refresh': () => res({ token: 'tok' + tokSeq, record: { id: UID, email: 'a@mkg.vn' } }),
+            'collections/survey_items/records?': () => res({ items: meta, page: 1, totalPages: 1 }),
+            'collections/survey_items/records/': (path, opts) => {
+                const id = path.split('/').pop().split('?')[0];
+                if ((opts.method || 'GET') === 'GET') {
+                    const rec = remote.find(r => r.id === id);
+                    return res({ ...rec, data: full[id] ?? rec?.data ?? null });
+                }
+                return res({ id, rev: 99 });
+            },
+            'collections/survey_items/records': () => res({ id: 'new_rec', rev: 1 }),
+            'files/token': () => res({ token: 'ftok' }),
+        };
+    };
+    // Chỉ tính lệnh ghi DỮ LIỆU — bỏ qua auth-refresh (POST nhưng là xác thực phiên).
+    const writes = () => calls.filter(c =>
+        (c.method === 'PATCH' || c.method === 'POST') && c.path.startsWith('collections/survey_items'));
+    const gets = () => calls.filter(c => c.method === 'GET');
+    const rec = (o) => ({
+        id: 'rec_' + o.item_id, owner: UID, owner_name: 'A', kind: 'doc', project_id: 'p1',
+        name: 'x', scope: 'private', team: '', deleted: false, rev: 5, schema_v: 3,
+        photo: '', photo_hash: '', ...o,
+    });
+    const proj = (id, updatedAt, extra = {}) => ({ id, name: 'P ' + id, scope: 'private', createdAt: 1, updatedAt, ...extra });
+    const doc = (id, updatedAt, extra = {}) => ({ id, projectId: 'p1', type: 'plan', name: 'D ' + id, plan: { nodes: [], walls: [] }, createdAt: 1, updatedAt, ...extra });
+    const empty = { projects: [], docs: [], tombstones: [], scopeDirty: [] };
+
+    // ===== 1. Pha 1 không tải `data`; chỉ record lệch mới sang pha 2 =====
+    group('Sync hai pha — chỉ tải record thật sự lệch');
+    {
+        setup({
+            remote: [
+                rec({ item_id: 'd1', updated_ms: 5000 }),   // cloud mới hơn → phải pull
+                rec({ item_id: 'd2', updated_ms: 1000 }),   // bằng local → không làm gì
+            ],
+            full: { rec_d1: doc('d1', 5000, { name: 'từ cloud' }) },
+        });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 1000), doc('d2', 1000)] });
+        const listCall = gets().find(c => c.path.startsWith('collections/survey_items/records?'));
+        ok('pha 1 dùng fields= (không kéo data)', listCall?.path.includes('fields=') && listCall.path.includes('updated_ms'), listCall?.path);
+        ok('pha 2 chỉ GET 1 record lệch', gets().filter(c => /records\/rec_/.test(c.path)).length === 1);
+        ok('kéo về đúng d1', r.pulledDocs.length === 1 && r.pulledDocs[0].name === 'từ cloud');
+        ok('d2 không bị kéo lại', !r.pulledDocs.some(d => d.id === 'd2'));
+        ok('gắn ownerId khi pull', r.pulledDocs[0].ownerId === UID);
+    }
+
+    // ===== 2. Push khi local mới hơn; rev tăng =====
+    group('Push');
+    {
+        setup({ remote: [rec({ item_id: 'd1', updated_ms: 1000, rev: 5 })] });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 9000)] });
+        const w = writes().find(c => c.path.includes('rec_d1'));
+        ok('đẩy lên khi local mới hơn', r.pushed >= 1 && !!w);
+        ok('updated_ms = updatedAt của local', w?.body?.updated_ms === 9000, JSON.stringify(w?.body?.updated_ms));
+        ok('rev tăng 5 → 6', w?.body?.rev === 6, String(w?.body?.rev));
+        ok('gửi owner_name', w?.body?.owner_name === 'a@mkg.vn' || !!w?.body?.owner_name);
+    }
+    {
+        // Cả project và doc đều đã khớp cloud → không được phát sinh lệnh ghi nào.
+        setup({
+            remote: [
+                rec({ item_id: 'p1', kind: 'project', updated_ms: 4242, project_id: 'p1' }),
+                rec({ item_id: 'd1', updated_ms: 4242 }),
+            ],
+        });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 4242)], docs: [doc('d1', 4242)] });
+        ok('bằng nhau → không ghi gì', r.pushed === 0 && r.pulledDocs.length === 0 && writes().length === 0,
+            `pushed=${r.pushed}, writes=${writes().map(c => c.path).join('|')}`);
+    }
+    {
+        setup({ remote: [] });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p9', 3000)], docs: [] });
+        const w = writes()[0];
+        ok('item chưa có trên cloud → POST tạo mới', w?.method === 'POST' && w.body.item_id === 'p9');
+        ok('project mang kind=project', w?.body?.kind === 'project');
+    }
+
+    // ===== 3. Xóa — chỗ trước đây chết vì ReferenceError (owner dùng trước khi khai báo) =====
+    group('Xóa hai chiều');
+    {
+        setup({ remote: [rec({ item_id: 'd1', updated_ms: 1000 })] });
+        const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd1', kind: 'doc', deletedAt: 7000 }] });
+        const w = writes().find(c => c.path.includes('rec_d1'));
+        ok('tombstone → soft-delete lên cloud', r.deleted === 1 && w?.body?.deleted === true, JSON.stringify(w?.body));
+        ok('mốc xóa ghi vào updated_ms', w?.body?.updated_ms === 7000);
+        ok('tombstone được dọn sau khi xóa xong', r.clearedTombstones.includes('d1'));
+    }
+    {
+        setup({
+            remote: [
+                rec({ item_id: 'p1', kind: 'project', updated_ms: 1, project_id: 'p1' }),
+                rec({ item_id: 'd1', updated_ms: 9999, deleted: true }),
+            ],
+        });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 5000)] });
+        ok('cloud đã xóa → xóa local', r.deletedDocs.includes('d1'));
+        ok('không đẩy lại item đã xóa', r.pushed === 0 && !writes().some(c => c.path.includes('rec_d1')),
+            `pushed=${r.pushed}, writes=${writes().map(c => c.path).join('|')}`);
+    }
+    {
+        // Máy khác sửa SAU khi ta xóa → bản sửa thắng, item sống lại có chủ ý.
+        setup({ remote: [rec({ item_id: 'd1', updated_ms: 8000 })], full: { rec_d1: doc('d1', 8000) } });
+        const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd1', kind: 'doc', deletedAt: 3000 }] });
+        ok('cloud mới hơn tombstone → không xóa', r.deleted === 0);
+        ok('tombstone bị bỏ, item kéo về', r.clearedTombstones.includes('d1') && r.pulledDocs.length === 1);
+    }
+    {
+        // Xóa lúc offline, item chưa từng lên cloud → giữ tombstone để lần sau vẫn xóa được.
+        setup({ remote: [] });
+        const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'dX', kind: 'doc', deletedAt: 3000 }] });
+        ok('item chưa lên cloud → GIỮ tombstone', !r.clearedTombstones.includes('dX'));
+    }
+
+    // ===== 4. Ảnh: tách khỏi JSON, không upload lại khi hash không đổi =====
+    group('Ảnh — file field');
+    const IMG = 'data:image/jpeg;base64,' + btoa('x'.repeat(300));
+    {
+        setup({ remote: [] });
+        const photo = { id: 'ph1', projectId: 'p1', type: 'photo', name: 'Ảnh 1', img: IMG, photoHash: hashString(IMG), thumb: 't', createdAt: 1, updatedAt: 5000 };
+        await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [photo] });
+        const w = writes().find(c => c.isForm);
+        ok('ảnh upload bằng multipart', !!w, 'không thấy FormData');
+        ok('file photo được gắn kèm', typeof w?.body?.photo === 'string' && w.body.photo.startsWith('<blob'));
+        const dataJson = JSON.parse(w?.body?.data || '{}');
+        ok('data JSON KHÔNG chứa base64 ảnh', !dataJson.img, 'img vẫn còn trong data');
+        ok('data vẫn giữ thumb để hiện danh sách', dataJson.thumb === 't');
+        ok('photo_hash khớp', w?.body?.photo_hash === hashString(IMG));
+    }
+    {
+        const h = hashString(IMG);
+        setup({ remote: [rec({ item_id: 'ph1', updated_ms: 1000, photo: 'ph1.jpg', photo_hash: h })] });
+        const photo = { id: 'ph1', projectId: 'p1', type: 'photo', name: 'Ảnh 1', img: IMG, photoHash: h, thumb: 't', createdAt: 1, updatedAt: 6000 };
+        await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [photo] });
+        ok('ảnh không đổi → KHÔNG upload lại', !writes().some(c => c.isForm), 'vẫn gửi multipart');
+        ok('vẫn PATCH metadata bằng JSON', writes().some(c => !c.isForm && c.path.includes('rec_ph1')));
+    }
+    {
+        const h = hashString(IMG);
+        setup({
+            remote: [rec({ item_id: 'ph1', updated_ms: 9000, photo: 'ph1.jpg', photo_hash: h })],
+            full: { rec_ph1: { id: 'ph1', projectId: 'p1', type: 'photo', name: 'Ảnh 1', thumb: 't', createdAt: 1, updatedAt: 9000 } },
+        });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [{ id: 'ph1', projectId: 'p1', type: 'photo', img: IMG, photoHash: h, updatedAt: 1000 }] });
+        ok('pull ảnh: hash khớp → dùng lại ảnh trên máy', r.pulledDocs[0]?.img === IMG);
+        ok('không tải file khi hash khớp', !calls.some(c => c.path.includes('/files/survey_items/')));
+    }
+    {
+        setup({
+            remote: [rec({ item_id: 'ph2', updated_ms: 9000, photo: 'ph2.jpg', photo_hash: 'khac' })],
+            full: { rec_ph2: { id: 'ph2', projectId: 'p1', type: 'photo', name: 'Ảnh 2', thumb: 't', createdAt: 1, updatedAt: 9000 } },
+        });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [] });
+        ok('pull ảnh mới → tải file về', calls.some(c => c.path.includes('files/survey_items/rec_ph2/ph2.jpg')));
+        ok('ảnh về dạng data URL', String(r.pulledDocs[0]?.img).startsWith('data:image/jpeg;base64,'));
+    }
+    {
+        // Record schema cũ (ảnh còn trong JSON) → đẩy lại để tách ra file field.
+        setup({ remote: [rec({ item_id: 'ph3', updated_ms: 5000, schema_v: 2 })] });
+        const photo = { id: 'ph3', projectId: 'p1', type: 'photo', img: IMG, photoHash: hashString(IMG), updatedAt: 5000 };
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [photo] });
+        ok('record schema_v=2 được migrate', r.migrated === 1);
+        const w = writes().find(c => c.isForm);
+        ok('migrate giữ nguyên mốc thời gian', w && Number(w.body.updated_ms) === 5000, w?.body?.updated_ms);
+    }
+
+    // ===== 5. Phạm vi private / team =====
+    group('Phạm vi team');
+    {
+        setup({
+            remote: [
+                rec({ item_id: 'p1', kind: 'project', updated_ms: 1000, project_id: 'p1' }),
+                rec({ item_id: 'd1', updated_ms: 1000 }),
+            ],
+        });
+        const r = await pb.fullSync({
+            projects: [proj('p1', 2000, { scope: 'team' })],
+            docs: [doc('d1', 1000)],
+            tombstones: [], scopeDirty: ['p1'],
+        });
+        const wp = writes().find(c => c.path.includes('rec_p1'));
+        const wd = writes().find(c => c.path.includes('rec_d1'));
+        ok('project đẩy lên scope=team', wp?.body?.scope === 'team');
+        ok('gắn đúng team id', wp?.body?.team === TEAM.id);
+        ok('DOC của dự án cũng đổi scope theo', wd?.body?.scope === 'team', JSON.stringify(wd?.body?.scope));
+        ok('doc đổi scope giữ nguyên updated_ms', wd?.body?.updated_ms === 1000);
+        ok('báo đã xong việc đổi scope', r.scopeSynced.includes('p1'));
+    }
+    {
+        // Sửa dự án team của đồng nghiệp: KHÔNG được gửi owner (rule chống chiếm record → 403).
+        const OTHER = 'user_bbb';
+        setup({
+            remote: [
+                rec({ item_id: 'p1', kind: 'project', updated_ms: 1, project_id: 'p1', owner: OTHER, owner_name: 'B', scope: 'team' }),
+                rec({ item_id: 'd1', updated_ms: 1000, owner: OTHER, owner_name: 'B', scope: 'team' }),
+            ],
+        });
+        await pb.fullSync({
+            projects: [proj('p1', 1, { scope: 'team', ownerId: OTHER, ownerName: 'B' })],
+            docs: [doc('d1', 9000, { ownerId: OTHER })],
+            tombstones: [], scopeDirty: [],
+        });
+        const w = writes().find(c => c.path.includes('rec_d1'));
+        ok('sửa doc của đồng nghiệp → không gửi owner', w && !('owner' in w.body), JSON.stringify(w?.body?.owner));
+        ok('cũng không ghi đè owner_name', w && !('owner_name' in w.body));
+        ok('nội dung vẫn được đẩy lên', w?.body?.updated_ms === 9000);
+    }
+    {
+        setup({ remote: [rec({ item_id: 'd1', updated_ms: 1000 })] });
+        routes['collections/survey_items/records/'] = () => res({ message: 'Forbidden' }, 403);
+        const r = await pb.fullSync({ projects: [proj('p1', 1, { scope: 'team' })], docs: [doc('d1', 5000)], tombstones: [], scopeDirty: ['p1'] });
+        ok('push lỗi → item vào failedIds', r.failedIds.includes('d1'));
+        ok('403 KHÔNG đăng xuất', pb.isLoggedIn(), 'session bị xóa');
+        ok('scope chưa xong thì không báo xong', !r.scopeSynced.includes('p1'));
+    }
+
+    // ===== 5b. Token hết hạn — PocketBase trả 200 RỖNG chứ không 401 ở endpoint đọc =====
+    group('Phiên hết hạn');
+    {
+        setup({ remote: [] });
+        // Mô phỏng server thật: list trả 200 rỗng cho token chết, chỉ auth-refresh mới 401.
+        routes['collections/users/auth-refresh'] = () => res({ message: 'Unauthorized' }, 401);
+        let caught = null;
+        try {
+            await pb.fullSync({ ...empty, projects: [proj('p1', 5000)], docs: [] });
+        } catch (err) { caught = err; }
+        ok('sync DỪNG khi token đã chết', caught?.status === 401, `lỗi=${caught?.message || 'không throw'}`);
+        ok('không báo "đồng bộ xong" khống', !!caught);
+        ok('không đẩy dữ liệu lên khi chưa xác thực', !writes().some(c => c.path.startsWith('collections/survey_items')));
+        ok('phiên bị xóa để UI hiện đúng trạng thái', !pb.isLoggedIn());
+    }
+    {
+        setup({ remote: [] });
+        routes['collections/users/auth-refresh'] = () => res({ token: 'tok2', record: { id: UID, email: 'a@mkg.vn' } });
+        await pb.ensureSession(true);
+        ok('token được gia hạn sau khi xác thực', JSON.parse(localStorage.getItem('ks_auth')).token === 'tok2');
+        ok('phiên còn sống thì giữ đăng nhập', pb.isLoggedIn());
+    }
+    {
+        setup({ remote: [] });
+        let refreshCalls = 0;
+        routes['collections/users/auth-refresh'] = () => { refreshCalls++; return res({ token: 'tok3', record: { id: UID } }); };
+        await pb.ensureSession(true);
+        await pb.ensureSession();
+        await pb.ensureSession();
+        ok('không gọi auth-refresh mỗi lần sync (throttle 10 phút)', refreshCalls === 1, `gọi ${refreshCalls} lần`);
+    }
+    {
+        setup({ remote: [] });
+        routes['collections/users/auth-refresh'] = () => res({ message: 'boom' }, 500);
+        const alive = await pb.ensureSession(true);
+        ok('lỗi mạng KHÔNG đá người dùng ra', alive === true && pb.isLoggedIn());
+    }
+
+    // ===== 5c. Đăng nhập: username, và fallback superuser =====
+    group('Đăng nhập');
+    {
+        calls = [];
+        localStorage.removeItem('ks_auth');
+        routes = {
+            'collections/users/auth-with-password': () => res({ token: 'tU', record: { id: 'u1', username: 'mkg20144' } }),
+            'collections/teams/records': () => res({ items: [{ id: 'team_mkg', name: 'MKG' }], page: 1, totalPages: 1 }),
+        };
+        const u = await pb.login('mkg20144', 'pw');
+        const body = calls.find(c => c.path.includes('auth-with-password'))?.body;
+        ok('đăng nhập bằng username gửi qua identity', body?.identity === 'mkg20144', JSON.stringify(body));
+        ok('nhận đúng user', u.id === 'u1' && pb.isLoggedIn());
+        ok('không bị coi là superuser', !pb.isSuperuser());
+        ok('lấy được team ngay sau khi đăng nhập', pb.myTeam()?.name === 'MKG');
+    }
+    {
+        calls = [];
+        localStorage.removeItem('ks_auth');
+        routes = {
+            'collections/users/auth-with-password': () => res({ message: 'Failed to authenticate.' }, 400),
+            'collections/_superusers/auth-with-password': () => res({ token: 'tS', record: { id: 's1', email: 'founder@mkg.vn' } }),
+        };
+        await pb.login('founder@mkg.vn', 'pw');
+        ok('users thất bại → thử _superusers', calls.some(c => c.path.includes('_superusers/auth-with-password')));
+        ok('vào được bằng tài khoản quản trị', pb.isLoggedIn() && pb.isSuperuser());
+        let caught = null;
+        try { await pb.fullSync({ ...empty }); } catch (e) { caught = e; }
+        ok('nhưng sync báo lỗi RÕ thay vì thất bại âm thầm', caught?.status === 403 && /quản trị/.test(caught.message), caught?.message);
+        calls = [];
+        routes['collections/_superusers/auth-refresh'] = () => res({ token: 'tS2', record: { id: 's1' } });
+        await pb.ensureSession(true);
+        ok('refresh phiên superuser đúng bảng (không bị đá ra)', calls.some(c => c.path === 'collections/_superusers/auth-refresh') && pb.isLoggedIn());
+        ok('giữ cờ superuser sau khi refresh', pb.isSuperuser());
+    }
+    {
+        calls = [];
+        localStorage.removeItem('ks_auth');
+        routes = {
+            'collections/users/auth-with-password': () => res({ message: 'Failed to authenticate.' }, 400),
+            'collections/_superusers/auth-with-password': () => res({ message: 'Failed to authenticate.' }, 400),
+        };
+        let caught = null;
+        try { await pb.login('sai@mkg.vn', 'sai'); } catch (e) { caught = e; }
+        ok('sai mật khẩu cả hai bảng → báo lỗi gọn', /Sai tài khoản/.test(caught?.message || ''), caught?.message);
+        ok('không lưu phiên khi đăng nhập thất bại', !pb.isLoggedIn());
+    }
+
+    // ===== 6. Đồng hồ + chế độ tương thích backend cũ =====
+    group('Đồng hồ & tương thích');
+    {
+        setup({ remote: [] });
+        await pb.fullSync({ ...empty });
+        const skew = pb.clockSkew();
+        ok('bù lệch giờ theo header Date của server', Math.abs(pb.now() - SERVER_NOW) < 5000, `skew ${skew}ms, now ${new Date(pb.now()).toISOString()}`);
+    }
+    {
+        // Backend chưa chạy pb-setup.mjs: metadata không có updated_ms → phải rơi về chế độ cũ.
+        setup({
+            remote: [rec({ item_id: 'd1', updated_ms: 8000, data: doc('d1', 8000) })],
+            legacy: true,
+        });
+        routes['collections/survey_items/records?'] = (path) => path.includes('fields=')
+            ? res({ items: [{ id: 'rec_d1', item_id: 'd1', kind: 'doc', project_id: 'p1', name: 'x', owner: UID }], page: 1, totalPages: 1 })
+            : res({ items: [{ id: 'rec_d1', item_id: 'd1', kind: 'doc', project_id: 'p1', name: 'x', owner: UID, data: doc('d1', 8000) }], page: 1, totalPages: 1 });
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 2000)] });
+        ok('nhận ra backend chưa nâng schema', r.legacy === true);
+        ok('chế độ cũ vẫn kéo được dữ liệu về', r.pulledDocs.length === 1 && r.pulledDocs[0].updatedAt === 8000);
+    }
+
+    // ===== 7. Id sinh ra phải duy nhất giữa các thiết bị =====
+    group('genId');
+    {
+        const { genId } = await import('/src/lib/geometry.js');
+        const ids = new Set();
+        for (let i = 0; i < 20000; i++) ids.add(genId('p'));
+        ok('20k id không trùng', ids.size === 20000, `chỉ có ${ids.size} id khác nhau`);
+        ok('id có phần ngẫu nhiên (khác nhau giữa 2 máy cùng ms)', genId('p').length > 12);
+    }
+
+    // Dọn phiên giả để không làm app tưởng đang đăng nhập khi mở lại '/'.
+    localStorage.removeItem('ks_auth');
+    render();
+    } catch (e) { localStorage.removeItem('ks_auth'); render(e); }
+    function render(err) {
+        document.getElementById('out').innerHTML = lines.join('\n')
+            + (err ? `\n\n<span class="FAIL">TEST CRASH: ${err.message}\n${err.stack}</span>` : '')
+            + `\n\n<b>${pass} pass, ${fail} fail${err ? ', CRASH' : ''}</b>`;
+        document.title = (fail || err) ? `${fail || ''}${err ? ' CRASH' : ' FAIL'}` : `${pass} pass`;
+    }
+    window.__render = render;
+</script>

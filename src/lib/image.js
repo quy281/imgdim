@@ -1,4 +1,5 @@
 // Photo import (resize + compress + thumbnail) and plan thumbnails.
+import { hashString } from './hash';
 
 const MAX_EDGE = 1600;   // survey photos: plenty for reference, light for sync
 const THUMB_EDGE = 360;
@@ -32,13 +33,16 @@ function drawScaled(src, maxEdge, quality) {
     return { dataURL: canvas.toDataURL('image/jpeg', quality), w, h };
 }
 
-/** file -> { base64, w, h, thumb } */
+/** file -> { base64, hash, w, h, thumb } */
 export async function fileToPhoto(file) {
     const bmp = await decodeFile(file);
     const main = drawScaled(bmp, MAX_EDGE, 0.85);
     const thumb = drawScaled(bmp, THUMB_EDGE, 0.7);
     if (bmp.close) bmp.close();
-    return { base64: main.dataURL, w: main.w, h: main.h, thumb: thumb.dataURL };
+    return {
+        base64: main.dataURL, hash: hashString(main.dataURL),
+        w: main.w, h: main.h, thumb: thumb.dataURL,
+    };
 }
 
 /** Render a small white-background preview of the wall graph. */

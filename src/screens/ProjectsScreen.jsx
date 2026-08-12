@@ -2,14 +2,12 @@ import React, { useState } from 'react';
 import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
-    Share2, ListChecks,
+    Share2, ListChecks, Users, Lock,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
 import Confirm from '../ui/Confirm';
-import { toast } from '../ui/Toast';
 import * as pb from '../lib/pb';
-import * as db from '../lib/db';
 
 const fmtSince = (ts) => {
     if (!ts) return 'Cloud';
@@ -20,44 +18,22 @@ const fmtSince = (ts) => {
     return `${Math.floor(m / 60)} giờ trước`;
 };
 
-export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen, onCreate, onRename, onDelete, onSync, onOpenSyncStatus, onLogin, onLogout }) {
+export default function ProjectsScreen({
+    projects, account, syncBusy, syncMsg, lastSyncAt,
+    onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
+    onSync, onOpenSyncStatus, onLogin, onLogout,
+}) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
-    const [menuFor, setMenuFor] = useState(null); // project object
+    const [menuFor, setMenuFor] = useState(null);
     const [showSettings, setShowSettings] = useState(false);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loggingIn, setLoggingIn] = useState(false);
 
     const logged = pb.isLoggedIn();
-    const account = pb.me();
-
-    const shareProject = async (p) => {
-        setMenuFor(null);
-        try {
-            const docs = await db.listDocs(p.id);
-            const planDocs = docs.filter(d => d.type === 'plan');
-            if (planDocs.length === 0) { toast('Dự án chưa có mặt bằng nào để chia sẻ', 'err'); return; }
-            const payload = JSON.stringify({
-                v: 1,
-                projectName: p.name,
-                docs: planDocs.map(d => ({
-                    id: d.id, name: d.name, plan: d.plan,
-                    notes: d.notes || [], furniture: d.furniture || [],
-                })),
-            });
-            const b64 = btoa(unescape(encodeURIComponent(payload)));
-            const url = `${window.location.origin}/?view=${b64}`;
-            if (navigator.share) {
-                await navigator.share({ title: p.name, text: `Mặt bằng: ${p.name}`, url });
-            } else {
-                await navigator.clipboard.writeText(url);
-                toast('Đã copy link — dán vào Zalo/Messenger để gửi', 'ok');
-            }
-        } catch (err) {
-            if (err.name !== 'AbortError') toast('Không thể chia sẻ: ' + err.message, 'err');
-        }
-    };
+    const myId = pb.myId();
+    const team = pb.myTeam();
 
     const doLogin = async () => {
         if (!email.trim() || !password) return;
@@ -65,12 +41,15 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
         try {
             await onLogin(email.trim(), password);
             setPassword('');
-        } finally {
+            setShowSettings(false);
+        } catch { /* toast đã báo */ } finally {
             setLoggingIn(false);
         }
     };
 
     const fmtDate = (ts) => new Date(ts).toLocaleDateString('vi-VN');
+    const isTeam = (p) => p.scope === 'team';
+    const isMine = (p) => !p.ownerId || !myId || p.ownerId === myId;
 
     return (
         <div className="screen">
@@ -79,12 +58,16 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                     <img src="/icon.svg" alt="MKG" />
                     <div style={{ minWidth: 0 }}>
                         <h1>MKG Khảo Sát</h1>
-                        <div className="hdr-sub">Khảo sát hiện trạng nội thất</div>
+                        <div className="hdr-sub">
+                            {logged ? (account?.email || pb.myName()) : 'Khảo sát hiện trạng nội thất'}
+                        </div>
                     </div>
                 </div>
-                <div className={`sync-chip ${syncBusy ? 'busy' : logged ? 'on' : 'off'}`}>
+                <div className={`sync-chip ${syncBusy ? 'busy' : logged ? 'on' : 'off'}`}
+                    onClick={() => logged && onOpenSyncStatus?.()}>
                     {syncBusy ? <RefreshCw size={13} className="spin" /> : logged ? <Cloud size={13} /> : <CloudOff size={13} />}
-                    {syncBusy ? 'Đang sync' : logged ? fmtSince(lastSyncAt) : 'Offline'}
+                    {syncBusy ? (syncMsg ? syncMsg.replace(/^Đang /, '').replace(/\.\.\.$/, '') : 'Đang sync')
+                        : logged ? fmtSince(lastSyncAt) : 'Offline'}
                 </div>
                 <button className="icon-btn" onClick={() => setShowSettings(true)}><Settings size={21} /></button>
             </div>
@@ -112,7 +95,13 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                             <div className="project-icon"><FolderOpen size={23} /></div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                                 <div className="project-name">{p.name}</div>
-                                <div className="project-meta">{fmtDate(p.createdAt)}</div>
+                                <div className="project-meta" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                    {isTeam(p)
+                                        ? <><Users size={11.5} style={{ color: 'var(--blue)' }} />
+                                            {isMine(p) ? `Team ${team?.name || 'MKG'}` : (p.ownerName || 'Đồng nghiệp')}</>
+                                        : <><Lock size={11} /> Riêng tư</>}
+                                    <span style={{ opacity: .5 }}>·</span>{fmtDate(p.createdAt)}
+                                </div>
                             </div>
                             <button className="icon-btn" onClick={(e) => { e.stopPropagation(); setMenuFor(p); }}>
                                 <MoreVertical size={19} />
@@ -122,7 +111,7 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                 )}
             </div>
 
-            {/* Per-project menu */}
+            {/* Menu từng dự án */}
             <Sheet open={!!menuFor} onClose={() => setMenuFor(null)} title={menuFor?.name}>
                 <button className="sheet-row" onClick={() => {
                     const p = menuFor;
@@ -132,19 +121,39 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                     <Pencil size={19} style={{ color: 'var(--blue)' }} />
                     <div style={{ flex: 1 }}>Đổi tên</div>
                 </button>
-                <button className="sheet-row" onClick={() => shareProject(menuFor)}>
+
+                {logged && (
+                    <button className="sheet-row" onClick={() => {
+                        const p = menuFor;
+                        setMenuFor(null);
+                        onSetScope(p.id, isTeam(p) ? 'private' : 'team');
+                    }}>
+                        {menuFor && isTeam(menuFor)
+                            ? <><Lock size={19} style={{ color: 'var(--ink-2)' }} />
+                                <div style={{ flex: 1 }}>Chuyển về riêng tư
+                                    <div className="sub">Chỉ mình thấy trên các máy của mình</div></div></>
+                            : <><Users size={19} style={{ color: 'var(--blue)' }} />
+                                <div style={{ flex: 1 }}>Chia sẻ cho team {team?.name || 'MKG'}
+                                    <div className="sub">Cả team xem và sửa được dự án này</div></div></>}
+                    </button>
+                )}
+
+                <button className="sheet-row" onClick={() => { const p = menuFor; setMenuFor(null); onShare(p); }}>
                     <Share2 size={19} style={{ color: 'var(--blue)' }} />
                     <div style={{ flex: 1 }}>
                         Chia sẻ link xem
-                        <div className="sub">Gửi cho khách hàng hoặc đồng nghiệp</div>
+                        <div className="sub">Link ngắn gửi khách — thu hồi được</div>
                     </div>
                 </button>
+
                 <button className="sheet-row" style={{ color: '#dc2626' }} onClick={() => {
                     const p = menuFor;
                     setMenuFor(null);
                     setConfirm({
                         title: `Xóa "${p.name}"?`,
-                        message: 'Toàn bộ mặt bằng và ảnh khảo sát trong dự án sẽ bị xóa.',
+                        message: isTeam(p)
+                            ? 'Dự án đang chia sẻ với team — xóa sẽ mất trên máy của tất cả thành viên.'
+                            : 'Toàn bộ mặt bằng và ảnh khảo sát trong dự án sẽ bị xóa.',
                         actionLabel: 'Xóa dự án',
                         onOK: () => onDelete(p.id),
                     });
@@ -154,7 +163,7 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                 </button>
             </Sheet>
 
-            {/* Settings / account */}
+            {/* Cài đặt / tài khoản */}
             <Sheet open={showSettings} onClose={() => setShowSettings(false)} title="Đồng bộ & tài khoản"
                 sub="Dữ liệu lưu trên máy, tự đồng bộ lên cloud khi đăng nhập.">
                 {logged ? (
@@ -163,7 +172,17 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                             <CheckCircle2 size={20} style={{ color: 'var(--ok)' }} />
                             <div style={{ flex: 1 }}>
                                 Đã đăng nhập
-                                <div className="sub">{account?.email}</div>
+                                <div className="sub">{account?.email || pb.myName()}</div>
+                            </div>
+                        </div>
+                        <div className="sheet-row" style={{ borderBottom: '1px solid var(--line)' }}>
+                            <Users size={20} style={{ color: team ? 'var(--blue)' : 'var(--muted)' }} />
+                            <div style={{ flex: 1 }}>
+                                {team ? `Team ${team.name}` : 'Chưa thuộc team nào'}
+                                <div className="sub">
+                                    {team ? 'Dự án đặt phạm vi team sẽ hiện cho cả team'
+                                        : 'Nhờ Founder thêm tài khoản vào team để dùng dữ liệu chung'}
+                                </div>
                             </div>
                         </div>
                         <button className="sheet-row" onClick={() => { setShowSettings(false); onSync(); }}>
@@ -176,14 +195,16 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                         </button>
                         <button className="sheet-row" style={{ color: '#dc2626' }} onClick={() => { onLogout(); setShowSettings(false); }}>
                             <LogOut size={19} />
-                            <div style={{ flex: 1 }}>Đăng xuất</div>
+                            <div style={{ flex: 1 }}>Đăng xuất<div className="sub">Dữ liệu vẫn giữ trên máy này</div></div>
                         </button>
                     </>
                 ) : (
                     <>
                         <div className="field">
-                            <label>Email</label>
-                            <input type="email" value={email} placeholder="email@mkg.vn"
+                            {/* type="text" chứ không phải "email": bảng users cho đăng nhập bằng
+                                username, mà input email sẽ bị trình duyệt chặn khi nhập "mkg20144". */}
+                            <label>Tài khoản / Email</label>
+                            <input type="text" value={email} placeholder="mkg20144 hoặc email@mkg.vn"
                                 onChange={e => setEmail(e.target.value)} autoComplete="username" />
                         </div>
                         <div className="field">
@@ -198,7 +219,7 @@ export default function ProjectsScreen({ projects, syncBusy, lastSyncAt, onOpen,
                     </>
                 )}
                 <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--muted)', paddingTop: 14 }}>
-                    MKG Khảo Sát v2.0 · db.mkg.vn
+                    MKG Khảo Sát v3.0 · db.mkg.vn
                 </div>
             </Sheet>
 

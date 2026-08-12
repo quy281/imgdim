@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>user layer selftest</title>
+<style>
+    body { font: 13px/1.6 ui-monospace, monospace; padding: 16px; }
+    .FAIL { color: #dc2626; font-weight: 700; }
+    .PASS { color: #16a34a; }
+    h3 { margin: 18px 0 4px; font-family: system-ui; }
+</style>
+<pre id="out">running…</pre>
+<script type="module">
+    // Lớp user: mỗi tài khoản một IndexedDB riêng. Test kiểm đúng ba việc:
+    //   1. Dữ liệu tạo lúc chưa đăng nhập được NHẬN vào tài khoản đầu tiên.
+    //   2. Tài khoản khác đăng nhập trên cùng máy KHÔNG thấy dữ liệu của người trước.
+    //   3. Đăng xuất không làm mất dữ liệu đang xem.
+    import * as db from '/src/lib/db.js';
+
+    const lines = [];
+    let pass = 0, fail = 0;
+    const ok = (name, cond, extra = '') => {
+        cond ? pass++ : fail++;
+        lines.push(`<span class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</span>  ${name}${extra && !cond ? ` — ${extra}` : ''}`);
+    };
+    const group = (t) => lines.push(`<h3>${t}</h3>`);
+
+    // Dọn sạch trước khi chạy để test tái lập được.
+    const U1 = 'utest_user_1', U2 = 'utest_user_2';
+    for (const k of Object.keys(localStorage)) if (k.startsWith('ks_')) localStorage.removeItem(k);
+    for (const name of ['mkg-khaosat-anon', `mkg-khaosat-${U1}`, `mkg-khaosat-${U2}`]) {
+        await new Promise(r => { const q = indexedDB.deleteDatabase(name); q.onsuccess = q.onerror = q.onblocked = r; });
+    }
+
+    const mkProj = (id, name) => ({ id, name, scope: 'private', createdAt: 1, updatedAt: 1 });
+
+    group('1. Chưa đăng nhập → store anon');
+    {
+        const r = await db.setAccount(null);
+        ok('mở store anon', r.storeId === 'anon', r.storeId);
+        await db.saveProjects([mkProj('pA', 'Dự án khảo sát trước khi login')]);
+        await db.putDoc({ id: 'dA', projectId: 'pA', type: 'plan', name: 'MB 1', createdAt: 1, updatedAt: 1 });
+        ok('ghi/đọc được ở anon', (await db.loadProjects()).length === 1);
+        ok('doc index hoạt động', (await db.listDocs('pA')).length === 1);
+    }
+
+    group('2. Đăng nhập lần đầu → nhận dữ liệu anon vào tài khoản');
+    {
+        const r = await db.setAccount(U1);
+        ok('đổi sang store của user 1', r.storeId === U1, r.storeId);
+        ok('báo đã nhận dữ liệu', r.adopted > 0, `adopted=${r.adopted}`);
+        const ps = await db.loadProjects();
+        ok('dự án tạo lúc chưa login đi theo tài khoản', ps.length === 1 && ps[0].id === 'pA', JSON.stringify(ps));
+        ok('doc cũng đi theo', (await db.listDocs('pA')).length === 1);
+    }
+    {
+        // Không được nhận lần hai: store anon phải đã rỗng.
+        await db.setAccount('anon');
+        ok('store anon đã được dọn sau khi nhận', (await db.loadProjects()).length === 0);
+    }
+
+    group('3. Tài khoản khác trên cùng máy — không được thấy dữ liệu người trước');
+    {
+        await db.setAccount(U1);
+        await db.saveProjects([mkProj('pA', 'Dự án của user 1'), mkProj('pB', 'Biệt thự khách VIP')]);
+
+        await db.setAccount(U2);
+        const ps = await db.loadProjects();
+        ok('user 2 thấy store RỖNG (không rò rỉ)', ps.length === 0, JSON.stringify(ps.map(p => p.name)));
+        ok('user 2 không thấy doc của user 1', (await db.listAllDocs()).length === 0);
+        await db.saveProjects([mkProj('pC', 'Dự án của user 2')]);
+
+        await db.setAccount(U1);
+        const back = await db.loadProjects();
+        ok('quay lại user 1 vẫn còn đủ dữ liệu', back.length === 2 && back.some(p => p.id === 'pB'), JSON.stringify(back.map(p => p.id)));
+        ok('user 1 không thấy dự án của user 2', !back.some(p => p.id === 'pC'));
+    }
+
+    group('4. Đăng xuất giữ nguyên store đang xem');
+    {
+        await db.setAccount(U1);
+        ok('lastStoreId nhớ đúng tài khoản', db.lastStoreId() === U1, db.lastStoreId());
+        // App khi boot mà chưa đăng nhập sẽ gọi setAccount(lastStoreId()).
+        const r = await db.setAccount(db.lastStoreId());
+        ok('boot sau khi đăng xuất vẫn mở đúng store', r.storeId === U1);
+        ok('dữ liệu vẫn thấy được sau khi đăng xuất', (await db.loadProjects()).length === 2);
+        ok('không nhận nhầm dữ liệu lần nữa', r.adopted === 0);
+    }
+
+    group('5. Tombstone: ghi kể cả khi offline, tự dọn khi quá hạn');
+    {
+        await db.setAccount(U2);
+        await db.addTombstone('x1', 'doc', Date.now());
+        await db.addTombstone('x2', 'project', Date.now() - 100 * 24 * 3600 * 1000); // 100 ngày trước
+        const ts = await db.getTombstones();
+        ok('tombstone mới còn giữ', ts.some(t => t.item_id === 'x1'));
+        ok('tombstone quá 90 ngày bị dọn', !ts.some(t => t.item_id === 'x2'), JSON.stringify(ts));
+        await db.addTombstone('x1', 'doc', Date.now() + 5000);
+        const ts2 = await db.getTombstones();
+        ok('addTombstone lại không tạo bản trùng', ts2.filter(t => t.item_id === 'x1').length === 1);
+        await db.removeTombstones(['x1']);
+        ok('xóa tombstone được', (await db.getTombstones()).length === 0);
+    }
+
+    group('6. mutateProjects — chống mất dữ liệu khi sync chạy song song');
+    {
+        await db.setAccount(U2);
+        await db.saveProjects([mkProj('p1', 'A')]);
+        // Mô phỏng: sync đọc snapshot (chỉ có p1), người dùng tạo p2 trong lúc sync chạy,
+        // rồi sync ghi kết quả. Nếu ghi từ snapshot cũ thì p2 mất.
+        const snapshot = await db.loadProjects();
+        await db.mutateProjects(cur => [mkProj('p2', 'Tạo chen vào giữa'), ...cur]);
+        await db.mutateProjects(cur => {
+            const map = new Map(cur.map(p => [p.id, p]));
+            for (const p of snapshot) map.set(p.id, { ...p, name: p.name + ' (từ cloud)' });
+            return [...map.values()];
+        });
+        const final = await db.loadProjects();
+        ok('dự án tạo chen vào giữa KHÔNG bị mất', final.some(p => p.id === 'p2'), JSON.stringify(final.map(p => p.id)));
+        ok('dữ liệu kéo về vẫn được áp', final.find(p => p.id === 'p1')?.name === 'A (từ cloud)');
+    }
+
+    // Dọn rác test
+    for (const k of Object.keys(localStorage)) if (k.startsWith('ks_')) localStorage.removeItem(k);
+    document.getElementById('out').innerHTML = lines.join('\n') + `\n\n<b>${pass} pass, ${fail} fail</b>`;
+    document.title = fail ? `${fail} FAIL` : `${pass} pass`;
+</script>

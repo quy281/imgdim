@@ -4,7 +4,9 @@ import { genId, detectRooms, shoelaceArea, polygonPerimeter, pointInPolygon, lab
 // ===== Factories =====
 export function newProject(name) {
     const now = Date.now();
-    return { id: genId('p'), name, createdAt: now, updatedAt: now };
+    // scope 'private' theo mặc định: dữ liệu khách là mật, muốn cả team thấy thì phải
+    // bấm chia sẻ. ownerId do App gán sau khi biết tài khoản đang đăng nhập.
+    return { id: genId('p'), name, scope: 'private', createdAt: now, updatedAt: now };
 }
 
 export function newPlanDoc(projectId, name) {
@@ -36,6 +38,7 @@ export function newPhotoDoc(projectId, name, photo) {
         type: 'photo',
         name,
         img: photo.base64,
+        photoHash: photo.hash, // để sync biết ảnh có đổi hay không, khỏi upload lại
         w: photo.w,
         h: photo.h,
         thumb: photo.thumb,
