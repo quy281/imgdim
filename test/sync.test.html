@@ -394,6 +394,68 @@
         ok('chế độ cũ vẫn kéo được dữ liệu về', r.pulledDocs.length === 1 && r.pulledDocs[0].updatedAt === 8000);
     }
 
+    // ===== 6b. Client MỚI trên backend CHƯA nâng schema (đúng cửa sổ giữa deploy và pb-setup) =====
+    group('Tương thích backend cũ — không được làm mất ảnh');
+    const legacyRoutes = (recs) => {
+        routes['collections/survey_items/records?'] = (path) => res({
+            // Metadata thiếu updated_ms → client phải nhận ra là backend cũ.
+            items: recs.map(r => path.includes('fields=')
+                ? { id: r.id, item_id: r.item_id, kind: r.kind, project_id: r.project_id, name: r.name, owner: r.owner }
+                : r),
+            page: 1, totalPages: 1,
+        });
+    };
+    {
+        const photoRec = {
+            id: 'rec_ph9', item_id: 'ph9', kind: 'doc', project_id: 'p1', name: 'Ảnh 9', owner: UID,
+            data: { id: 'ph9', projectId: 'p1', type: 'photo', name: 'Ảnh 9', img: IMG, thumb: 't', updatedAt: 1000 },
+        };
+        setup({ remote: [photoRec] });
+        legacyRoutes([photoRec]);
+        const localPhoto = { id: 'ph9', projectId: 'p1', type: 'photo', name: 'Ảnh 9 sửa', img: IMG, photoHash: hashString(IMG), thumb: 't', createdAt: 1, updatedAt: 9000 };
+        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [localPhoto] });
+        ok('nhận ra backend cũ', r.legacy === true);
+        const w = writes().find(c => c.path.includes('rec_ph9'));
+        ok('KHÔNG upload multipart lên field photo chưa tồn tại', w && !w.isForm, 'vẫn gửi FormData');
+        const sent = typeof w?.body?.data === 'string' ? JSON.parse(w.body.data) : w?.body?.data;
+        ok('ẢNH VẪN NẰM TRONG data (không mất)', sent?.img === IMG, sent?.img ? 'ảnh khác' : 'img đã bị xóa khỏi data');
+        ok('không gửi cột chưa tồn tại: updated_ms', !('updated_ms' in (w?.body || {})));
+        ok('không gửi cột chưa tồn tại: scope', !('scope' in (w?.body || {})));
+        ok('không gửi cột chưa tồn tại: rev', !('rev' in (w?.body || {})));
+        ok('không gửi cột chưa tồn tại: photo_hash', !('photo_hash' in (w?.body || {})));
+        ok('vẫn gửi đủ field của v2', ['owner', 'item_id', 'kind', 'project_id', 'name', 'data']
+            .every(k => k in (w?.body || {})), JSON.stringify(Object.keys(w?.body || {})));
+    }
+    {
+        // Không được đẩy lại toàn bộ dự án mỗi lượt sync chỉ vì thiếu cột scope/schema_v.
+        const photoRec = {
+            id: 'rec_ph8', item_id: 'ph8', kind: 'doc', project_id: 'p1', name: 'Ảnh 8', owner: UID,
+            data: { id: 'ph8', projectId: 'p1', type: 'photo', img: IMG, updatedAt: 5000 },
+        };
+        const projRec = { id: 'rec_p1', item_id: 'p1', kind: 'project', project_id: 'p1', name: 'P p1', owner: UID, data: proj('p1', 5000) };
+        setup({ remote: [projRec, photoRec] });
+        legacyRoutes([projRec, photoRec]);
+        const r = await pb.fullSync({
+            projects: [proj('p1', 5000, { scope: 'team' })],
+            docs: [{ id: 'ph8', projectId: 'p1', type: 'photo', img: IMG, photoHash: hashString(IMG), updatedAt: 5000 }],
+            tombstones: [], scopeDirty: ['p1'],
+        });
+        ok('đã khớp thì không ghi gì, dù scope lệch và schema cũ', r.pushed === 0 && writes().length === 0,
+            `pushed=${r.pushed}, writes=${writes().map(c => c.path).join('|')}`);
+        ok('không báo migrate khống', r.migrated === 0);
+    }
+    {
+        // Xóa vẫn phải lan sang máy khác trên backend cũ, qua data._deleted như v2.
+        const docRec = { id: 'rec_d7', item_id: 'd7', kind: 'doc', project_id: 'p1', name: 'D d7', owner: UID, data: doc('d7', 1000) };
+        setup({ remote: [docRec] });
+        legacyRoutes([docRec]);
+        const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd7', kind: 'doc', deletedAt: 7000 }] });
+        const w = writes().find(c => c.path.includes('rec_d7'));
+        ok('soft-delete chạy được trên backend cũ', r.deleted === 1 && !!w);
+        ok('dấu xóa ghi vào data._deleted (v2 đọc được)', w?.body?.data?._deleted === true, JSON.stringify(w?.body));
+        ok('không gửi cột deleted chưa tồn tại', !('deleted' in (w?.body || {})));
+    }
+
     // ===== 7. Id sinh ra phải duy nhất giữa các thiết bị =====
     group('genId');
     {

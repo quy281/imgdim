@@ -302,18 +302,29 @@ export async function fetchRemoteStatus() {
 }
 
 // ===== Push =====
-function buildPayload({ kind, item, scope, teamId }) {
+function buildPayload({ kind, item, scope, teamId, legacy }) {
     const isPhoto = kind === 'doc' && item.type === 'photo';
-    const data = isPhoto ? { ...item, img: undefined } : item;
+    const base = {
+        owner: myId(),
+        item_id: String(item.id),
+        kind,
+        project_id: String(item.projectId || item.id),
+        name: item.name || '',
+    };
+
+    // Backend CHƯA chạy pb-setup.mjs: field `photo` không tồn tại. Nếu vẫn bóc `img` ra
+    // khỏi `data` rồi gửi vào field đó thì ảnh biến mất khỏi cloud — máy khác kéo về
+    // được doc ảnh rỗng. Ở chế độ này giữ nguyên hình dạng payload của v2.
+    if (legacy) {
+        return { fields: { ...base, data: item }, photoDataUrl: null, legacy: true };
+    }
+
+    const data = isPhoto ? { ...item } : item;
     if (isPhoto) delete data.img;
     return {
         fields: {
-            owner: myId(),
+            ...base,
             owner_name: myName(),
-            item_id: String(item.id),
-            kind,
-            project_id: String(item.projectId || item.id),
-            name: item.name || '',
             scope: scope || 'private',
             team: scope === 'team' ? (teamId || '') : '',
             updated_ms: Number(item.updatedAt) || 0,
@@ -326,8 +337,9 @@ function buildPayload({ kind, item, scope, teamId }) {
     };
 }
 
-async function writeRecord(recId, fields, photoDataUrl, rev) {
-    const body = { ...fields, rev: (rev || 0) + 1 };
+async function writeRecord(recId, fields, photoDataUrl, rev, legacy) {
+    // Chế độ tương thích: không gửi `rev` vì cột đó chưa có trên backend.
+    const body = legacy ? { ...fields } : { ...fields, rev: (rev || 0) + 1 };
     const path = recId ? `collections/${COL}/records/${recId}` : `collections/${COL}/records`;
     const method = recId ? 'PATCH' : 'POST';
 
@@ -408,17 +420,19 @@ export async function fullSync(local, onProgress) {
         if ((rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); continue; } // cloud mới hơn → thắng
         p('Đang xóa trên cloud...');
         try {
-            await api(`collections/${COL}/records/${rec.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({
-                    name: '_deleted_',
-                    deleted: true,
-                    updated_ms: t.deletedAt,
-                    rev: (rec.rev || 0) + 1,
-                    schema_v: SCHEMA_V,
-                    data: { id: t.item_id, _deleted: true, updatedAt: t.deletedAt },
-                }),
+            // `data._deleted` là dấu xóa mà CẢ HAI schema đều đọc được; các cột kia chỉ
+            // gửi khi backend đã có, để không dựa vào việc PocketBase bỏ qua field lạ.
+            const delBody = {
+                name: '_deleted_',
+                data: { id: t.item_id, _deleted: true, updatedAt: t.deletedAt },
+            };
+            if (!legacy) Object.assign(delBody, {
+                deleted: true,
+                updated_ms: t.deletedAt,
+                rev: (rec.rev || 0) + 1,
+                schema_v: SCHEMA_V,
             });
+            await api(`collections/${COL}/records/${rec.id}`, { method: 'PATCH', body: JSON.stringify(delBody) });
             deleted++;
             clearedTombstones.push(t.item_id);
             rec.deleted = true;
@@ -452,12 +466,15 @@ export async function fullSync(local, onProgress) {
         // Cloud đã xóa và mốc xóa không cũ hơn local → tôn trọng lệnh xóa, không đẩy lại.
         if (rec?.deleted && (rec.updated_ms || 0) >= (loc.item.updatedAt || 0)) continue;
         const stale = !rec || (loc.item.updatedAt || 0) > (rec.updated_ms || 0);
-        const scopeChanged = rec && (
+        // Backend chưa có cột scope/schema_v → đổi phạm vi và migrate đều vô nghĩa, mà
+        // điều kiện lại luôn đúng nên sẽ đẩy lại toàn bộ dự án ở MỌI lượt sync.
+        const scopeChanged = !legacy && rec && (
             scopeDirty.has(String(loc.kind === 'doc' ? loc.item.projectId : loc.item.id)) ||
             (rec.scope || 'private') !== loc.scope
         );
         // Record còn ở schema cũ (ảnh nằm trong JSON) → đẩy lại để tách ảnh ra file field.
-        const needsMigrate = rec && (rec.schema_v || 2) < SCHEMA_V && loc.kind === 'doc' && loc.item.type === 'photo';
+        const needsMigrate = !legacy && rec && (rec.schema_v || 2) < SCHEMA_V
+            && loc.kind === 'doc' && loc.item.type === 'photo';
         if (stale || scopeChanged || needsMigrate) toPush.push({ ...loc, rec, reason: stale ? 'edit' : scopeChanged ? 'scope' : 'migrate' });
     }
 
@@ -510,10 +527,10 @@ export async function fullSync(local, onProgress) {
     for (let i = 0; i < toPush.length; i++) {
         const { kind, item, scope, rec, reason } = toPush[i];
         p(`Đang đẩy lên ${i + 1}/${toPush.length}...`);
-        const { fields, photoDataUrl } = buildPayload({ kind, item, scope, teamId: team?.id });
+        const { fields, photoDataUrl } = buildPayload({ kind, item, scope, teamId: team?.id, legacy });
         // Migrate/đổi scope không phải người dùng sửa nội dung → giữ nguyên mốc thời gian
         // để máy khác không phải tải lại doc.
-        if (reason !== 'edit' && rec) fields.updated_ms = rec.updated_ms || fields.updated_ms;
+        if (reason !== 'edit' && rec && !legacy) fields.updated_ms = rec.updated_ms || fields.updated_ms;
         // Sửa dự án team của ĐỒNG NGHIỆP: không được gửi owner, vì rule chống chiếm record
         // (@request.body.owner = owner) sẽ trả 403 và mất luôn bản sửa.
         if (rec && rec.owner && rec.owner !== uid) {
@@ -523,7 +540,7 @@ export async function fullSync(local, onProgress) {
         // Ảnh đã đúng hash trên cloud thì không upload lại.
         const skipPhoto = rec && photoDataUrl && rec.photo && rec.photo_hash === fields.photo_hash;
         try {
-            await writeRecord(rec?.id, fields, skipPhoto ? null : photoDataUrl, rec?.rev);
+            await writeRecord(rec?.id, fields, skipPhoto ? null : photoDataUrl, rec?.rev, legacy);
             pushed++;
             if (reason === 'migrate') migrated++;
             if (reason === 'scope') scopeSynced.add(String(kind === 'doc' ? item.projectId : item.id));
