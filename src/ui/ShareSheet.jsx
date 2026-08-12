@@ -39,14 +39,30 @@ async function buildPayload(project) {
     };
 }
 
+/**
+ * Link dự phòng khi collection `shares` chưa có trên backend (chưa chạy pb-setup.mjs),
+ * hoặc khi chưa đăng nhập. Nhúng dữ liệu thẳng vào URL như bản v2, NHƯNG:
+ *   - mã hoá base64url ('+' → '-', '/' → '_'): '+' trong query bị đọc thành khoảng
+ *     trắng, đúng lỗi làm mọi link v2 vỡ.
+ *   - bỏ ảnh: thumb 360px mỗi cái ~20-40KB, nhúng vào URL là chắc chắn bị cắt.
+ */
+function inlineShareUrl(payload) {
+    const slim = { ...payload, photos: [] };
+    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slim))))
+        .replace(/\+/g, '-').replace(/\//g, '_');
+    return `${window.location.origin}/?view=${b64}`;
+}
+
 export default function ShareSheet({ project, onClose }) {
     const [links, setLinks] = useState(null);
     const [busy, setBusy] = useState(false);
     const [days, setDays] = useState(30);
     const [error, setError] = useState(null);
+    const [fallback, setFallback] = useState(null); // link dài khi chưa có collection shares
 
     useEffect(() => {
-        if (!project) { setLinks(null); setError(null); return; }
+        if (!project) { setLinks(null); setError(null); setFallback(null); return; }
+        setFallback(null);
         load();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [project?.id]);
@@ -57,7 +73,9 @@ export default function ShareSheet({ project, onClose }) {
         try {
             setLinks(await pb.listShares(project.id));
         } catch (err) {
-            setError(err.message);
+            // 404 = collection `shares` chưa dựng. Không phải lỗi để dí vào mặt người dùng,
+            // chỉ nghĩa là chưa có link ngắn nào; nút tạo link vẫn dùng được qua fallback.
+            if (err.status !== 404) setError(err.message);
             setLinks([]);
         }
     };
@@ -67,9 +85,24 @@ export default function ShareSheet({ project, onClose }) {
         setError(null);
         try {
             const payload = await buildPayload(project);
-            const res = await pb.createShare({ projectId: project.id, title: project.name, payload, days });
-            setLinks(l => [{ ...res, title: project.name, revoked: false }, ...(l || [])]);
-            await copy(res.url, true);
+            let res = null;
+            if (pb.isLoggedIn()) {
+                try {
+                    res = await pb.createShare({ projectId: project.id, title: project.name, payload, days });
+                } catch (err) {
+                    // Chỉ rơi về link dài khi backend CHƯA có collection shares. Lỗi khác
+                    // (mạng, hết phiên) phải báo, không được im lặng đưa link kém hơn.
+                    if (err.status !== 404) throw err;
+                }
+            }
+            if (res) {
+                setLinks(l => [{ ...res, title: project.name, revoked: false }, ...(l || [])]);
+                await copy(res.url, true);
+            } else {
+                const url = inlineShareUrl(payload);
+                setFallback({ url, hasPhotos: (payload.photos || []).length > 0, long: url.length > 4000 });
+                await copy(url, true);
+            }
         } catch (err) {
             setError(err.message);
         } finally {
@@ -108,9 +141,9 @@ export default function ShareSheet({ project, onClose }) {
             sub={project ? `${project.name} — người nhận chỉ xem, không sửa được` : ''}>
 
             {!pb.isLoggedIn() && (
-                <div style={{ padding: '14px 16px', fontSize: 13.5, color: 'var(--muted)', display: 'flex', gap: 8 }}>
+                <div style={{ padding: '14px 16px 4px', fontSize: 13.5, color: 'var(--muted)', display: 'flex', gap: 8 }}>
                     <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 1, color: 'var(--warn)' }} />
-                    <div>Cần đăng nhập để tạo link ngắn. Link được lưu trên cloud nên thu hồi được bất cứ lúc nào.</div>
+                    <div>Chưa đăng nhập nên link sẽ là bản dài, không thu hồi được. Đăng nhập để có link ngắn.</div>
                 </div>
             )}
 
@@ -129,13 +162,42 @@ export default function ShareSheet({ project, onClose }) {
                                 onClick={() => setDays(e.days)}>{e.label}</button>
                         ))}
                     </div>
-                    <div style={{ padding: '0 16px 14px' }}>
-                        <button className="btn btn-primary btn-block" disabled={busy} onClick={create}>
-                            {busy ? <RefreshCw size={17} className="spin" /> : <Link2 size={17} />}
-                            {busy ? 'Đang tạo...' : 'Tạo link mới'}
-                        </button>
-                    </div>
                 </>
+            )}
+
+            <div style={{ padding: pb.isLoggedIn() ? '0 16px 14px' : '10px 16px 14px' }}>
+                <button className="btn btn-primary btn-block" disabled={busy} onClick={create}>
+                    {busy ? <RefreshCw size={17} className="spin" /> : <Link2 size={17} />}
+                    {busy ? 'Đang tạo...' : 'Tạo link mới'}
+                </button>
+            </div>
+
+            {fallback && (
+                <div style={{ padding: '0 16px 14px' }}>
+                    <div style={{ fontSize: 12.5, fontFamily: 'ui-monospace, monospace', color: 'var(--ink-2)', wordBreak: 'break-all', background: 'var(--bg)', padding: '8px 10px', borderRadius: 8, maxHeight: 76, overflow: 'auto' }}>
+                        {fallback.url}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                        <button className="btn" style={{ flex: 1, border: '1.5px solid var(--line)', background: 'none' }}
+                            onClick={() => copy(fallback.url)}>
+                            <Copy size={16} /> Copy link
+                        </button>
+                        {navigator.share && (
+                            <button className="btn" style={{ flex: 1, border: '1.5px solid var(--line)', background: 'none' }}
+                                onClick={() => copy(fallback.url, true)}>
+                                <Share2 size={16} /> Gửi
+                            </button>
+                        )}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: 8, display: 'flex', gap: 6 }}>
+                        <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                        <div>
+                            Link dạng dài ({(fallback.url.length / 1024).toFixed(1)}KB) — chưa dựng link ngắn trên cloud
+                            nên <b>không thu hồi được</b>{fallback.hasPhotos && ' và không kèm ảnh khảo sát'}.
+                            {fallback.long && ' Link khá dài, một số ứng dụng chat có thể cắt bớt.'}
+                        </div>
+                    </div>
+                </div>
             )}
 
             {links === null && pb.isLoggedIn() && (
