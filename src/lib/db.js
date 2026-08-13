@@ -69,23 +69,45 @@ export async function setAccount(uid) {
     let adopted = 0;
     let migratedV2 = 0;
 
-    // 1. Di trú store v2 một lần cho mỗi store đích.
-    const v2Flag = V2_MIGRATED_PREFIX + target;
-    if (!localStorage.getItem(v2Flag)) {
-        const legacy = legacyStore();
-        if (!(await isEmpty(legacy)) && await isEmpty(inst)) {
-            migratedV2 = await copyAll(legacy, inst);
+    // 1. Di trú store v2.
+    //
+    // Dấu "đã di trú" phải nằm TRONG store đích, không phải localStorage. Ở localStorage
+    // thì dấu và dữ liệu lệch nhau được: dấu đã đặt mà store rỗng là dữ liệu v2 mồ côi
+    // vĩnh viễn, người dùng mở app lên thấy trắng. Nằm cùng store thì xoá store là dấu
+    // mất theo — đúng ngữ nghĩa cần, và tự cứu được máy đang mắc kẹt.
+    if (await isEmpty(inst)) {
+        const meta = (await inst.getItem(META_KEY)) || {};
+        if (!meta.v2Migrated) {
+            try {
+                const legacy = legacyStore();
+                if (!(await isEmpty(legacy))) migratedV2 = await copyAll(legacy, inst);
+            } catch (err) {
+                // Đọc store cũ lỗi thì KHÔNG đánh dấu, để lần mở sau thử lại.
+                console.warn('migrate v2:', err);
+            }
+            // Chỉ đánh dấu khi thật sự có copy. Legacy rỗng → để trống, lần sau kiểm lại
+            // (hai lệnh getItem, rẻ) thay vì chốt cửa vĩnh viễn.
+            if (migratedV2) {
+                await inst.setItem(META_KEY, { ...((await inst.getItem(META_KEY)) || {}), v2Migrated: true });
+            }
         }
-        localStorage.setItem(v2Flag, '1');
     }
+    // Dọn cờ localStorage của bản trước để không ai còn đọc tới nó.
+    localStorage.removeItem(V2_MIGRATED_PREFIX + target);
 
     // 2. Nhận dữ liệu tạo lúc chưa đăng nhập vào tài khoản, nếu tài khoản còn rỗng.
     if (uid && prev === 'anon' && await isEmpty(inst)) {
         const anon = instanceFor('anon');
         if (!(await isEmpty(anon))) {
             adopted = await copyAll(anon, inst);
-            // Xóa bản anon để không bị nhận lần hai vào tài khoản khác.
-            for (const k of await allKeys(anon)) await anon.removeItem(k);
+            // Chỉ xoá bản anon sau khi ĐÃ KIỂM dữ liệu sang đủ — copy lỗi giữa đường mà
+            // xoá nguồn là mất trắng.
+            if (!(await isEmpty(inst))) {
+                for (const k of await allKeys(anon)) await anon.removeItem(k);
+            } else {
+                adopted = 0;
+                console.warn('adopt anon: dữ liệu chưa sang được, giữ nguyên bản anon');
+            }
         }
     }
 

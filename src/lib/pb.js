@@ -27,6 +27,9 @@ const AUTH_KEY = 'ks_auth';
 const CLOCK_KEY = 'ks_clock_off';
 
 export const SCHEMA_V = 3;
+// Phạm vi mặc định khi dự án chưa có trường scope (dữ liệu tạo trước khi có lớp user).
+// 'team' → dữ liệu cũ tự vào team MKG, không phải chuyển tay từng dự án.
+export const SCOPE_DEFAULT = 'team';
 const META_FIELDS = 'id,item_id,kind,project_id,name,owner,owner_name,scope,team,updated_ms,deleted,rev,schema_v,photo,photo_hash';
 
 // ===== Auth =====
@@ -294,7 +297,7 @@ export async function fetchRemoteStatus() {
             name: r.name,
             owner: r.owner,
             ownerName: r.owner_name || '',
-            scope: r.scope || 'private',
+            scope: r.scope || SCOPE_DEFAULT,
             deleted: !!r.deleted,
             updatedAt: r.updated_ms || 0,
         })),
@@ -325,7 +328,7 @@ function buildPayload({ kind, item, scope, teamId, legacy }) {
         fields: {
             ...base,
             owner_name: myName(),
-            scope: scope || 'private',
+            scope: scope || SCOPE_DEFAULT,
             team: scope === 'team' ? (teamId || '') : '',
             updated_ms: Number(item.updatedAt) || 0,
             deleted: false,
@@ -387,11 +390,11 @@ export async function fullSync(local, onProgress) {
         remoteByItem.get(r.item_id).push(r);
     }
 
-    const scopeOfProject = new Map(local.projects.map(pr => [String(pr.id), pr.scope || 'private']));
+    const scopeOfProject = new Map(local.projects.map(pr => [String(pr.id), pr.scope || SCOPE_DEFAULT]));
     const localMap = new Map([
-        ...local.projects.map(pr => [String(pr.id), { kind: 'project', item: pr, scope: pr.scope || 'private' }]),
+        ...local.projects.map(pr => [String(pr.id), { kind: 'project', item: pr, scope: pr.scope || SCOPE_DEFAULT }]),
         ...local.docs.map(d => [String(d.id), {
-            kind: 'doc', item: d, scope: scopeOfProject.get(String(d.projectId)) || 'private',
+            kind: 'doc', item: d, scope: scopeOfProject.get(String(d.projectId)) || SCOPE_DEFAULT,
         }]),
     ]);
     const tombstoneMap = new Map(local.tombstones.map(t => [t.item_id, t]));
@@ -470,7 +473,11 @@ export async function fullSync(local, onProgress) {
         // điều kiện lại luôn đúng nên sẽ đẩy lại toàn bộ dự án ở MỌI lượt sync.
         const scopeChanged = !legacy && rec && (
             scopeDirty.has(String(loc.kind === 'doc' ? loc.item.projectId : loc.item.id)) ||
-            (rec.scope || 'private') !== loc.scope
+            // So với giá trị THÔ, không dùng mặc định: record chưa có scope (dữ liệu cũ
+            // hoặc script backfill bỏ sót) phải được đẩy một lần để ghi scope vào, nếu
+            // không thì rule đọc theo team `scope = "team"` sẽ không khớp và đồng nghiệp
+            // vẫn không thấy dự án.
+            (rec.scope || '') !== loc.scope
         );
         // Record còn ở schema cũ (ảnh nằm trong JSON) → đẩy lại để tách ảnh ra file field.
         const needsMigrate = !legacy && rec && (rec.schema_v || 2) < SCHEMA_V
@@ -491,7 +498,7 @@ export async function fullSync(local, onProgress) {
             if (!data || typeof data !== 'object') continue;
             const item = { ...data, ownerId: rec.owner, ownerName: rec.owner_name || '' };
             if (rec.kind === 'project') {
-                item.scope = rec.scope || 'private';
+                item.scope = rec.scope || SCOPE_DEFAULT;
                 pulledProjects.push(item);
             } else {
                 // Ảnh nằm ở file field từ schema_v 3 → tải riêng, và chỉ khi hash đổi.

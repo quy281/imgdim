@@ -286,6 +286,65 @@
         ok('scope chưa xong thì không báo xong', !r.scopeSynced.includes('p1'));
     }
 
+    // ===== 5a. Mặc định TẤT CẢ ở team MKG =====
+    group('Mặc định team MKG');
+    {
+        const { newProject } = await import('/src/lib/planModel.js');
+        ok('dự án mới mặc định scope=team', newProject('X').scope === 'team', newProject('X').scope);
+        ok('SCOPE_DEFAULT là team', pb.SCOPE_DEFAULT === 'team', pb.SCOPE_DEFAULT);
+    }
+    {
+        // Dự án cũ KHÔNG có trường scope → coi là team, và phải được đẩy lên để ghi scope
+        // vào record; nếu không, rule đọc theo team không khớp và đồng nghiệp vẫn không thấy.
+        setup({ remote: [rec({ item_id: 'pOld', kind: 'project', project_id: 'pOld', updated_ms: 5000, scope: '' })] });
+        const r = await pb.fullSync({
+            projects: [{ id: 'pOld', name: 'Dự án cũ', createdAt: 1, updatedAt: 5000 }], // không có scope
+            docs: [], tombstones: [], scopeDirty: [],
+        });
+        const w = writes().find(c => c.path.includes('rec_pOld'));
+        ok('record thiếu scope được đẩy lên một lần', !!w, 'không đẩy → đồng nghiệp không thấy');
+        ok('ghi scope=team', w?.body?.scope === 'team', JSON.stringify(w?.body?.scope));
+        ok('gắn team id', w?.body?.team === TEAM.id);
+        ok('giữ nguyên mốc thời gian (không phải người dùng sửa)', w?.body?.updated_ms === 5000);
+        ok('không đếm là migrate ảnh', r.migrated === 0);
+    }
+    {
+        // Đã khớp team rồi thì thôi, không đẩy lại mỗi lượt sync.
+        setup({ remote: [rec({ item_id: 'p2', kind: 'project', project_id: 'p2', updated_ms: 5000, scope: 'team', team: TEAM.id })] });
+        const r = await pb.fullSync({
+            projects: [{ id: 'p2', name: 'B', scope: 'team', createdAt: 1, updatedAt: 5000 }],
+            docs: [], tombstones: [], scopeDirty: [],
+        });
+        ok('đã là team thì không ghi lại', r.pushed === 0 && writes().length === 0,
+            `pushed=${r.pushed}, writes=${writes().map(c => c.path).join('|')}`);
+    }
+    {
+        // Đặt riêng tư có chủ ý thì phải được tôn trọng, không bị mặc định kéo về team.
+        setup({ remote: [rec({ item_id: 'p3', kind: 'project', project_id: 'p3', updated_ms: 5000, scope: 'private' })] });
+        const r = await pb.fullSync({
+            projects: [{ id: 'p3', name: 'C', scope: 'private', createdAt: 1, updatedAt: 5000 }],
+            docs: [], tombstones: [], scopeDirty: [],
+        });
+        ok('dự án đặt riêng tư giữ nguyên riêng tư', r.pushed === 0 && writes().length === 0,
+            `writes=${JSON.stringify(writes().map(c => c.body?.scope))}`);
+    }
+    {
+        // Doc thừa hưởng phạm vi từ dự án, kể cả khi dự án không ghi scope.
+        setup({
+            remote: [
+                rec({ item_id: 'p4', kind: 'project', project_id: 'p4', updated_ms: 5000, scope: 'team', team: TEAM.id }),
+                rec({ item_id: 'd4', project_id: 'p4', updated_ms: 5000, scope: '' }),
+            ],
+        });
+        await pb.fullSync({
+            projects: [{ id: 'p4', name: 'D', createdAt: 1, updatedAt: 5000 }],
+            docs: [{ id: 'd4', projectId: 'p4', type: 'plan', name: 'MB', updatedAt: 5000 }],
+            tombstones: [], scopeDirty: [],
+        });
+        const wd = writes().find(c => c.path.includes('rec_d4'));
+        ok('doc cũng được ghi scope=team', wd?.body?.scope === 'team', JSON.stringify(wd?.body?.scope));
+    }
+
     // ===== 5b. Token hết hạn — PocketBase trả 200 RỖNG chứ không 401 ở endpoint đọc =====
     group('Phiên hết hạn');
     {

@@ -4,9 +4,11 @@ import { genId, detectRooms, shoelaceArea, polygonPerimeter, pointInPolygon, lab
 // ===== Factories =====
 export function newProject(name) {
     const now = Date.now();
-    // scope 'private' theo mặc định: dữ liệu khách là mật, muốn cả team thấy thì phải
-    // bấm chia sẻ. ownerId do App gán sau khi biết tài khoản đang đăng nhập.
-    return { id: genId('p'), name, scope: 'private', createdAt: now, updatedAt: now };
+    // Mặc định 'team': cả team MKG xem và sửa được, khớp cách làm production ở Labs.
+    // Muốn giữ riêng thì đổi phạm vi trong menu dự án. Dự án CHƯA có trường scope cũng
+    // được coi là 'team' (xem SCOPE_DEFAULT trong pb.js) nên dữ liệu cũ tự vào team.
+    // ownerId do App gán sau khi biết tài khoản đang đăng nhập.
+    return { id: genId('p'), name, scope: 'team', createdAt: now, updatedAt: now };
 }
 
 export function newPlanDoc(projectId, name) {

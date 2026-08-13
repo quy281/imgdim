@@ -48,7 +48,8 @@ export default function ProjectsScreen({
     };
 
     const fmtDate = (ts) => new Date(ts).toLocaleDateString('vi-VN');
-    const isTeam = (p) => p.scope === 'team';
+    // Không có scope = team (mặc định mới) — xem SCOPE_DEFAULT trong pb.js.
+    const isTeam = (p) => (p.scope || pb.SCOPE_DEFAULT) === 'team';
     const isMine = (p) => !p.ownerId || !myId || p.ownerId === myId;
 
     return (

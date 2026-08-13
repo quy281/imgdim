@@ -44,8 +44,14 @@ màn "Kiểm tra đồng bộ" sẽ báo đỏ *"Backend chưa nâng schema v3"*
 owner = @request.auth.id || (scope = "team" && team.members.id ?= @request.auth.id)
 ```
 
-- Dự án `private`: chỉ chủ sở hữu thấy, trên mọi máy của mình.
+**Mặc định là `team`.** Mọi dự án — kể cả dữ liệu tạo trước khi có lớp user — đều thuộc
+team MKG; muốn giữ riêng thì đổi phạm vi trong menu dự án trên app. Đổi mặc định ở
+`SCOPE_DEFAULT` trong `src/lib/pb.js` **và** biến cùng tên trong `scripts/pb-setup.mjs`
+(hai chỗ phải khớp nhau).
+
 - Dự án `scope = "team"`: cả thành viên team MKG xem **và sửa** được.
+- Dự án `private`: chỉ chủ sở hữu thấy, trên mọi máy của mình. Backfill tôn trọng lựa
+  chọn này, không kéo ngược về team.
 - Xóa cứng record: chỉ chủ sở hữu. Thành viên team xóa dự án chung sẽ tạo soft-delete
   (`deleted = true`) — vẫn lan sang máy người khác, nên nút xóa dự án team có cảnh báo riêng.
 - Không ai đổi được `owner` của record người khác (`OWNER_GUARD` trong rule).

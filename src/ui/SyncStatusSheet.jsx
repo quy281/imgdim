@@ -66,7 +66,7 @@ export default function SyncStatusSheet({ open, onClose, onSync }) {
                 else s = 'synced';
 
                 return {
-                    id: rid, name: p.name, status: s, scope: p.scope || 'private',
+                    id: rid, name: p.name, status: s, scope: p.scope || pb.SCOPE_DEFAULT,
                     mine: !p.ownerId || !uid || p.ownerId === uid, ownerName: p.ownerName,
                     localDocs: pDocs.length, remoteDocs: rDocs.length, docsPending,
                 };
@@ -136,8 +136,10 @@ export default function SyncStatusSheet({ open, onClose, onSync }) {
                             </div>
                         )}
                         {status.legacy && (
-                            <div style={{ color: '#dc2626', marginTop: 4 }}>
-                                Backend chưa nâng schema v3 — sync đang chạy chế độ cũ, tải cả ảnh mỗi lượt.
+                            <div style={{ color: 'var(--warn)', marginTop: 4 }}>
+                                Đang chạy chế độ tương thích: dữ liệu vẫn an toàn và đồng bộ đúng, nhưng
+                                mỗi lượt sync phải tải cả ảnh nên chậm, và chưa dùng được dữ liệu chung team.
+                                Chạy <b>scripts/pb-setup.mjs</b> một lần để bật đầy đủ — không cần cập nhật app.
                             </div>
                         )}
                     </div>

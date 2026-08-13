@@ -32,6 +32,9 @@ const REV_CAS = process.argv.includes('--enable-rev-cas');
 
 const TEAM_NAME = 'MKG';
 const TEAM_SLUG = 'mkg';
+// Phải khớp SCOPE_DEFAULT trong src/lib/pb.js. 'team' = mọi dự án chưa đặt phạm vi đều
+// thuộc team MKG; muốn giữ riêng thì đổi trong menu dự án trên app.
+const SCOPE_DEFAULT = 'team';
 
 if (!EMAIL || !PASSWORD) {
     console.error(`
@@ -291,20 +294,25 @@ async function main() {
         step('Backfill — bỏ qua (--skip-backfill)');
     } else {
         step('Backfill record cũ');
-        const records = await listAll('survey_items', 'id,item_id,updated_ms,scope,rev,schema_v,data,deleted');
+        const records = await listAll('survey_items', 'id,item_id,updated_ms,scope,team,rev,schema_v,data,deleted');
         let done = 0, skipped = 0;
         for (const r of records) {
             const ms = Number(r.data?.updatedAt) || 0;
             const isDel = !!r.data?._deleted;
-            const need = (r.updated_ms || 0) !== ms || !r.scope || !r.rev || r.deleted !== isDel;
+            // Mặc định TẤT CẢ vào team MKG. Dự án đã được đặt riêng tư thì tôn trọng,
+            // không kéo ngược lại thành team.
+            const scope = r.scope || SCOPE_DEFAULT;
+            const teamId = scope === 'team' ? team.id : null;
+            const need = (r.updated_ms || 0) !== ms || r.scope !== scope
+                || (r.team || null) !== teamId || !r.rev || r.deleted !== isDel;
             if (!need) { skipped++; continue; }
             try {
                 await api(`collections/survey_items/records/${r.id}`, {
                     method: 'PATCH',
                     body: JSON.stringify({
                         updated_ms: ms,
-                        scope: r.scope || 'private',
-                        team: null,
+                        scope,
+                        team: teamId,
                         deleted: isDel,
                         rev: r.rev || 1,
                         schema_v: r.schema_v || 2,
@@ -315,7 +323,9 @@ async function main() {
                 log(`  ⚠ ${r.item_id}: ${err.message}`);
             }
         }
+        const teamCount = records.filter(r => (r.scope || SCOPE_DEFAULT) === 'team').length;
         log(`  ${records.length} record — cập nhật ${done}, đã đúng ${skipped}`);
+        log(`  ${teamCount} record vào team ${TEAM_NAME}, ${records.length - teamCount} giữ riêng tư`);
     }
 
     log(`\n✓ Xong. Dán vào src/lib/pb.js nếu id team thay đổi: TEAM_SLUG='${TEAM_SLUG}'\n`);

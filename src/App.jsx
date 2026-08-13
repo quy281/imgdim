@@ -331,7 +331,7 @@ export default function App() {
                 toast('Dữ liệu đã mới nhất', 'ok');
             }
             if (skippedOpen && !silent) toast(`${skippedOpen} file đang sửa — giữ bản trên máy`, 'ok');
-            if (res.legacy && !silent) toast('Backend chưa nâng cấp schema — sync đang chạy chế độ cũ (chậm)', 'err');
+            if (res.legacy && !silent) toast('Đang chạy chế độ tương thích — dữ liệu vẫn đúng, chỉ chậm hơn', 'ok');
         } catch (err) {
             if (err.status === 401) {
                 setAccount(null); // pb đã xóa phiên — cho chip cloud phản ánh đúng

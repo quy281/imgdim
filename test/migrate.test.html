@@ -1,0 +1,120 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>v2 → v3 migrate repro</title>
+<style>
+    body { font: 13px/1.6 ui-monospace, monospace; padding: 16px; }
+    .FAIL { color: #dc2626; font-weight: 700; }
+    .PASS { color: #16a34a; }
+    h3 { margin: 18px 0 4px; font-family: system-ui; }
+</style>
+<pre id="out">running…</pre>
+<script type="module">
+    // Dựng lại ĐÚNG store của v2 (localforage.config trên instance mặc định, không phải
+    // createInstance) rồi chạy db.setAccount để xem dữ liệu cũ có sang được store mới không.
+    // Đây là repro cho báo lỗi "không load được dữ liệu cũ" sau khi lên v3.
+    import localforage from '/node_modules/.vite/deps/localforage.js';
+    import * as db from '/src/lib/db.js';
+
+    const lines = [];
+    let pass = 0, fail = 0;
+    const ok = (name, cond, extra = '') => {
+        cond ? pass++ : fail++;
+        lines.push(`<span class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</span>  ${name}${extra && !cond ? ` — ${extra}` : ''}`);
+    };
+    const group = (t) => lines.push(`<h3>${t}</h3>`);
+    const nuke = (name) => new Promise(r => {
+        const q = indexedDB.deleteDatabase(name); q.onsuccess = q.onerror = q.onblocked = r;
+    });
+
+    const UID = 'mrepro_uid_1';
+    const V2_PROJECTS = [
+        { id: 'pOld1', name: 'Biệt thự anh Minh — Q2', createdAt: 1, updatedAt: 111 },
+        { id: 'pOld2', name: 'Dinh thự Thảo Điền', createdAt: 2, updatedAt: 222 },
+    ];
+    const V2_DOC = { id: 'dOld1', projectId: 'pOld1', type: 'plan', name: 'Mặt bằng tầng 1', plan: { nodes: [], walls: [] }, createdAt: 1, updatedAt: 111 };
+
+    async function reset() {
+        for (const k of Object.keys(localStorage)) if (k.startsWith('ks_')) localStorage.removeItem(k);
+        await nuke('mkg-khaosat');
+        await nuke('mkg-khaosat-anon');
+        await nuke(`mkg-khaosat-${UID}`);
+    }
+
+    // Ghi store v2 y như src/lib/db.js của v2 đã làm.
+    async function seedV2() {
+        const v2 = localforage.createInstance({
+            name: 'mkg-khaosat', storeName: 'ks_store',
+            description: 'MKG Khao Sat local storage',
+        });
+        await v2.setItem('projects', V2_PROJECTS);
+        await v2.setItem('docidx', { dOld1: 'pOld1' });
+        await v2.setItem(`doc_${V2_DOC.id}`, V2_DOC);
+        return v2;
+    }
+
+    group('A. Đã đăng nhập khi lên v3 (target = uid)');
+    {
+        await reset();
+        await seedV2();
+        const r = await db.setAccount(UID);
+        const ps = await db.loadProjects();
+        ok('báo có di trú store v2', r.migratedV2 > 0, `migratedV2=${r.migratedV2}`);
+        ok('THẤY LẠI dự án cũ', ps.length === 2, `chỉ có ${ps.length}: ${JSON.stringify(ps.map(p => p.name))}`);
+        ok('tên dự án đúng', ps.some(p => p.name === 'Biệt thự anh Minh — Q2'));
+        ok('doc cũ đi theo', (await db.listDocs('pOld1')).length === 1);
+        ok('doc đọc được nguyên vẹn', (await db.getDoc('dOld1'))?.name === 'Mặt bằng tầng 1');
+    }
+
+    group('B. Chưa đăng nhập khi lên v3 (target = anon)');
+    {
+        await reset();
+        await seedV2();
+        const r = await db.setAccount(null);
+        const ps = await db.loadProjects();
+        ok('di trú vào store anon', r.migratedV2 > 0, `migratedV2=${r.migratedV2}`);
+        ok('THẤY LẠI dự án cũ', ps.length === 2, `chỉ có ${ps.length}`);
+    }
+
+    group('C. Đăng nhập SAU khi đã mở app ở chế độ khách');
+    {
+        await reset();
+        await seedV2();
+        await db.setAccount(null);                 // mở lần đầu, chưa đăng nhập
+        const r = await db.setAccount(UID);        // rồi đăng nhập
+        const ps = await db.loadProjects();
+        // Dữ liệu có thể sang bằng đường di trú v2 HOẶC đường nhận từ anon — cái nào cũng đạt.
+        ok('dữ liệu sang được tài khoản', r.adopted > 0 || r.migratedV2 > 0, `adopted=${r.adopted}, migratedV2=${r.migratedV2}`);
+        ok('THẤY LẠI dự án cũ sau khi đăng nhập', ps.length === 2, `chỉ có ${ps.length}`);
+    }
+
+    group('D. Chạy lại nhiều lần không nhân đôi, không mất');
+    {
+        await db.setAccount(UID);
+        await db.setAccount(UID);
+        const ps = await db.loadProjects();
+        ok('vẫn đúng 2 dự án', ps.length === 2, `có ${ps.length}`);
+    }
+
+    group('E. Store v2 KHÔNG bị xoá (còn đường lùi)');
+    {
+        const v2 = localforage.createInstance({ name: 'mkg-khaosat', storeName: 'ks_store' });
+        const still = await v2.getItem('projects');
+        ok('dữ liệu v2 vẫn nguyên trên máy', still?.length === 2, JSON.stringify(still?.length));
+    }
+
+    group('F. Cờ đã-di-trú không được chặn lần thử sau nếu chưa copy được gì');
+    {
+        // Kịch bản nguy hiểm: lần boot đầu legacy chưa đọc ra được (chậm/lỗi), cờ vẫn bị
+        // đặt → dữ liệu cũ mồ côi vĩnh viễn. Mô phỏng bằng cách đặt cờ trước rồi seed.
+        await reset();
+        localStorage.setItem(`ks_v2_migrated_${UID}`, '1');
+        await seedV2();
+        await db.setAccount(UID);
+        const ps = await db.loadProjects();
+        ok('vẫn cứu được dữ liệu cũ dù cờ đã đặt', ps.length === 2, `mất dữ liệu: chỉ có ${ps.length}`);
+    }
+
+    await reset();
+    document.getElementById('out').innerHTML = lines.join('\n') + `\n\n<b>${pass} pass, ${fail} fail</b>`;
+    document.title = fail ? `${fail} FAIL` : `${pass} pass`;
+</script>
