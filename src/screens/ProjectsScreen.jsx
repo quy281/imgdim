@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
-    Share2, ListChecks, Users, Lock,
+    Share2, ListChecks, Users, Lock, ShieldCheck, Check,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -21,19 +21,24 @@ const fmtSince = (ts) => {
 export default function ProjectsScreen({
     projects, account, syncBusy, syncMsg, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
-    onSync, onOpenSyncStatus, onLogin, onLogout,
+    onSync, onOpenSyncStatus, onOpenTeamAdmin, onLogin, onLogout,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const [menuFor, setMenuFor] = useState(null);
+    const [teamPickerFor, setTeamPickerFor] = useState(null); // project object
     const [showSettings, setShowSettings] = useState(false);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loggingIn, setLoggingIn] = useState(false);
 
     const logged = pb.isLoggedIn();
-    const myId = pb.myId();
-    const team = pb.myTeam();
+    // ownerId() chứ không myId(): với superuser, myId() là id trong _superusers, không
+    // khớp project.ownerId (được ghi bằng ownerId() lúc tạo — xem App.jsx createProject).
+    const myId = pb.ownerId();
+    const teams = pb.myTeams();
+    const team = teams[0] || null;
+    const teamNameOf = (p) => teams.find(t => t.id === p.teamId)?.name || team?.name || 'MKG';
 
     const doLogin = async () => {
         if (!email.trim() || !password) return;
@@ -99,7 +104,7 @@ export default function ProjectsScreen({
                                 <div className="project-meta" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                                     {isTeam(p)
                                         ? <><Users size={11.5} style={{ color: 'var(--blue)' }} />
-                                            {isMine(p) ? `Team ${team?.name || 'MKG'}` : (p.ownerName || 'Đồng nghiệp')}</>
+                                            {isMine(p) ? `Team ${teamNameOf(p)}` : (p.ownerName || 'Đồng nghiệp')}</>
                                         : <><Lock size={11} /> Riêng tư</>}
                                     <span style={{ opacity: .5 }}>·</span>{fmtDate(p.createdAt)}
                                 </div>
@@ -123,11 +128,22 @@ export default function ProjectsScreen({
                     <div style={{ flex: 1 }}>Đổi tên</div>
                 </button>
 
-                {logged && (
+                {logged && teams.length > 1 ? (
+                    // Nhiều team (Academy/Labs...) → mở picker thay vì đoán team nào.
+                    <button className="sheet-row" onClick={() => { setTeamPickerFor(menuFor); setMenuFor(null); }}>
+                        <Users size={19} style={{ color: 'var(--blue)' }} />
+                        <div style={{ flex: 1 }}>
+                            Đổi phạm vi chia sẻ
+                            <div className="sub">
+                                {menuFor && isTeam(menuFor) ? `Đang chia sẻ: Team ${teamNameOf(menuFor)}` : 'Đang: Riêng tư'}
+                            </div>
+                        </div>
+                    </button>
+                ) : logged && (
                     <button className="sheet-row" onClick={() => {
                         const p = menuFor;
                         setMenuFor(null);
-                        onSetScope(p.id, isTeam(p) ? 'private' : 'team');
+                        onSetScope(p.id, isTeam(p) ? 'private' : 'team', team);
                     }}>
                         {menuFor && isTeam(menuFor)
                             ? <><Lock size={19} style={{ color: 'var(--ink-2)' }} />
@@ -164,6 +180,30 @@ export default function ProjectsScreen({
                 </button>
             </Sheet>
 
+            {/* Picker phạm vi khi có nhiều hơn 1 team */}
+            <Sheet open={!!teamPickerFor} onClose={() => setTeamPickerFor(null)}
+                title="Chia sẻ với ai?" sub={teamPickerFor?.name}>
+                <button className="sheet-row" onClick={() => {
+                    onSetScope(teamPickerFor.id, 'private');
+                    setTeamPickerFor(null);
+                }}>
+                    <Lock size={19} style={{ color: 'var(--ink-2)' }} />
+                    <div style={{ flex: 1 }}>Riêng tư<div className="sub">Chỉ mình thấy trên các máy của mình</div></div>
+                    {teamPickerFor && !isTeam(teamPickerFor) && <Check size={18} style={{ color: 'var(--ok)' }} />}
+                </button>
+                {teams.map(t => (
+                    <button key={t.id} className="sheet-row" onClick={() => {
+                        onSetScope(teamPickerFor.id, 'team', t);
+                        setTeamPickerFor(null);
+                    }}>
+                        <Users size={19} style={{ color: 'var(--blue)' }} />
+                        <div style={{ flex: 1 }}>Team {t.name}<div className="sub">Cả team xem và sửa được dự án này</div></div>
+                        {teamPickerFor && isTeam(teamPickerFor) && (teamPickerFor.teamId || team?.id) === t.id &&
+                            <Check size={18} style={{ color: 'var(--ok)' }} />}
+                    </button>
+                ))}
+            </Sheet>
+
             {/* Cài đặt / tài khoản */}
             <Sheet open={showSettings} onClose={() => setShowSettings(false)} title="Đồng bộ & tài khoản"
                 sub="Dữ liệu lưu trên máy, tự đồng bộ lên cloud khi đăng nhập.">
@@ -194,6 +234,12 @@ export default function ProjectsScreen({
                             <ListChecks size={19} style={{ color: 'var(--blue)' }} />
                             <div style={{ flex: 1 }}>Kiểm tra đồng bộ<div className="sub">So sánh local ↔ cloud từng dự án</div></div>
                         </button>
+                        {pb.isSuperuser() && (
+                            <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenTeamAdmin?.(); }}>
+                                <ShieldCheck size={19} style={{ color: 'var(--blue)' }} />
+                                <div style={{ flex: 1 }}>Quản lý team & người dùng<div className="sub">Tạo team, thêm/xoá thành viên</div></div>
+                            </button>
+                        )}
                         <button className="sheet-row" style={{ color: '#dc2626' }} onClick={() => { onLogout(); setShowSettings(false); }}>
                             <LogOut size={19} />
                             <div style={{ flex: 1 }}>Đăng xuất<div className="sub">Dữ liệu vẫn giữ trên máy này</div></div>

@@ -56,12 +56,54 @@ team MKG; muốn giữ riêng thì đổi phạm vi trong menu dự án trên ap
   (`deleted = true`) — vẫn lan sang máy người khác, nên nút xóa dự án team có cảnh báo riêng.
 - Không ai đổi được `owner` của record người khác (`OWNER_GUARD` trong rule).
 
-`teams` — thành viên đọc được team của mình; **tạo/sửa/xóa team chỉ superuser**. Thêm hoặc
-bớt thành viên làm trong PB Admin UI → `teams` → team MKG → `members`. Client tự dò lại
-team ở mỗi lần sync nên thành viên mới không phải đăng nhập lại.
+`teams` — thành viên đọc được team của mình; **tạo/sửa/xóa team chỉ superuser**. Từ bản này
+làm được ngay trong app (xem "Quản lý team & người dùng" bên dưới), không bắt buộc vào PB
+Admin UI nữa. Client tự dò lại team ở mỗi lần sync nên thành viên mới không phải đăng nhập lại.
 
 `shares` — chủ sở hữu liệt kê được link của mình để thu hồi. Người ngoài **xem được bằng id**
 (10 ký tự, không đoán được); link đã thu hồi hoặc hết hạn trả 404.
+
+## Tài khoản superuser (Founder) cũng sync được
+
+`owner` trên `survey_items` là quan hệ tới collection `users`. Superuser xác thực qua bảng
+riêng `_superusers` — id của nó **không tồn tại** trong `users`, nên ghi thẳng id đó vào
+`owner` bị PocketBase từ chối (lỗi validate quan hệ). Đây là nguyên nhân tài khoản dùng để
+chạy `pb-setup.mjs` (thường cũng là tài khoản Founder dùng hàng ngày) không sync được nếu
+đăng nhập thẳng vào app bằng creds đó.
+
+Client tự xử lý: lần đầu đăng nhập bằng superuser, `resolveIdentity()` tìm hoặc tạo một
+record `users` cùng email, dùng id của record đó làm `owner`/`team.members` (gọi là
+"ownerId" trong code, khác với "myId" — id đăng nhập thô, chỉ dùng để hiển thị). Tự động,
+không cần làm gì thêm — chỉ cần đăng nhập lại một lần sau khi cập nhật app.
+
+## Quản lý team & người dùng (trong app, chỉ superuser thấy)
+
+Settings → **Quản lý team & người dùng** (mục này ẩn với tài khoản thường). Làm được:
+
+- Tạo team mới (vd tách riêng Academy / Labs sau này).
+- Xem thành viên từng team, thêm người mới bằng email + tên + mật khẩu (bỏ trống mật khẩu
+  để tự sinh ngẫu nhiên — **hiện đúng một lần**, phải copy ngay lúc đó vì PocketBase không
+  cho đọc lại). Email đã có tài khoản thì chỉ gắn thêm vào team, không tạo trùng.
+- Xóa người khỏi team.
+
+Mật khẩu tối thiểu 8 ký tự (`PASSWORD_MIN` trong `pb.js`) — PocketBase từ chối thẳng mật khẩu
+ngắn hơn, kể cả khi gõ tay. Muốn tạo hàng loạt qua CLI thay vì tap trong app:
+
+```bash
+PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs --skip-backfill \
+  --add-users "an@mkg.vn:Anh An,binh@mkg.vn:Chị Bình" --password "mkg-2026-tam"
+```
+
+Bỏ `--password` để mỗi người có một mật khẩu ngẫu nhiên riêng, in ra cuối log — an toàn hơn
+nhưng phải copy-paste gửi từng người. `--team <slug>` đổi team đích (mặc định `mkg`).
+
+## Nhiều team — chọn team cho từng dự án
+
+Field `team` trên `survey_items` vốn đã là quan hệ chung (không khoá cứng vào MKG), nên
+thêm team thứ hai không cần đổi schema. Trên app: dự án chỉ hiện nút bật/tắt "Chia sẻ cho
+team X" khi tài khoản chỉ thuộc 1 team (giữ nguyên trải nghiệm hiện tại); thuộc ≥2 team thì
+đổi thành picker liệt kê tất cả để chọn đúng team. Superuser luôn thấy **toàn bộ** team (bỏ
+qua rule `members.id ?= auth.id`), phù hợp vai trò quản lý chung.
 
 ## Optimistic concurrency (`rev`) — mặc định TẮT
 
@@ -94,6 +136,8 @@ Chạy `npm run dev` rồi mở:
 
 - `/test/sync.test.html` — tầng sync (chặn fetch, không chạm server thật)
 - `/test/user.test.html` — lớp user, cách ly dữ liệu giữa tài khoản
+- `/test/admin.test.html` — superuser tự có danh tính sync, quản lý team/user, đa team
+- `/test/migrate.test.html` — di trú dữ liệu v2 → v3
 - `/test/geometry.test.html` — hình học mặt bằng
 
 Tiêu đề tab hiện `N pass` hoặc `N FAIL`.

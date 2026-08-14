@@ -400,23 +400,50 @@
         ok('lấy được team ngay sau khi đăng nhập', pb.myTeam()?.name === 'MKG');
     }
     {
+        // Superuser đăng nhập được, và (từ bản vá identity-resolution) SYNC ĐƯỢC — không còn
+        // bị chặn cứng như trước. Luồng identity/team đầy đủ được test riêng ở admin.test.html
+        // với mock đủ endpoint (users/records, teams/records); ở đây routes CỐ Ý thiếu các
+        // endpoint đó để kiểm hành vi khi identity KHÔNG resolve được: phải báo lỗi rõ (500),
+        // KHÔNG được âm thầm coi là "đã sync xong" hay làm hỏng phiên đang có.
         calls = [];
         localStorage.removeItem('ks_auth');
         routes = {
             'collections/users/auth-with-password': () => res({ message: 'Failed to authenticate.' }, 400),
             'collections/_superusers/auth-with-password': () => res({ token: 'tS', record: { id: 's1', email: 'founder@mkg.vn' } }),
+            'collections/_superusers/auth-refresh': () => res({ token: 'tS', record: { id: 's1', email: 'founder@mkg.vn' } }),
         };
         await pb.login('founder@mkg.vn', 'pw');
         ok('users thất bại → thử _superusers', calls.some(c => c.path.includes('_superusers/auth-with-password')));
         ok('vào được bằng tài khoản quản trị', pb.isLoggedIn() && pb.isSuperuser());
         let caught = null;
         try { await pb.fullSync({ ...empty }); } catch (e) { caught = e; }
-        ok('nhưng sync báo lỗi RÕ thay vì thất bại âm thầm', caught?.status === 403 && /quản trị/.test(caught.message), caught?.message);
+        ok('identity không resolve được (thiếu mock users/teams) → lỗi RÕ, không âm thầm bỏ qua',
+            caught?.status === 500 && /quản trị/.test(caught.message || ''), caught?.message);
+        ok('phiên KHÔNG bị hỏng bởi lần thử sync thất bại', pb.isLoggedIn() && pb.isSuperuser());
+
         calls = [];
-        routes['collections/_superusers/auth-refresh'] = () => res({ token: 'tS2', record: { id: 's1' } });
-        await pb.ensureSession(true);
-        ok('refresh phiên superuser đúng bảng (không bị đá ra)', calls.some(c => c.path === 'collections/_superusers/auth-refresh') && pb.isLoggedIn());
+        const refreshed = await pb.ensureSession(true);
+        ok('refresh phiên superuser đúng bảng (không bị đá ra)',
+            refreshed && calls.some(c => c.path === 'collections/_superusers/auth-refresh') && pb.isLoggedIn(),
+            `refreshed=${refreshed}, calls=${calls.map(c => c.path).join('|')}`);
         ok('giữ cờ superuser sau khi refresh', pb.isSuperuser());
+    }
+    {
+        // Chốt lỗ hổng vừa vá: auth-refresh trả 200 nhưng SAI HÌNH DẠNG (thiếu token/record)
+        // không được phép âm thầm xóa mất token tốt đang có (JSON.stringify bỏ key undefined).
+        calls = [];
+        localStorage.removeItem('ks_auth');
+        routes = {
+            'collections/users/auth-with-password': () => res({ message: 'Failed to authenticate.' }, 400),
+            'collections/_superusers/auth-with-password': () => res({ token: 'good-token', record: { id: 's1', email: 'admin@mkg.vn' } }),
+            'collections/_superusers/auth-refresh': () => res({ items: [], page: 1, totalPages: 1 }), // sai hình dạng
+        };
+        await pb.login('admin@mkg.vn', 'pw');
+        const before = pb.getAuth().token;
+        const ok1 = await pb.ensureSession(true);
+        ok('phản hồi refresh sai hình dạng → coi như lỗi mạng, vẫn true', ok1 === true);
+        ok('KHÔNG xóa mất token tốt đang có', pb.getAuth().token === before && pb.isLoggedIn(),
+            `token trước=${before}, sau=${pb.getAuth().token}`);
     }
     {
         calls = [];

@@ -42,7 +42,9 @@ export default function SyncStatusSheet({ open, onClose, onSync }) {
 
             const pendingSet = new Set(pending.map(p => p.item_id));
             // Khớp theo (owner, item_id): hai tài khoản có thể trùng item_id mà là hai dự án khác nhau.
-            const uid = pb.myId();
+            // ownerId() chứ không myId(): với superuser, danh tính ghi lên cloud là record `users`
+            // liên kết (xem pb.js), khác với id đăng nhập thô trong _superusers.
+            const uid = pb.ownerId();
             const key = (owner, id) => `${owner || ''}/${id}`;
             const remoteMap = new Map(remote.items.filter(r => !r.deleted).map(r => [key(r.owner, r.item_id), r]));
             const remoteByItem = new Map();

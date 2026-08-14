@@ -21,6 +21,17 @@
  *   --enable-rev-cas thêm điều kiện optimistic-concurrency vào updateRule.
  *                    CHỈ bật sau khi đã test bằng một tài khoản thành viên thật —
  *                    nếu rule sai, mọi lệnh sửa sẽ bị 403. Xem README-pb.md.
+ *   --add-users "email1:Tên A,email2:Tên B"   tạo hàng loạt user + thêm vào team,
+ *                    in ra mật khẩu MỘT LẦN (không lưu, không hiện lại được). Bỏ ":Tên"
+ *                    nếu không cần tên hiển thị. Tài khoản đã tồn tại thì chỉ thêm vào team.
+ *   --password "..."  dùng chung 1 mật khẩu cho --add-users thay vì tự sinh ngẫu nhiên
+ *                    (>= 8 ký tự — PocketBase từ chối mật khẩu ngắn hơn, kể cả "1111").
+ *   --team <slug>    team đích cho --add-users (mặc định 'mkg')
+ *
+ * Ví dụ tạo 3 user cùng mật khẩu (không khuyến khích — mỗi người nên đổi mật khẩu riêng
+ * ngay sau khi nhận, hoặc để trống --password cho mỗi người một mật khẩu ngẫu nhiên):
+ *   node scripts/pb-setup.mjs --skip-backfill \
+ *     --add-users "an@mkg.vn:Anh An,binh@mkg.vn:Chị Bình" --password "mkg-2026-tam"
  */
 
 const URL_BASE = (process.env.PB_URL || 'https://db.mkg.vn').replace(/\/+$/, '');
@@ -29,6 +40,13 @@ const PASSWORD = process.env.PB_PASSWORD;
 const DRY = process.argv.includes('--dry-run');
 const SKIP_BACKFILL = process.argv.includes('--skip-backfill');
 const REV_CAS = process.argv.includes('--enable-rev-cas');
+const argValue = (flag) => {
+    const i = process.argv.indexOf(flag);
+    return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : null;
+};
+const ADD_USERS = argValue('--add-users');
+const ADD_USERS_PASSWORD = argValue('--password');
+const ADD_USERS_TEAM_SLUG = argValue('--team') || 'mkg';
 
 const TEAM_NAME = 'MKG';
 const TEAM_SLUG = 'mkg';
@@ -50,6 +68,12 @@ Chạy --dry-run trước để xem kế hoạch, rồi chạy lại không có 
 let token = null;
 const log = (...a) => console.log(...a);
 const step = (s) => log(`\n▸ ${s}`);
+const PASSWORD_MIN = 8; // ràng buộc mặc định của PocketBase — "1111" sẽ bị từ chối thẳng.
+
+async function randomPassword(len = 12) {
+    const { randomBytes } = await import('node:crypto');
+    return randomBytes(len).toString('base64url').slice(0, len);
+}
 
 async function api(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
@@ -232,7 +256,8 @@ async function main() {
     if (!REV_CAS) log('  (rev CAS TẮT — bật bằng --enable-rev-cas sau khi test với tài khoản thành viên)');
 
     if (DRY) {
-        log('\n[dry-run] Chưa ghi gì. Bỏ cờ --dry-run để áp thật.');
+        log('\n[dry-run] Chưa ghi gì — kể cả team MKG, backfill, và --add-users nếu có.');
+        log('Bỏ cờ --dry-run để áp thật.');
         return;
     }
 
@@ -326,6 +351,59 @@ async function main() {
         const teamCount = records.filter(r => (r.scope || SCOPE_DEFAULT) === 'team').length;
         log(`  ${records.length} record — cập nhật ${done}, đã đúng ${skipped}`);
         log(`  ${teamCount} record vào team ${TEAM_NAME}, ${records.length - teamCount} giữ riêng tư`);
+    }
+
+    // ===== 6. Tạo hàng loạt user (tùy chọn, --add-users) =====
+    if (ADD_USERS) {
+        step(`Tạo user hàng loạt → team "${ADD_USERS_TEAM_SLUG}"`);
+        if (ADD_USERS_PASSWORD && ADD_USERS_PASSWORD.length < PASSWORD_MIN) {
+            // Chặn TRƯỚC khi tạo bất cứ gì — "1111" rơi đúng vào đây, không tạo nửa vời.
+            throw new Error(`--password "${ADD_USERS_PASSWORD}" chỉ có ${ADD_USERS_PASSWORD.length} ký tự — `
+                + `PocketBase yêu cầu tối thiểu ${PASSWORD_MIN}. Không tạo user nào.`);
+        }
+        const entries = ADD_USERS.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+            const [email, ...rest] = s.split(':');
+            return { email: email.trim(), name: rest.join(':').trim() };
+        });
+        const teamRes = await api(`collections/teams/records?perPage=1&filter=${encodeURIComponent(`slug='${ADD_USERS_TEAM_SLUG}'`)}`);
+        if (!teamRes.items?.length) throw new Error(`Không tìm thấy team slug="${ADD_USERS_TEAM_SLUG}"`);
+        const targetTeamId = teamRes.items[0].id;
+
+        const results = [];
+        for (const { email, name } of entries) {
+            if (!email.includes('@')) { log(`  ⚠ bỏ qua "${email}" — không phải email hợp lệ`); continue; }
+            const password = ADD_USERS_PASSWORD || await randomPassword();
+            const found = await api(`collections/users/records?perPage=1&filter=${encodeURIComponent(`email='${email}'`)}`);
+            let user, created = false;
+            if (found.items?.length) {
+                user = found.items[0];
+                log(`  ${email} — đã có tài khoản, chỉ thêm vào team`);
+            } else {
+                const local = (email.split('@')[0] || 'user').replace(/[^a-zA-Z0-9_]/g, '') || 'user';
+                user = await api('collections/users/records', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        email, password, passwordConfirm: password, name: name || '',
+                        username: `${local}${Math.random().toString(36).slice(2, 6)}`,
+                        emailVisibility: true, verified: true,
+                    }),
+                });
+                created = true;
+                log(`  ${email} — đã tạo tài khoản mới`);
+            }
+            const fresh = await api(`collections/teams/records/${targetTeamId}`);
+            if (!(fresh.members || []).includes(user.id)) {
+                await api(`collections/teams/records/${targetTeamId}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ members: [...(fresh.members || []), user.id] }),
+                });
+            }
+            results.push({ email, password: created ? password : '(tài khoản có sẵn — không đổi mật khẩu)' });
+        }
+        if (results.length) {
+            log('\n  LƯU LẠI NGAY — mật khẩu không hiện lại được sau bước này:');
+            for (const r of results) log(`    ${r.email.padEnd(28)} ${r.password}`);
+        }
     }
 
     log(`\n✓ Xong. Dán vào src/lib/pb.js nếu id team thay đổi: TEAM_SLUG='${TEAM_SLUG}'\n`);

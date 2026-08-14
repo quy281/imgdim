@@ -30,7 +30,7 @@ async function buildPayload(project) {
     return {
         v: 3,
         projectName: project.name,
-        sharedBy: pb.myName(),
+        sharedBy: pb.ownerName(),
         docs: plans.map(d => ({
             id: d.id, name: d.name, plan: d.plan,
             notes: d.notes || [], furniture: d.furniture || [],

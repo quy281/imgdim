@@ -1,0 +1,343 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>admin/team selftest</title>
+<style>
+    body { font: 13px/1.6 ui-monospace, monospace; padding: 16px; }
+    .FAIL { color: #dc2626; font-weight: 700; }
+    .PASS { color: #16a34a; }
+    h3 { margin: 18px 0 4px; font-family: system-ui; }
+</style>
+<pre id="out">running…</pre>
+<script type="module">
+    // Đúng vụ báo lỗi: quy28181818@gmail.com (rất có thể là tài khoản superuser dùng để
+    // chạy pb-setup.mjs) không sync được. Nguyên nhân: `owner` trên survey_items là quan hệ
+    // tới collection `users`, mà id của superuser nằm ở bảng `_superusers` riêng — ghi thẳng
+    // id đó vào owner bị PocketBase từ chối. Test này dựng lại đúng kịch bản đó bằng cách giả
+    // lập cả hai bảng users/_superusers và teams, không chạm server thật.
+    import * as pb from '/src/lib/pb.js';
+
+    const lines = [];
+    let pass = 0, fail = 0;
+    try {
+    const ok = (name, cond, extra = '') => {
+        cond ? pass++ : fail++;
+        lines.push(`<span class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</span>  ${name}${extra && !cond ? ` — ${extra}` : ''}`);
+    };
+    const group = (t) => lines.push(`<h3>${t}</h3>`);
+
+    const SERVER_NOW = Date.parse('2026-08-14T10:00:00Z');
+    const res = (body, status = 200) => ({
+        ok: status >= 200 && status < 300, status, statusText: String(status),
+        headers: { get: (h) => (h.toLowerCase() === 'date' ? new Date(SERVER_NOW).toUTCString() : null) },
+        json: async () => body, text: async () => JSON.stringify(body),
+    });
+    const filterEmail = (path) => (decodeURIComponent(path).match(/email='([^']+)'/) || [])[1] || null;
+    const bodyOf = (opts) => { try { return JSON.parse(opts.body); } catch { return {}; } };
+
+    // ===== State giả lập backend =====
+    let calls = [];
+    let db;
+    const resetDb = () => { db = { users: [], teams: [], nextU: 0, nextT: 0, superAuthOk: true, usersAuthOk: false }; };
+
+    window.fetch = async (url, opts = {}) => {
+        const path = String(url).replace('https://db.mkg.vn/api/', '');
+        calls.push({ path, method: opts.method || 'GET', body: opts.body });
+        const routes = {
+            'collections/users/auth-with-password': () => db.usersAuthOk
+                ? res({ token: 'utok', record: { id: 'raw_user_1', email: db.loginEmail } })
+                : res({ message: 'Failed to authenticate.' }, 400),
+            'collections/_superusers/auth-with-password': () => db.superAuthOk
+                ? res({ token: 'stok', record: { id: 'raw_super_1', email: db.loginEmail } })
+                : res({ message: 'Failed to authenticate.' }, 400),
+            'collections/users/auth-refresh': () => res({ token: 'utok2', record: { id: 'raw_user_1', email: db.loginEmail } }),
+            'collections/_superusers/auth-refresh': () => res({ token: 'stok2', record: { id: 'raw_super_1', email: db.loginEmail } }),
+
+            'collections/users/records?': (p) => {
+                const email = filterEmail(p);
+                return res({ items: db.users.filter(u => u.email === email), page: 1, totalPages: 1 });
+            },
+            'collections/users/records': (p, o) => {
+                if ((o.method || 'GET') !== 'POST') return res({ items: db.users, page: 1, totalPages: 1 });
+                const b = bodyOf(o);
+                if ((b.password || '').length < 8) {
+                    return res({ message: 'Failed to create record.', data: { password: { code: 'min', message: 'Giá trị phải dài từ 8 đến 71 ký tự.' } } }, 400);
+                }
+                const rec = { id: `u${++db.nextU}`, email: b.email, name: b.name || '', username: b.username };
+                db.users.push(rec);
+                return res({ ...rec });
+            },
+
+            'collections/teams/records?': () => res({ items: db.teams.map(t => ({ ...t, memberCount: undefined })), page: 1, totalPages: 1 }),
+            'collections/teams/records/': (p, o) => {
+                const id = p.split('/').pop().split('?')[0];
+                const t = db.teams.find(x => x.id === id);
+                if (!t) return res({ message: 'Not found' }, 404);
+                if ((o.method || 'GET') === 'PATCH') {
+                    Object.assign(t, bodyOf(o));
+                    return res({ ...t });
+                }
+                const out = { ...t };
+                if (p.includes('expand=members')) {
+                    out.expand = { members: t.members.map(mid => db.users.find(u => u.id === mid)).filter(Boolean) };
+                }
+                return res(out);
+            },
+            'collections/teams/records': (p, o) => {
+                if ((o.method || 'GET') !== 'POST') return res({ items: db.teams, page: 1, totalPages: 1 });
+                const b = bodyOf(o);
+                const rec = { id: `t${++db.nextT}`, name: b.name, slug: b.slug, members: b.members || [] };
+                db.teams.push(rec);
+                return res({ ...rec });
+            },
+
+            'collections/survey_items/records?': () => res({ items: [], page: 1, totalPages: 1 }),
+            'collections/survey_items/records': (p, o) => res({ id: 'rec_new', rev: 1 }),
+        };
+        for (const [pat, fn] of Object.entries(routes)) if (path.startsWith(pat)) return fn(path, opts);
+        return res({ items: [], page: 1, totalPages: 1 });
+    };
+
+    const writesTo = (col) => calls.filter(c => (c.method === 'PATCH' || c.method === 'POST') && c.path.startsWith(`collections/${col}`));
+
+    // ===== 1. Đúng vụ báo lỗi: superuser đăng nhập → tự tạo danh tính users + vào team =====
+    group('Superuser tự có danh tính để sync (đúng vụ quy28181818@gmail.com)');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'quy28181818@gmail.com';
+        db.superAuthOk = true;
+        db.teams.push({ id: 'team_mkg', name: 'MKG', slug: 'mkg', members: [] }); // pb-setup.mjs đã tạo sẵn
+
+        const user = await pb.login('quy28181818@gmail.com', 'pw-that');
+        ok('users auth thất bại thì rơi về _superusers', user.id === 'raw_super_1');
+        ok('nhận diện đúng là superuser', pb.isSuperuser());
+        ok('tự tạo record `users` cùng email', db.users.length === 1 && db.users[0].email === db.loginEmail,
+            JSON.stringify(db.users));
+        ok('ownerId() trả về id CỦA users record, không phải id _superusers', pb.ownerId() === db.users[0]?.id,
+            `ownerId=${pb.ownerId()}, raw=${user.id}`);
+        ok('myId() vẫn là id đăng nhập thô (để hiển thị)', pb.myId() === 'raw_super_1');
+        ok('tự thêm identity vào team MKG', db.teams[0].members.includes(db.users[0]?.id),
+            JSON.stringify(db.teams[0].members));
+        ok('myTeam() thấy được team', pb.myTeam()?.slug === 'mkg');
+    }
+
+    // ===== 2. Push dùng ownerId(), không phải id superuser thô =====
+    group('Sync thật sự chạy được cho superuser');
+    {
+        calls = []; // cô lập khỏi các request login() vừa rồi
+        const r = await pb.fullSync({
+            projects: [{ id: 'p1', name: 'Dinh thự', scope: 'team', createdAt: 1, updatedAt: 5000 }],
+            docs: [], tombstones: [], scopeDirty: [],
+        });
+        const w = writesTo('survey_items')[0];
+        ok('sync KHÔNG còn bị chặn cứng', r.pushed === 1, `pushed=${r.pushed}`);
+        const sentBody = typeof w?.body === 'string' ? JSON.parse(w.body) : null;
+        ok('owner ghi bằng id users record (relation hợp lệ)', sentBody?.owner === pb.ownerId(),
+            JSON.stringify(sentBody));
+        ok('gắn đúng team MKG', sentBody?.team === 'team_mkg');
+    }
+
+    // ===== 3. Đã có identity từ trước thì không tạo trùng =====
+    group('Không tạo trùng record khi đăng nhập lại');
+    {
+        localStorage.removeItem('ks_auth');
+        const usersBefore = db.users.length;
+        await pb.login('quy28181818@gmail.com', 'pw-that');
+        ok('không tạo thêm users record', db.users.length === usersBefore, `${usersBefore} → ${db.users.length}`);
+        ok('dùng lại đúng identity cũ', pb.ownerId() === db.users[0].id);
+    }
+
+    // ===== 4. Tài khoản users bình thường — không đụng gì tới identity =====
+    group('Tài khoản users thường không qua đường superuser');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'nhanvien@mkg.vn';
+        db.usersAuthOk = true; // đăng nhập users thành công ngay, không cần rơi xuống _superusers
+        db.teams.push({ id: 'team_mkg', name: 'MKG', slug: 'mkg', members: ['raw_user_1'] });
+        await pb.login('nhanvien@mkg.vn', 'pw');
+        ok('không phải superuser', !pb.isSuperuser());
+        ok('ownerId() = myId() (không tạo identity phụ)', pb.ownerId() === pb.myId());
+        ok('không có users record nào bị tạo thêm', db.users.length === 0);
+    }
+
+    // ===== 5. Sai cả hai mật khẩu → báo gọn, không đăng nhập =====
+    group('Sai mật khẩu');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'x@mkg.vn'; db.usersAuthOk = false; db.superAuthOk = false;
+        let caught = null;
+        try { await pb.login('x@mkg.vn', 'sai'); } catch (e) { caught = e; }
+        ok('báo lỗi rõ ràng', /Sai tài khoản/.test(caught?.message || ''), caught?.message);
+        ok('không lưu phiên', !pb.isLoggedIn());
+    }
+
+    // ===== 6. fullSync tự thử lại nếu identity chưa có, chỉ lỗi rõ khi vẫn thất bại =====
+    group('fullSync tự phục hồi identity còn thiếu');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'admin2@mkg.vn'; db.superAuthOk = true;
+        db.teams.push({ id: 'team_mkg', name: 'MKG', slug: 'mkg', members: [] });
+        await pb.login('admin2@mkg.vn', 'pw');
+        // Xoá identityId để mô phỏng lần login trước bị lỗi mạng giữa chừng.
+        const auth = JSON.parse(localStorage.getItem('ks_auth'));
+        localStorage.setItem('ks_auth', JSON.stringify({ ...auth, identityId: null, identityName: null }));
+        const r = await pb.fullSync({ projects: [], docs: [], tombstones: [], scopeDirty: [] });
+        ok('fullSync tự resolve lại identity, không cần đăng nhập lại', !!pb.ownerId() && r.pushed === 0);
+    }
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'admin3@mkg.vn'; db.superAuthOk = true;
+        // Chặn TOÀN BỘ endpoint users/records (cả tìm lẫn tạo) TỪ TRƯỚC KHI đăng nhập —
+        // nếu chỉ chặn sau login() như lần thử đầu, identity đã kịp tạo lúc login và GET
+        // tìm-theo-email sau đó vẫn thấy nó, không rơi vào nhánh lỗi cần kiểm.
+        const savedFetch = window.fetch;
+        window.fetch = async (url, opts) => {
+            if (String(url).includes('collections/users/records')) return res({ message: 'Forbidden' }, 403);
+            return savedFetch(url, opts);
+        };
+        await pb.login('admin3@mkg.vn', 'pw'); // login() nuốt lỗi resolveIdentity, không throw
+        let caught = null;
+        try { await pb.fullSync({ projects: [], docs: [], tombstones: [], scopeDirty: [] }); }
+        catch (e) { caught = e; }
+        window.fetch = savedFetch;
+        ok('không tạo được identity → lỗi RÕ RÀNG, không âm thầm bỏ qua', caught?.status === 500 && /quản trị/.test(caught.message || ''), caught?.message);
+    }
+
+    // ===== 7. Quản lý team — chỉ superuser =====
+    group('Quản lý team & thành viên');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'founder@mkg.vn'; db.superAuthOk = true;
+        await pb.login('founder@mkg.vn', 'pw');
+
+        const team = await pb.createTeam('Học viện Đào tạo');
+        ok('tạo team thành công', !!team.id);
+        ok('slug bỏ dấu tiếng Việt, chỉ còn a-z0-9-', /^[a-z0-9-]+$/.test(team.slug), team.slug);
+        ok('không chứa ký tự combining còn sót (lỗi encoding)', !/[̀-ͯ]/.test(team.slug));
+
+        const teams = await pb.listTeams();
+        ok('listTeams thấy team vừa tạo', teams.some(t => t.id === team.id));
+
+        const addRes = await pb.addTeamMember(team.id, 'moi@mkg.vn', { name: 'Người mới' });
+        ok('tạo user mới khi email chưa tồn tại', addRes.created === true);
+        ok('trả về mật khẩu MỘT LẦN', typeof addRes.password === 'string' && addRes.password.length >= pb.PASSWORD_MIN);
+
+        const members = await pb.getTeamMembers(team.id);
+        ok('thành viên hiện đúng email (superuser expand được)', members.some(m => m.email === 'moi@mkg.vn'), JSON.stringify(members));
+
+        const addAgain = await pb.addTeamMember(team.id, 'moi@mkg.vn');
+        ok('thêm lại cùng email không tạo user trùng', addAgain.created === false);
+        ok('không có mật khẩu trả về khi dùng tài khoản có sẵn', addAgain.password === null);
+        const teamRec = db.teams.find(t => t.id === team.id);
+        ok('members không bị nhân đôi', teamRec.members.filter(id => id === addAgain.userId).length === 1);
+
+        await pb.removeTeamMember(team.id, addAgain.userId);
+        ok('xóa khỏi team thành công', !db.teams.find(t => t.id === team.id).members.includes(addAgain.userId));
+    }
+    {
+        // Mật khẩu quá ngắn — CHÍNH XÁC lỗi "1111" mà Sếp định dùng: chặn TRƯỚC khi gọi mạng.
+        const before = calls.length;
+        let caught = null;
+        try { await pb.addTeamMember('team_x', 'a@mkg.vn', { password: '1111' }); }
+        catch (e) { caught = e; }
+        ok('mật khẩu "1111" bị từ chối', /ký tự/.test(caught?.message || ''), caught?.message);
+        ok('chặn phía client, KHÔNG gọi mạng phí công', calls.length === before);
+    }
+    {
+        let caught = null;
+        try { await pb.addTeamMember('team_x', 'khong-phai-email'); }
+        catch (e) { caught = e; }
+        ok('email sai định dạng bị từ chối', /Email không hợp lệ/.test(caught?.message || ''));
+    }
+    {
+        // Tài khoản KHÔNG phải superuser — mọi thao tác quản trị bị chặn ngay từ client.
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'thanhvien@mkg.vn'; db.usersAuthOk = true;
+        await pb.login('thanhvien@mkg.vn', 'pw');
+        const before = calls.length;
+        const attempts = [
+            () => pb.createTeam('Team lậu'),
+            () => pb.addTeamMember('team_mkg', 'x@mkg.vn'),
+            () => pb.removeTeamMember('team_mkg', 'u1'),
+        ];
+        let allBlocked = true;
+        for (const fn of attempts) {
+            try { await fn(); allBlocked = false; } catch (e) { if (e.status !== 403) allBlocked = false; }
+        }
+        ok('thành viên thường không tạo/sửa team được', allBlocked);
+        ok('bị chặn ngay ở client, không tốn round-trip mạng', calls.length === before);
+    }
+
+    // ===== 8. Nhiều team — dự án đẩy đúng team đã chọn, không mặc định về team đầu tiên =====
+    group('Đa team — chọn đúng team cho từng dự án');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'founder2@mkg.vn'; db.superAuthOk = true;
+        db.teams.push({ id: 'team_mkg', name: 'MKG', slug: 'mkg', members: [] });
+        db.teams.push({ id: 'team_academy', name: 'Academy', slug: 'academy-ab12', members: [] });
+        await pb.login('founder2@mkg.vn', 'pw');
+        ok('thấy cả 2 team', pb.myTeams().length === 2);
+
+        calls = []; // cô lập — writesTo() soi trên state tích lũy từ đầu file, không riêng test này
+        const r = await pb.fullSync({
+            projects: [{ id: 'pA', name: 'Khoá học', scope: 'team', teamId: 'team_academy', createdAt: 1, updatedAt: 9000 }],
+            docs: [], tombstones: [], scopeDirty: [],
+        });
+        const w = writesTo('survey_items').find(c => c.path.startsWith('collections/survey_items/records') && !c.path.includes('?'));
+        const sent = typeof w?.body === 'string' ? JSON.parse(w.body) : null;
+        ok('đẩy lên đúng team Academy đã chọn, KHÔNG rơi về team đầu tiên (MKG)', sent?.team === 'team_academy',
+            JSON.stringify(sent));
+    }
+
+    // ===== 9. Lỗi validate từ PocketBase được lộ ra rõ ràng =====
+    group('Thông báo lỗi có chi tiết field');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'f3@mkg.vn'; db.usersAuthOk = true;
+        await pb.login('f3@mkg.vn', 'pw');
+        const savedFetch = window.fetch;
+        window.fetch = async (url, opts) => {
+            if (String(url).includes('collections/survey_items/records') && (opts.method === 'POST' || opts.method === 'PATCH')) {
+                return res({ message: 'Failed to create record.', data: { owner: { code: 'validation_missing_rel', message: 'Giá trị quan hệ không tồn tại.' } } }, 400);
+            }
+            return savedFetch(url, opts);
+        };
+        const r = await pb.fullSync({
+            projects: [{ id: 'pB', name: 'X', scope: 'private', createdAt: 1, updatedAt: 5000 }],
+            docs: [], tombstones: [], scopeDirty: [],
+        });
+        window.fetch = savedFetch;
+        ok('push lỗi vẫn được ghi nhận (không throw làm vỡ cả lượt sync)', r.failedIds.includes('pB'));
+    }
+    {
+        // Kiểm trực tiếp việc parse lỗi field, không qua fullSync để thấy rõ message.
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'f4@mkg.vn'; db.superAuthOk = true;
+        await pb.login('f4@mkg.vn', 'pw');
+        const savedFetch = window.fetch;
+        window.fetch = async () => res({ message: 'Failed to create record.', data: { password: { message: 'Giá trị phải dài từ 8 đến 71 ký tự.' } } }, 400);
+        let caught = null;
+        try { await pb.addTeamMember('t1', 'a@mkg.vn', { password: 'longenough1' }); }
+        catch (e) { caught = e; }
+        window.fetch = savedFetch;
+        ok('message gộp cả chi tiết field từ server', /Gi.*tr.*ph.*dài/.test(caught?.message || ''), caught?.message);
+    }
+
+    document.getElementById('out').innerHTML = lines.join('\n') + `\n\n<b>${pass} pass, ${fail} fail</b>`;
+    document.title = fail ? `${fail} FAIL` : `${pass} pass`;
+    } catch (e) {
+        document.getElementById('out').innerHTML = lines.join('\n') + `\n\n<span class="FAIL">CRASH: ${e.message}\n${e.stack}</span>`;
+        document.title = 'CRASH';
+    } finally {
+        localStorage.removeItem('ks_auth');
+    }
+</script>

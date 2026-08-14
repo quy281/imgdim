@@ -5,6 +5,7 @@ import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
 import SyncStatusSheet from './ui/SyncStatusSheet';
 import ShareSheet from './ui/ShareSheet';
+import TeamAdminSheet from './ui/TeamAdminSheet';
 import ShareViewer from './screens/ShareViewer';
 import { ToastHost, toast } from './ui/Toast';
 import * as db from './lib/db';
@@ -37,6 +38,7 @@ export default function App() {
     const [syncMsg, setSyncMsg] = useState(null);
     const [lastSyncAt, setLastSyncAt] = useState(null);
     const [showSyncStatus, setShowSyncStatus] = useState(false);
+    const [showTeamAdmin, setShowTeamAdmin] = useState(false);
     const [shareFor, setShareFor] = useState(null); // project object
     const [account, setAccount] = useState(() => pb.me());
     const share = useRef(readShareParam()).current;
@@ -114,7 +116,9 @@ export default function App() {
     };
 
     const createProject = async (name) => {
-        const p = { ...newProject(name), ownerId: pb.myId() || null, updatedAt: pb.now(), createdAt: pb.now() };
+        // ownerId() chứ không phải myId(): với tài khoản superuser, myId() là id trong
+        // bảng _superusers — không khớp với owner thật sự sẽ ghi lên cloud (xem pb.js).
+        const p = { ...newProject(name), ownerId: pb.ownerId() || null, updatedAt: pb.now(), createdAt: pb.now() };
         await persistProjects(list => [p, ...list]);
         markDirty('project', p);
         setDocs([]);
@@ -127,8 +131,12 @@ export default function App() {
         if (p) markDirty('project', p);
     };
 
-    const setProjectScope = async (id, scope) => {
-        const list = await persistProjects(l => l.map(p => p.id === id ? { ...p, scope, updatedAt: pb.now() } : p));
+    // team = { id, name } khi scope='team' (ProjectsScreen truyền team cụ thể khi có >1
+    // lựa chọn; bỏ trống thì giữ team cũ của dự án, hoặc team chính nếu dự án chưa có).
+    const setProjectScope = async (id, scope, team) => {
+        const list = await persistProjects(l => l.map(p => p.id === id
+            ? { ...p, scope, teamId: scope === 'team' ? (team?.id || p.teamId || null) : null, updatedAt: pb.now() }
+            : p));
         const p = list.find(x => x.id === id);
         if (!p) return;
         // Đổi phạm vi phải đẩy lại CẢ doc của dự án (record doc mang scope riêng), nên
@@ -137,7 +145,7 @@ export default function App() {
         const dirty = new Set([...(meta.scopeDirty || []), String(id)]);
         await db.setMeta({ scopeDirty: [...dirty] });
         markDirty('project', p);
-        toast(scope === 'team' ? `Đã chia sẻ cho team ${pb.myTeam()?.name || 'MKG'}` : 'Đã chuyển về riêng tư', 'ok');
+        toast(scope === 'team' ? `Đã chia sẻ cho team ${team?.name || pb.myTeam()?.name || 'MKG'}` : 'Đã chuyển về riêng tư', 'ok');
         if (pb.isLoggedIn()) syncAll(true);
     };
 
@@ -432,6 +440,7 @@ export default function App() {
                 onShare={setShareFor}
                 onSync={() => syncAll(false)}
                 onOpenSyncStatus={() => setShowSyncStatus(true)}
+                onOpenTeamAdmin={() => setShowTeamAdmin(true)}
                 onLogin={login}
                 onLogout={logout}
             />
@@ -447,6 +456,7 @@ export default function App() {
                 onSync={() => { setShowSyncStatus(false); syncAll(false); }}
             />
             <ShareSheet project={shareFor} onClose={() => setShareFor(null)} />
+            <TeamAdminSheet open={showTeamAdmin} onClose={() => setShowTeamAdmin(false)} />
             <ToastHost />
         </div>
     );

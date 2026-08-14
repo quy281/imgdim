@@ -40,13 +40,25 @@ export function getAuth() {
 export function isLoggedIn() { return !!getAuth()?.token; }
 export function me() { return getAuth()?.model || null; }
 export function myId() { return getAuth()?.model?.id || null; }
-export function myTeam() { return getAuth()?.team || null; }
-/** Đang đăng nhập bằng tài khoản superuser — xem login(): vào được nhưng không sync được. */
 export function isSuperuser() { return !!getAuth()?.superuser; }
 export function myName() {
     const m = me();
     return m?.name || m?.username || m?.email || '';
 }
+
+// ===== Danh tính ghi dữ liệu (khác với danh tính đăng nhập, cho tài khoản superuser) =====
+// `owner` trên survey_items là relation → collection `users`. Superuser xác thực qua bảng
+// riêng `_superusers` — id của nó KHÔNG tồn tại trong `users`, nên nếu dùng thẳng myId()
+// làm owner, PocketBase từ chối record vì "giá trị quan hệ không tồn tại" và sync coi như
+// chết. resolveIdentity() tự tìm-hoặc-tạo một record `users` cùng email để làm danh tính
+// ghi dữ liệu; ownerId()/ownerName() LUÔN dùng khi ghi lên cloud, còn myId()/myName() chỉ
+// để hiển thị "ai đang đăng nhập trên máy này".
+export function ownerId() { return getAuth()?.identityId || myId(); }
+export function ownerName() { return getAuth()?.identityName || myName(); }
+/** Tất cả team mà danh tính hiện tại thuộc về (superuser: toàn bộ team, vì bỏ qua rule). */
+export function myTeams() { return getAuth()?.teams || (getAuth()?.team ? [getAuth().team] : []); }
+/** Team "chính" — dùng làm mặc định khi dự án đổi sang phạm vi team mà chưa chọn team cụ thể. */
+export function myTeam() { return myTeams()[0] || null; }
 
 function saveAuth(patch) {
     const cur = getAuth() || {};
@@ -122,7 +134,19 @@ async function once(path, opts) {
     }
     if (!res.ok) {
         let msg = res.statusText;
-        try { const j = await res.json(); msg = j.message || msg; } catch { /* giữ statusText */ }
+        try {
+            const j = await res.json();
+            msg = j.message || msg;
+            // PocketBase trả lỗi validate theo từng field trong j.data (vd: "owner: giá trị
+            // quan hệ không tồn tại", "password: độ dài phải từ 8 ký tự"). Không lộ ra thì
+            // toast chỉ hiện "Failed to create record." — không ai đoán được vì sao.
+            if (j.data && typeof j.data === 'object') {
+                const details = Object.entries(j.data)
+                    .map(([field, e]) => e?.message ? `${field}: ${e.message}` : null)
+                    .filter(Boolean);
+                if (details.length) msg = `${msg} (${details.join('; ')})`;
+            }
+        } catch { /* giữ statusText */ }
         throw new PbError(msg, res.status);
     }
     if (res.status === 204) return null;
@@ -132,6 +156,74 @@ async function once(path, opts) {
 /** Escape giá trị nhét vào filter của PocketBase. */
 const esc = (v) => String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const q = (filter) => `filter=${encodeURIComponent(filter)}`;
+
+// Mật khẩu ngẫu nhiên cho record `users` tự tạo (superuser đăng nhập qua _superusers,
+// không ai cần biết mật khẩu này) và cho addTeamMember() khi admin không tự đặt mật khẩu.
+function randomPassword(len = 16) {
+    const bytes = new Uint8Array(len);
+    if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < len; i++) bytes[i] = Math.floor(Math.random() * 256);
+    return [...bytes].map(b => b.toString(36).padStart(2, '0')).join('').slice(0, len);
+}
+/** PocketBase mặc định từ chối mật khẩu ngắn hơn — không tự ý hạ ràng buộc này. */
+export const PASSWORD_MIN = 8;
+
+/**
+ * Tìm-hoặc-tạo record `users` cùng email — danh tính để GHI dữ liệu (owner, team.members)
+ * khi phiên đăng nhập thực tế là superuser (bảng `_superusers`, không thuộc `users`).
+ */
+async function resolveIdentity(email) {
+    const found = await api(`collections/users/records?perPage=1&${q(`email='${esc(email)}'`)}`);
+    if (found.items?.length) return found.items[0];
+    const password = randomPassword();
+    const local = (email.split('@')[0] || 'user').replace(/[^a-zA-Z0-9_]/g, '') || 'user';
+    return api('collections/users/records', {
+        method: 'POST',
+        body: JSON.stringify({
+            email, password, passwordConfirm: password,
+            username: `${local}${Math.random().toString(36).slice(2, 6)}`,
+            emailVisibility: true, verified: true,
+        }),
+    });
+}
+
+async function ensureTeamMembership(teamId, identityId) {
+    if (!teamId || !identityId) return;
+    try {
+        const rec = await api(`collections/${TEAMS}/records/${teamId}`);
+        if (!(rec.members || []).includes(identityId)) {
+            await api(`collections/${TEAMS}/records/${teamId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ members: [...(rec.members || []), identityId] }),
+            });
+        }
+    } catch (err) { console.warn('ensureTeamMembership:', err.message); }
+}
+
+/**
+ * Nạp danh tính-ghi-dữ-liệu (nếu superuser) + toàn bộ team. Không throw — mọi lỗi ở đây
+ * chỉ làm app chạy chế độ hạn chế hơn (riêng tư / chưa sync được), không chặn đăng nhập.
+ */
+async function resolveIdentityAndTeams(email, superuser) {
+    if (superuser && !getAuth()?.identityId) {
+        try {
+            const identity = await resolveIdentity(email);
+            saveAuth({ identityId: identity.id, identityName: identity.name || identity.username || identity.email });
+        } catch (err) { console.warn('resolveIdentity:', err.message); }
+    }
+    let teams = myTeams();
+    try {
+        const res = await api(`collections/${TEAMS}/records?perPage=200&sort=name`);
+        teams = (res.items || []).map(t => ({ id: t.id, name: t.name, slug: t.slug }));
+        saveAuth({ teams, team: teams[0] || null });
+    } catch { /* chưa dựng collection teams, hoặc lỗi mạng — giữ cache cũ */ }
+    const identityId = getAuth()?.identityId;
+    if (superuser && identityId) {
+        const primary = teams.find(t => t.slug === TEAM_SLUG) || teams[0];
+        if (primary) await ensureTeamMembership(primary.id, identityId);
+    }
+    return teams;
+}
 
 export async function login(identity, password) {
     // Bảng `users` cho đăng nhập bằng email HOẶC username (identityFields của server).
@@ -144,9 +236,6 @@ export async function login(identity, password) {
     } catch (err) {
         if (err.status !== 400) throw err;
         // Rơi về `_superusers` để Founder vẫn vào được khi chưa có record trong `users`.
-        // Lưu ý: superuser bỏ qua mọi API rule NHƯNG id của nó không thuộc bảng `users`,
-        // nên field `owner` (relation → users) sẽ bị từ chối → không sync được. fullSync
-        // báo lỗi rõ thay vì thất bại âm thầm.
         try {
             data = await api('collections/_superusers/auth-with-password', {
                 method: 'POST',
@@ -157,12 +246,11 @@ export async function login(identity, password) {
             throw new PbError('Sai tài khoản hoặc mật khẩu', 400);
         }
     }
-    saveAuth({ token: data.token, model: data.record, team: null, superuser });
-    // Team lấy ngay sau khi đăng nhập; thất bại thì vẫn dùng app được ở chế độ riêng tư.
-    try {
-        const t = await api(`collections/${TEAMS}/records?perPage=1&${q(`slug='${esc(TEAM_SLUG)}'`)}`);
-        if (t.items?.length) saveAuth({ team: { id: t.items[0].id, name: t.items[0].name } });
-    } catch { /* chưa dựng collection teams — bỏ qua */ }
+    saveAuth({
+        token: data.token, model: data.record, superuser,
+        team: null, teams: [], identityId: null, identityName: null,
+    });
+    await resolveIdentityAndTeams(data.record.email, superuser);
     return data.record;
 }
 
@@ -187,6 +275,13 @@ export async function ensureSession(force) {
     const col = isSuperuser() ? '_superusers' : 'users';
     try {
         const res = await api(`collections/${col}/auth-refresh`, { method: 'POST' }, 2);
+        if (!res?.token || !res?.record) {
+            // Phản hồi 200 nhưng sai hình dạng mong đợi — KHÔNG được ghi đè token tốt đang
+            // có bằng `undefined`: saveAuth merge xong, JSON.stringify âm thầm xóa mất key
+            // đó khỏi bản lưu, và người dùng bị đăng xuất ngầm mà không có lỗi nào cả.
+            console.warn('ensureSession: phản hồi auth-refresh bất thường', res);
+            return true; // coi như lỗi mạng — giữ phiên cũ, thử lại lần sau
+        }
         saveAuth({ token: res.token, model: res.record, superuser: isSuperuser() });
         sessionCheckedAt = Date.now();
         verifiedToken = res.token;
@@ -197,15 +292,11 @@ export async function ensureSession(force) {
     }
 }
 
-/** Nạp lại thông tin team (dùng khi Founder mới thêm mình vào team). */
+/** Nạp lại danh sách team (dùng khi Founder mới thêm mình vào team, hoặc mới tạo team mới). */
 export async function refreshTeam() {
     if (!isLoggedIn()) return null;
-    try {
-        const t = await api(`collections/${TEAMS}/records?perPage=1&${q(`slug='${esc(TEAM_SLUG)}'`)}`);
-        const team = t.items?.length ? { id: t.items[0].id, name: t.items[0].name } : null;
-        saveAuth({ team });
-        return team;
-    } catch { return myTeam(); }
+    const teams = await resolveIdentityAndTeams(me()?.email, isSuperuser());
+    return teams[0] || null;
 }
 
 // ===== Ảnh: tách khỏi data JSON =====
@@ -308,7 +399,7 @@ export async function fetchRemoteStatus() {
 function buildPayload({ kind, item, scope, teamId, legacy }) {
     const isPhoto = kind === 'doc' && item.type === 'photo';
     const base = {
-        owner: myId(),
+        owner: ownerId(),
         item_id: String(item.id),
         kind,
         project_id: String(item.projectId || item.id),
@@ -327,7 +418,7 @@ function buildPayload({ kind, item, scope, teamId, legacy }) {
     return {
         fields: {
             ...base,
-            owner_name: myName(),
+            owner_name: ownerName(),
             scope: scope || SCOPE_DEFAULT,
             team: scope === 'team' ? (teamId || '') : '',
             updated_ms: Number(item.updatedAt) || 0,
@@ -369,15 +460,20 @@ async function writeRecord(recId, fields, photoDataUrl, rev, legacy) {
  */
 export async function fullSync(local, onProgress) {
     if (!isLoggedIn()) throw new PbError('Chưa đăng nhập', 401);
-    if (isSuperuser()) {
-        throw new PbError('Đang đăng nhập bằng tài khoản quản trị — không đồng bộ được. '
-            + 'Cần một tài khoản trong bảng users để dữ liệu có chủ sở hữu.', 403);
-    }
     if (navigator.onLine === false) throw new PbError('Không có mạng', 0);
     if (!(await ensureSession())) throw new PbError('Phiên đăng nhập hết hạn — vui lòng đăng nhập lại', 401);
+    // Superuser cần một danh tính trong bảng `users` để ghi được owner (xem resolveIdentity).
+    // login()/refreshTeam() đã thử việc này; nếu lần đó lỗi mạng thì thử lại một lần ở đây
+    // thay vì chặn cứng — chỉ báo lỗi khi vẫn không có sau khi thử lại.
+    if (isSuperuser() && !getAuth()?.identityId) {
+        await resolveIdentityAndTeams(me()?.email, true).catch(() => {});
+        if (!getAuth()?.identityId) {
+            throw new PbError('Không tạo được tài khoản đồng bộ cho quản trị viên trong bảng `users`. '
+                + 'Kiểm tra kết nối mạng rồi thử đồng bộ lại.', 500);
+        }
+    }
 
-    const uid = myId();
-    const team = myTeam();
+    const uid = ownerId();
     const p = (m) => onProgress?.(m);
 
     p('Đang so sánh với cloud...');
@@ -390,11 +486,18 @@ export async function fullSync(local, onProgress) {
         remoteByItem.get(r.item_id).push(r);
     }
 
+    const defaultTeamId = myTeam()?.id || null;
     const scopeOfProject = new Map(local.projects.map(pr => [String(pr.id), pr.scope || SCOPE_DEFAULT]));
+    // Team CỤ THỂ của từng dự án — dự án cũ chưa từng chọn team thì dùng team chính làm
+    // mặc định, giữ nguyên hành vi một-team hiện tại.
+    const teamIdOfProject = new Map(local.projects.map(pr => [String(pr.id), pr.teamId || defaultTeamId]));
     const localMap = new Map([
-        ...local.projects.map(pr => [String(pr.id), { kind: 'project', item: pr, scope: pr.scope || SCOPE_DEFAULT }]),
+        ...local.projects.map(pr => [String(pr.id), {
+            kind: 'project', item: pr, scope: pr.scope || SCOPE_DEFAULT, teamId: pr.teamId || defaultTeamId,
+        }]),
         ...local.docs.map(d => [String(d.id), {
             kind: 'doc', item: d, scope: scopeOfProject.get(String(d.projectId)) || SCOPE_DEFAULT,
+            teamId: teamIdOfProject.get(String(d.projectId)) || defaultTeamId,
         }]),
     ]);
     const tombstoneMap = new Map(local.tombstones.map(t => [t.item_id, t]));
@@ -477,7 +580,9 @@ export async function fullSync(local, onProgress) {
             // hoặc script backfill bỏ sót) phải được đẩy một lần để ghi scope vào, nếu
             // không thì rule đọc theo team `scope = "team"` sẽ không khớp và đồng nghiệp
             // vẫn không thấy dự án.
-            (rec.scope || '') !== loc.scope
+            (rec.scope || '') !== loc.scope ||
+            // Chuyển dự án sang team KHÁC (nhiều team) — id team lệch dù scope vẫn 'team'.
+            (loc.scope === 'team' && (rec.team || '') !== (loc.teamId || ''))
         );
         // Record còn ở schema cũ (ảnh nằm trong JSON) → đẩy lại để tách ảnh ra file field.
         const needsMigrate = !legacy && rec && (rec.schema_v || 2) < SCHEMA_V
@@ -499,6 +604,7 @@ export async function fullSync(local, onProgress) {
             const item = { ...data, ownerId: rec.owner, ownerName: rec.owner_name || '' };
             if (rec.kind === 'project') {
                 item.scope = rec.scope || SCOPE_DEFAULT;
+                item.teamId = rec.team || null;
                 pulledProjects.push(item);
             } else {
                 // Ảnh nằm ở file field từ schema_v 3 → tải riêng, và chỉ khi hash đổi.
@@ -532,9 +638,9 @@ export async function fullSync(local, onProgress) {
     const failedIds = [];
     const scopeSynced = new Set();
     for (let i = 0; i < toPush.length; i++) {
-        const { kind, item, scope, rec, reason } = toPush[i];
+        const { kind, item, scope, teamId, rec, reason } = toPush[i];
         p(`Đang đẩy lên ${i + 1}/${toPush.length}...`);
-        const { fields, photoDataUrl } = buildPayload({ kind, item, scope, teamId: team?.id, legacy });
+        const { fields, photoDataUrl } = buildPayload({ kind, item, scope, teamId, legacy });
         // Migrate/đổi scope không phải người dùng sửa nội dung → giữ nguyên mốc thời gian
         // để máy khác không phải tải lại doc.
         if (reason !== 'edit' && rec && !legacy) fields.updated_ms = rec.updated_ms || fields.updated_ms;
@@ -579,7 +685,7 @@ export async function fullSync(local, onProgress) {
 export async function createShare({ projectId, title, payload, days }) {
     if (!isLoggedIn()) throw new PbError('Cần đăng nhập để tạo link chia sẻ', 401);
     const body = {
-        owner: myId(),
+        owner: ownerId(),
         project_id: String(projectId),
         title: title || '',
         payload,
@@ -596,7 +702,7 @@ export function shareUrl(code) {
 
 export async function listShares(projectId) {
     if (!isLoggedIn()) return [];
-    const filter = projectId ? `project_id='${esc(projectId)}'` : `owner='${esc(myId())}'`;
+    const filter = projectId ? `project_id='${esc(projectId)}'` : `owner='${esc(ownerId())}'`;
     const res = await api(`collections/${SHARES}/records?perPage=200&sort=-created&${q(filter)}`);
     return (res.items || []).map(r => ({
         code: r.id, url: shareUrl(r.id), title: r.title, projectId: r.project_id,
@@ -619,4 +725,96 @@ export async function fetchShare(code) {
         throw err;
     }
     return { code: rec.id, title: rec.title, payload: rec.payload, created: rec.created };
+}
+
+// ===== Quản lý team & thành viên (chỉ superuser — xem createRule/updateRule của `teams`) =====
+// Hai thao tác PATCH-team (thêm/xoá thành viên) và tạo `users` record đều cần bỏ qua API
+// rule, nên chỉ chạy được khi phiên hiện tại là superuser. Rule phía server đã khoá việc
+// này (teams.createRule/updateRule = null); check ở đây chỉ để báo lỗi sớm, gọn hơn.
+function requireSuperuser() {
+    if (!isSuperuser()) throw new PbError('Chỉ tài khoản quản trị mới thực hiện được thao tác này', 403);
+}
+
+/** Toàn bộ team (thành viên thường chỉ thấy team của mình; superuser thấy tất cả). */
+export async function listTeams() {
+    if (!isLoggedIn()) return [];
+    const res = await api(`collections/${TEAMS}/records?perPage=200&sort=name`);
+    return (res.items || []).map(t => ({ id: t.id, name: t.name, slug: t.slug, memberCount: (t.members || []).length }));
+}
+
+export async function createTeam(name) {
+    requireSuperuser();
+    const clean = (name || '').trim();
+    if (!clean) throw new PbError('Tên team không được để trống', 400);
+    const base = clean.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'team';
+    const rec = await api(`collections/${TEAMS}/records`, {
+        method: 'POST',
+        // Hậu tố ngẫu nhiên: slug có unique index, tránh phải kiểm trùng trước khi tạo.
+        body: JSON.stringify({ name: clean, slug: `${base}-${Math.random().toString(36).slice(2, 6)}`, members: [] }),
+    });
+    return { id: rec.id, name: rec.name, slug: rec.slug };
+}
+
+/**
+ * Danh sách thành viên kèm email/tên. `expand` bị chặn bởi viewRule của `users` khi người
+ * gọi không phải superuser (thành viên thường không đọc được record của nhau) — khi đó vẫn
+ * trả về id để UI không trống trơn, chỉ thiếu tên hiển thị.
+ */
+export async function getTeamMembers(teamId) {
+    const rec = await api(`collections/${TEAMS}/records/${teamId}?expand=members`);
+    const expanded = rec.expand?.members;
+    if (Array.isArray(expanded) && expanded.length === (rec.members || []).length) {
+        return expanded.map(u => ({ id: u.id, email: u.email || '', name: u.name || u.username || u.email || u.id }));
+    }
+    return (rec.members || []).map(id => ({ id, email: '', name: '(ẩn — cần quyền quản trị để xem)' }));
+}
+
+/**
+ * Thêm người vào team — tự tạo tài khoản `users` nếu email chưa có, hoặc gắn tài khoản có
+ * sẵn vào team. password bỏ trống → tự sinh ngẫu nhiên, TRẢ VỀ MỘT LẦN để admin copy gửi;
+ * PocketBase không cho đọc lại mật khẩu sau khi tạo.
+ */
+export async function addTeamMember(teamId, email, opts = {}) {
+    requireSuperuser();
+    const clean = (email || '').trim().toLowerCase();
+    if (!clean.includes('@')) throw new PbError('Email không hợp lệ', 400);
+    const password = (opts.password || '').trim() || randomPassword(12);
+    if (password.length < PASSWORD_MIN) {
+        throw new PbError(`Mật khẩu phải từ ${PASSWORD_MIN} ký tự — PocketBase từ chối mật khẩu ngắn hơn`, 400);
+    }
+    const found = await api(`collections/users/records?perPage=1&${q(`email='${esc(clean)}'`)}`);
+    let user, created = false;
+    if (found.items?.length) {
+        user = found.items[0];
+    } else {
+        const local = (clean.split('@')[0] || 'user').replace(/[^a-zA-Z0-9_]/g, '') || 'user';
+        user = await api('collections/users/records', {
+            method: 'POST',
+            body: JSON.stringify({
+                email: clean, password, passwordConfirm: password,
+                name: (opts.name || '').trim(),
+                username: `${local}${Math.random().toString(36).slice(2, 6)}`,
+                emailVisibility: true, verified: true,
+            }),
+        });
+        created = true;
+    }
+    const team = await api(`collections/${TEAMS}/records/${teamId}`);
+    if (!(team.members || []).includes(user.id)) {
+        await api(`collections/${TEAMS}/records/${teamId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ members: [...(team.members || []), user.id] }),
+        });
+    }
+    return { userId: user.id, email: user.email, created, password: created ? password : null };
+}
+
+export async function removeTeamMember(teamId, userId) {
+    requireSuperuser();
+    const team = await api(`collections/${TEAMS}/records/${teamId}`);
+    await api(`collections/${TEAMS}/records/${teamId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ members: (team.members || []).filter(id => id !== userId) }),
+    });
 }
