@@ -117,6 +117,16 @@ const WRITE_RULE = REV_CAS
     : `(${READ_RULE}) && ${OWNER_GUARD}`;
 
 async function main() {
+    // In RÕ server đang gọi — trước đây script im lặng dùng URL_BASE, nên nếu PowerShell
+    // còn sót PB_URL từ việc khác (rất dễ xảy ra khi một terminal quản lý nhiều hệ thống),
+    // nó âm thầm gọi nhầm server mà không ai biết cho tới khi thấy lỗi khó hiểu.
+    step(`Server: ${URL_BASE}`);
+    if (process.env.PB_URL) {
+        log(`  ⚠ PB_URL đang được set tường minh trong môi trường = "${process.env.PB_URL}"`);
+        log('  Nếu không cố ý trỏ tới server khác, xoá biến này (PowerShell: Remove-Item Env:\\PB_URL)');
+        log('  rồi chạy lại — mặc định sẽ dùng https://db.mkg.vn.');
+    }
+
     step('Đăng nhập superuser');
     const auth = await api('collections/_superusers/auth-with-password', {
         method: 'POST',
@@ -128,12 +138,23 @@ async function main() {
     step('Đọc schema hiện tại');
     const all = await api('collections?perPage=200');
     const byName = new Map(all.items.map(c => [c.name, c]));
-    log(`  ${all.items.length} collection: ${all.items.map(c => c.name).join(', ')}`);
+    log(`  ${all.items.length} collection tại ${URL_BASE}: ${all.items.map(c => c.name).join(', ')}`);
 
     const usersCol = byName.get('users');
     const surveyCol = byName.get('survey_items');
-    if (!usersCol) throw new Error('Không tìm thấy collection `users`');
-    if (!surveyCol) throw new Error('Không tìm thấy collection `survey_items`');
+    if (!usersCol || !surveyCol) {
+        const missing = [!usersCol && 'users', !surveyCol && 'survey_items'].filter(Boolean).join(', ');
+        // "users" là collection hệ thống PocketBase tự tạo — không thể thiếu trong một
+        // project đã khởi tạo. Thiếu nó gần như chắc chắn nghĩa là ĐANG NHẦM SERVER/PROJECT,
+        // không phải project chứa app Khảo Sát, dù tài khoản đăng nhập được bình thường
+        // (superuser của project A vẫn login được vào chính project A dù A khác project B).
+        throw new Error(
+            `Không tìm thấy collection ${missing} tại ${URL_BASE}.\n`
+            + `  Tài khoản này đăng nhập được nhưng đang thấy MỘT PROJECT KHÁC (có lẽ CRM/ERP/automation),\n`
+            + `  không phải project chứa app Khảo Sát. Kiểm tra: có server/subdomain PocketBase nào khác\n`
+            + `  dành riêng cho app này không? Nếu có, chạy lại với PB_URL=<url đúng>.`
+        );
+    }
 
     // Backup schema trước khi sửa gì
     if (!DRY) {
