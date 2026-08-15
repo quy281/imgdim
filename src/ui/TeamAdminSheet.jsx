@@ -30,8 +30,17 @@ export default function TeamAdminSheet({ open, onClose }) {
 
     const load = async () => {
         setError(null);
-        try { setTeams(await pb.listTeams()); }
-        catch (err) { setError(err.message); setTeams([]); }
+        try {
+            setTeams(await pb.listTeams());
+        } catch (err) {
+            // PocketBase trả 404 "Missing collection context." khi collection `teams` chưa
+            // tồn tại — nghĩa là pb-setup.mjs chưa chạy thành công, không phải lỗi ở đây.
+            // Hiện thẳng message nội bộ đó ("Missing collection context.") chỉ gây hoang mang.
+            setError(err.status === 404
+                ? 'Backend chưa có collection `teams` — chạy scripts/pb-setup.mjs để tạo trước.'
+                : err.message);
+            setTeams([]);
+        }
     };
 
     const openTeam = async (t) => {
