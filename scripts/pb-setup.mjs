@@ -144,6 +144,31 @@ async function main() {
     const surveyCol = byName.get('survey_items');
     if (!usersCol || !surveyCol) {
         const missing = [!usersCol && 'users', !surveyCol && 'survey_items'].filter(Boolean).join(', ');
+
+        // Chẩn đoán thêm: thử gọi THẲNG vào record của survey_items BẰNG CHÍNH TOKEN
+        // superuser vừa đăng nhập (không qua danh sách schema /api/collections nữa).
+        // Tách được hai khả năng:
+        //   - Gọi thẳng CŨNG lỗi → token này không chạm được tới dữ liệu app Khảo Sát ở
+        //     bất kỳ tầng nào → gần như chắc chắn khác project/instance thật sự.
+        //   - Gọi thẳng THÀNH CÔNG (thấy record) → chỉ riêng /api/collections (tầng quản
+        //     trị schema) đang bị lọc theo tài khoản — có tầng gateway/multi-tenant tuỳ
+        //     biến đứng trước PocketBase, không phải PocketBase chuẩn. Cần liên hệ người
+        //     quản trị hạ tầng, việc này client-side không sửa được.
+        step('Chẩn đoán thêm: gọi thẳng survey_items bằng chính token vừa đăng nhập');
+        let directProbe;
+        try {
+            const direct = await api('collections/survey_items/records?perPage=1');
+            directProbe = `THÀNH CÔNG — thấy ${direct.totalItems ?? '?'} record. `
+                + 'Vậy chỉ /api/collections (danh sách schema) đang bị lọc theo tài khoản — '
+                + 'có tầng gateway/multi-tenant tuỳ biến trước PocketBase, không phải lỗi ở đây, '
+                + 'cần người quản trị hạ tầng db.mkg.vn xác nhận.';
+        } catch (err) {
+            directProbe = `CŨNG LỖI (${err.status}: ${err.message}) — token này không chạm được `
+                + 'tới dữ liệu app Khảo Sát ở bất kỳ tầng nào, gần như chắc chắn là superuser '
+                + 'của một project/instance khác.';
+        }
+        log(`  → ${directProbe}`);
+
         // "users" là collection hệ thống PocketBase tự tạo — không thể thiếu trong một
         // project đã khởi tạo. Thiếu nó gần như chắc chắn nghĩa là ĐANG NHẦM SERVER/PROJECT,
         // không phải project chứa app Khảo Sát, dù tài khoản đăng nhập được bình thường
@@ -152,7 +177,8 @@ async function main() {
             `Không tìm thấy collection ${missing} tại ${URL_BASE}.\n`
             + `  Tài khoản này đăng nhập được nhưng đang thấy MỘT PROJECT KHÁC (có lẽ CRM/ERP/automation),\n`
             + `  không phải project chứa app Khảo Sát. Kiểm tra: có server/subdomain PocketBase nào khác\n`
-            + `  dành riêng cho app này không? Nếu có, chạy lại với PB_URL=<url đúng>.`
+            + `  dành riêng cho app này không? Nếu có, chạy lại với PB_URL=<url đúng>.\n`
+            + `  Xem dòng "Chẩn đoán thêm" phía trên để biết lỗi nằm ở đâu chính xác hơn.`
         );
     }
 
