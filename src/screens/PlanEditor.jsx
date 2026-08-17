@@ -357,6 +357,12 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (!faces.length) { toast('Phòng chưa khép kín — chưa dựng được mặt đứng', 'err'); return; }
         setSel(null);
         setElev({ roomId: room.id, faces, wallId: faces[0].wallId });
+        // Đánh dấu 4 mặt của phòng là "đã dựng" — DXF chỉ xuất mặt KTS đã ngó tới,
+        // không tự đoán hộ những tường chưa ai xem.
+        const ids = new Set(faces.map(f => f.wallId));
+        if (plan.walls.some(w => ids.has(w.id) && !w.elev)) {
+            commit({ ...plan, walls: plan.walls.map(w => ids.has(w.id) ? { ...w, elev: true } : w) }, undefined);
+        }
         // Chưa đo trần thì hỏi luôn — phát laser đầu tiên khi bước vào phòng.
         // Mở màn hình TRƯỚC rồi mới hỏi: bấm Hủy vẫn xem được với số mặc định.
         if (!Number.isFinite(room.h)) openCeilingNumPad(room.id);

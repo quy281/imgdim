@@ -2,7 +2,9 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Stage, Layer } from 'react-konva';
 import { X, Share2, Ruler } from 'lucide-react';
 import ElevationLayer from './ElevationLayer';
-import { wallFrame, ceilingHeight, bboxOfElevation, SLAB_DEFAULT, dist } from '../lib/geometry';
+import { wallFrame, ceilingHeight, bboxOfElevation, SLAB_DEFAULT } from '../lib/geometry';
+import { stageToDataURL, shareDataURL, stamp } from '../lib/export';
+import { toast } from '../ui/Toast';
 
 /**
  * Mini sơ đồ phòng chỉ rõ đang đứng nhìn mặt nào — SVG thuần, không dựng Stage
@@ -51,12 +53,13 @@ function PlanKey({ plan, room, frame, size = 74 }) {
  * vẫn hoàn tác được.
  */
 export default function ElevationView({
-    doc, elev, onClose, onPick, onSegmentTap, onOpeningTap, onVerticalTap, onCeilingTap, onExport,
+    doc, elev, onClose, onPick, onSegmentTap, onOpeningTap, onVerticalTap, onCeilingTap,
 }) {
     const wrapRef = useRef(null);
     const stageRef = useRef(null);
     const [size, setSize] = useState({ width: 0, height: 0 });
     const [selOpId, setSelOpId] = useState(null);
+    const [busy, setBusy] = useState(false);
 
     useEffect(() => {
         const el = wrapRef.current;
@@ -94,6 +97,26 @@ export default function ElevationView({
         ? (frame.wall.openings || []).find(o => o.id === selOpId)
         : null;
 
+    // Xuất ảnh mặt đang xem. Crop theo khung mặt đứng chứ không theo viewport —
+    // ảnh ra luôn đủ hình dù người dùng đang zoom vào một góc.
+    const exportPng = async () => {
+        if (!frame || busy) return;
+        setBusy(true);
+        try {
+            setSelOpId(null);
+            await new Promise(r => setTimeout(r, 140));
+            const bb = bboxOfElevation(frame.len, H, slabT);
+            const uri = stageToDataURL(stageRef.current, { crop: bb, format: 'png' });
+            const nm = `${(room?.name || 'Mat dung').replace(/[\\/:*?"<>|]/g, '')}_${face?.label}`;
+            const r = await shareDataURL(uri, `KT_${nm}_${stamp()}.png`);
+            toast(r === 'shared' ? 'Đã chia sẻ' : 'Đã lưu ảnh mặt đứng', 'ok');
+        } catch (err) {
+            toast('Không xuất được ảnh: ' + err.message, 'err');
+        } finally {
+            setBusy(false);
+        }
+    };
+
     return (
         <div className="elev-screen">
             <div className="mode-banner elev">
@@ -106,7 +129,9 @@ export default function ElevationView({
                 <button className="banner-btn" onClick={onCeilingTap}>
                     <Ruler size={13} /> Cao trần
                 </button>
-                {onExport && <button className="banner-btn" onClick={onExport}><Share2 size={13} /> Xuất</button>}
+                <button className="banner-btn" disabled={busy} onClick={exportPng}>
+                    <Share2 size={13} /> {busy ? 'Đang xuất…' : 'Xuất ảnh'}
+                </button>
             </div>
 
             <div className="elev-canvas" ref={wrapRef}>

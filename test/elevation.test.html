@@ -222,6 +222,71 @@ lines.push('--- khung ảnh xuất ---');
     ok('sàn z=0 nằm trong khung', bb.y < 0 && bb.y + bb.height > 0);
 }
 
+lines.push('--- xuất DXF mặt đứng ---');
+{
+    const { generateDxf, elevationFaces, asciiFold } = await import('/src/lib/dxf.js');
+    const mkDoc = (elevOn) => {
+        let p = {
+            ...mkRoom({
+                top: [{ id: 'ow', type: 'window', t: 0.5, width: 1200, sill: 900, h: 1400 }],
+                bot: [{ id: 'od', type: 'door', t: 0.5, width: 900, sill: 0, h: 2200 }],
+            }),
+            rooms: [],
+        };
+        p = recomputeRooms(p);
+        p.rooms[0].name = 'Ngủ chính';
+        p.rooms[0].h = 3400;
+        if (elevOn) p.walls = p.walls.map(w => ({ ...w, elev: true }));
+        return {
+            name: 'MB', plan: p, notes: [], settings: S,
+            furniture: [{ id: 'f1', kind: 'wardrobe', x: 2000, y: 355, w: 2400, d: 600, h: 2400, z: 0, rot: 0 }],
+        };
+    };
+
+    ok('ascii-fold bỏ dấu tiếng Việt', asciiFold('Ngủ chính — Đông') === 'Ngu chinh — Dong');
+
+    // Chưa dựng mặt đứng thì KHÔNG được tự đoán mà xuất
+    eq('chưa dựng: 0 mặt', elevationFaces(mkDoc(false)).length, 0);
+    const noElev = generateDxf(mkDoc(false));
+    ok('chưa dựng: DXF không có khai triển', !noElev.includes('KHAI TRIEN'));
+    ok('chưa dựng: mặt bằng vẫn xuất bình thường', noElev.includes('WALL') && noElev.trimEnd().endsWith('EOF'));
+
+    const doc = mkDoc(true);
+    const faces = elevationFaces(doc);
+    eq('đã dựng: 4 mặt', faces.length, 4);
+    ok('nhãn A B C D', faces.map(f => f.label).join('') === 'ABCD');
+    ok('mọi mặt dùng chiều cao đã đo 3400', faces.every(f => f.H === 3400));
+    ok('mặt nào cũng thấy tủ áo hoặc không, không lỗi', faces.every(f => Array.isArray(f.items)));
+
+    const dxf = generateDxf(doc);
+    const L = dxf.split('\r\n');
+    ok('có đủ 7 layer ELEV', ['ELEV', 'ELEV-DOOR', 'ELEV-WINDOW', 'ELEV-FURN', 'ELEV-DIM', 'ELEV-LEVEL', 'ELEV-TEXT']
+        .every(n => L.includes(n)));
+    eq('4 tiêu đề khai triển', (dxf.match(/KHAI TRIEN [A-D]/g) || []).length, 4);
+    ok('tên phòng đã bỏ dấu trong DXF', dxf.includes('Ngu chinh') && !dxf.includes('Ngủ chính'));
+    ok('có ký hiệu cốt sàn', dxf.includes('+-0.000'));
+    ok('kết thúc EOF', dxf.trimEnd().endsWith('EOF'));
+
+    // Khung bản vẽ phải bao cả mặt đứng, nếu không Zoom Extents bỏ sót
+    const iMin = L.indexOf('$EXTMIN'), iMax = L.indexOf('$EXTMAX');
+    const minY = +L[iMin + 4], maxY = +L[iMax + 4], maxX = +L[iMax + 2];
+    const planOnly = generateDxf(mkDoc(false)).split('\r\n');
+    const pMinY = +planOnly[planOnly.indexOf('$EXTMIN') + 4];
+    ok('khung mở rộng xuống dưới mặt bằng', minY < pMinY);
+    ok('khung mở rộng ngang đủ cho 4 mặt', maxX > 14000);
+    ok('khung vẫn bao mặt bằng', maxY >= 0);
+
+    // Cốt ±0.000 của mọi mặt phải nằm trên CÙNG một đường.
+    // TEXT trong DXF: 8=layer, 10=x, 20=y, 30, 40=height, 1=nội dung
+    // (nên nội dung ở +10; L[i+1]==='10' để loại phần định nghĩa layer trong TABLES)
+    const baseYs = [];
+    for (let i = 0; i < L.length - 10; i++) {
+        if (L[i] === 'ELEV-LEVEL' && L[i + 1] === '10' && L[i + 10] === '+-0.000') baseYs.push(+L[i + 4]);
+    }
+    eq('tìm được 4 ký hiệu cốt sàn', baseYs.length, 4);
+    ok('4 mặt cùng cốt ±0.000', baseYs.length === 4 && new Set(baseYs).size === 1);
+}
+
 document.getElementById('out').textContent =
     lines.join('\n') + `\n\n===== ${pass} pass, ${fail} fail =====`;
 document.title = fail === 0 ? 'ALL PASS' : `${fail} FAIL`;

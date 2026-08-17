@@ -1,8 +1,11 @@
 // Hand-written DXF R12 (AC1009) ASCII generator — zero dependencies.
 // Coordinates in real millimeters. Screen y points down, DXF y up -> emit y' = -y.
 // R12 has no Unicode: non-ASCII escaped as \U+XXXX (AutoCAD reads this).
-import { dist, bboxOfPlan } from './geometry';
-import { catalogItem } from './furnitureCatalog';
+import {
+    dist, bboxOfPlan, wallSegments, wallFrame, openingV, ceilingHeight,
+    roomFaces, projectItemOnWall, SLAB_DEFAULT,
+} from './geometry';
+import { catalogItem, resolveZ } from './furnitureCatalog';
 
 const LAYERS = [
     { name: 'WALL', color: 7 },
@@ -12,7 +15,61 @@ const LAYERS = [
     { name: 'DOOR', color: 1 },
     { name: 'WINDOW', color: 5 },
     { name: 'FURNITURE', color: 8 },
+    { name: 'ELEV', color: 7 },
+    { name: 'ELEV-DOOR', color: 1 },
+    { name: 'ELEV-WINDOW', color: 5 },
+    { name: 'ELEV-FURN', color: 8 },
+    { name: 'ELEV-DIM', color: 3 },
+    { name: 'ELEV-LEVEL', color: 6 },
+    { name: 'ELEV-TEXT', color: 2 },
 ];
+
+// Bỏ dấu tiếng Việt cho chữ trong DXF. `dxfEscape` đã sinh \U+XXXX đúng chuẩn
+// AutoCAD, nhưng BricsCAD và các viewer cũ hay ra ô vuông — theo đúng lối đã
+// dùng sẵn trong file này ('Don vi: mm').
+export function asciiFold(str) {
+    return String(str)
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/đ/g, 'd').replace(/Đ/g, 'D');
+}
+
+/**
+ * Các mặt đứng cần xuất: chỉ tường KTS đã thật sự dựng (wall.elev), gom theo phòng.
+ * Trả về đủ dữ liệu để vẽ, không cần đụng lại plan.
+ */
+export function elevationFaces(doc) {
+    const plan = doc?.plan;
+    if (!plan?.walls?.length) return [];
+    const settings = doc.settings || {};
+    const slabT = settings.slabT ?? SLAB_DEFAULT;
+    const out = [];
+    for (const room of (plan.rooms || [])) {
+        const H = ceilingHeight(room, settings);
+        for (const f of roomFaces(plan, room)) {
+            const wall = plan.walls.find(w => w.id === f.wallId);
+            if (!wall?.elev) continue; // chưa dựng thì không đoán hộ
+            const frame = wallFrame(plan, f.wallId, room);
+            if (!frame) continue;
+            const items = [];
+            for (const it of (doc.furniture || [])) {
+                const cat = catalogItem(it.kind);
+                const pr = projectItemOnWall(frame, it, {
+                    w: it.w || cat?.w || 600, d: it.d || cat?.d || 600,
+                });
+                if (!pr) continue;
+                items.push({
+                    ...pr, name: cat?.name || 'Noi that',
+                    h: it.h ?? cat?.h ?? 800, z: resolveZ(it, cat, H),
+                });
+            }
+            out.push({
+                label: f.label, roomName: room.name, wall, frame, items,
+                len: frame.len, H, slabT, settings,
+            });
+        }
+    }
+    return out;
+}
 
 const num = (v) => {
     const r = Math.round(v * 100) / 100;
@@ -36,8 +93,20 @@ export function generateDxf(doc) {
     const tag = (code, value) => { t.push(String(code), String(value)); };
 
     const bb = bboxOfPlan(doc.plan, doc.notes, doc.furniture) || { x: 0, y: 0, width: 10000, height: 8000 };
-    const extMin = { x: bb.x, y: -(bb.y + bb.height) };
-    const extMax = { x: bb.x + bb.width, y: -bb.y };
+
+    // Khung bản vẽ phải bao CẢ mặt đứng — thiếu thì Zoom Extents trong AutoCAD
+    // bỏ sót, KTS mở file tưởng chưa xuất mặt đứng.
+    const faces = elevationFaces(doc);
+    const GAP = 3500, PITCH = 2500;
+    const baseY = bb.y + bb.height + GAP;
+    const elevW = faces.reduce((s, f) => s + f.len + PITCH, 0);
+    const elevTop = faces.reduce((m, f) => Math.max(m, f.H + f.slabT), 0);
+    const scrMinX = bb.x;
+    const scrMaxX = faces.length ? Math.max(bb.x + bb.width, bb.x + elevW) : bb.x + bb.width;
+    const scrMinY = faces.length ? Math.min(bb.y, baseY - elevTop - 1000) : bb.y;
+    const scrMaxY = faces.length ? baseY + 1800 : bb.y + bb.height;
+    const extMin = { x: scrMinX, y: -scrMaxY };
+    const extMax = { x: scrMaxX, y: -scrMinY };
 
     // === HEADER ===
     tag(0, 'SECTION'); tag(2, 'HEADER');
@@ -148,6 +217,59 @@ export function generateDxf(doc) {
         // vạch lưng dày (mặt áp tường)
         if (cat?.back) line('FURNITURE', pt(-hw, -hd), pt(hw, -hd));
         if (cat?.name) text('FURNITURE', { x: f.x - hw * 0.8, y: f.y }, 110, cat.name);
+    }
+
+    // ===== Khai triển tường (mặt đứng) =====
+    // Xếp thành hàng ngang DƯỚI mặt bằng, cốt ±0.000 của mọi mặt nằm trên cùng một
+    // đường — đúng cách trình bày hồ sơ kiến trúc. Toạ độ ở đây là toạ độ MÀN HÌNH
+    // (y xuống), các helper line/text tự lật sang hệ DXF y-lên.
+    if (faces.length) {
+        let ox = bb.x;
+        for (const f of faces) {
+            const E = (u, z) => ({ x: ox + u, y: baseY - z });
+            const { len, H, slabT, wall, frame, settings } = f;
+
+            closedPolyline('ELEV', [E(0, 0), E(len, 0), E(len, H), E(0, H)]);
+            closedPolyline('ELEV', [E(0, H), E(len, H), E(len, H + slabT), E(0, H + slabT)]);
+            line('ELEV', E(-250, 0), E(len + 250, 0)); // đường sàn kéo dài
+
+            for (const s of wallSegments(wall, len)) {
+                if (s.kind !== 'op') continue;
+                const op = (wall.openings || []).find(o => o.id === s.opId);
+                if (!op) continue;
+                const { sill, h, top } = openingV(op, settings);
+                const ua = frame.toU(s.from), ub = frame.toU(s.to);
+                const x0 = Math.min(ua, ub), x1 = Math.max(ua, ub);
+                const layer = op.type === 'door' ? 'ELEV-DOOR' : 'ELEV-WINDOW';
+                closedPolyline(layer, [E(x0, sill), E(x1, sill), E(x1, top), E(x0, top)]);
+                if (op.type === 'window') {
+                    line(layer, E(x0, sill + h / 2), E(x1, sill + h / 2));
+                }
+                text('ELEV-DIM', E((x0 + x1) / 2 - 200, top + 120), 120, `+${Math.round(top)}`);
+                text('ELEV-DIM', E((x0 + x1) / 2 - 150, sill + h / 2), 120, String(Math.round(h)));
+                if (sill > 0) text('ELEV-DIM', E((x0 + x1) / 2 - 150, sill / 2), 120, String(Math.round(sill)));
+            }
+
+            for (const it of f.items) {
+                const x0 = Math.min(it.u0, it.u1), x1 = Math.max(it.u0, it.u1);
+                closedPolyline('ELEV-FURN', [E(x0, it.z), E(x1, it.z), E(x1, it.z + it.h), E(x0, it.z + it.h)]);
+                text('ELEV-FURN', E(x0 + 60, it.z + it.h / 2), 110, `${asciiFold(it.name)} +${Math.round(it.z)}`);
+            }
+
+            // chuỗi kích thước ngang
+            for (const s of wallSegments(wall, len)) {
+                if (s.len < 1) continue;
+                const ua = frame.toU(s.from), ub = frame.toU(s.to);
+                text('ELEV-DIM', E((ua + ub) / 2 - 150, -350), 130, String(Math.round(s.len)));
+            }
+            text('ELEV-DIM', E(len / 2 - 200, -750), 160, String(Math.round(len)));
+            text('ELEV-LEVEL', E(-250, -180), 130, '+-0.000');
+            text('ELEV-LEVEL', E(len + 60, H), 130, `+${(H / 1000).toFixed(3)}`);
+            text('ELEV-TEXT', E(0, -1250), 220,
+                `KHAI TRIEN ${f.label}${f.roomName ? ' - ' + asciiFold(f.roomName) : ''}`);
+
+            ox += len + PITCH;
+        }
     }
 
     for (const n of (doc.notes || [])) {
