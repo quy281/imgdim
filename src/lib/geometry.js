@@ -176,6 +176,209 @@ export function wallSegments(wall, wallLen) {
     return out;
 }
 
+// ===== Mặt đứng (khai triển tường) =====
+// Chiều ngang tái dùng nguyên wallSegments/applySegmentLength ở trên.
+// Chiều đứng soi gương đúng luật đó: chiều cao trần CỐ ĐỊNH, sửa một chặng thì
+// phần lanh tô phía trên cửa bù — vì ngoài công trường KTS bắn 2 phát laser độc
+// lập (bệ cửa và mép trên cửa), phần lên trần là phần không ai đo.
+
+export const H_DEFAULT = 3200;      // thông thủy mặc định
+export const SLAB_DEFAULT = 300;    // bề dày sàn/dầm vẽ trên trần
+export const MIN_OPENING_H = 600;   // chiều cao ô cửa nhỏ nhất còn có nghĩa
+// Đồ cách mặt trong tường xa hơn ngưỡng này thì không còn "thuộc" mặt tường đó —
+// bằng bề rộng lối đi tối thiểu. Rộng hơn thì sofa giữa phòng lọt vào bản khai
+// triển tường, chật hơn thì mất tủ kê hụt khỏi chân tường.
+export const NEAR_WALL = 600;
+
+/**
+ * Cao độ ô cửa. Doc cũ không có sill/h vẫn ra số đúng nghiệp vụ.
+ * `assumed` = đang là số suy đoán, chưa ai đo — UI phải phân biệt với số đã nhập.
+ */
+export function openingV(op, settings = {}) {
+    const isDoor = op.type === 'door';
+    const sill = Number.isFinite(op.sill) ? op.sill : (isDoor ? 0 : (settings.windowSill ?? 900));
+    const h = Number.isFinite(op.h) ? op.h : (isDoor ? (settings.doorH ?? 2200) : (settings.windowH ?? 1400));
+    return { sill, h, top: sill + h, assumed: !Number.isFinite(op.h) };
+}
+
+/** Chiều cao trần hiệu dụng của một mặt: ưu tiên số đã đo cho phòng đó. */
+export function ceilingHeight(room, settings = {}) {
+    return Number.isFinite(room?.h) ? room.h : (settings.ceilingH ?? H_DEFAULT);
+}
+
+/** Chuỗi cao độ của một ô cửa: bệ → ô cửa → lanh tô. Tổng luôn = H. */
+export function openingVChain(op, H, settings) {
+    const { sill, h } = openingV(op, settings);
+    return [
+        { kind: 'sill', len: sill },
+        { kind: 'op', len: h },
+        { kind: 'head', len: H - sill - h },
+    ];
+}
+
+/**
+ * Sửa một chặng cao độ của ô cửa. H cố định — 'head' (lanh tô) bù trước,
+ * không đủ thì 'sill' bù. part: 'sill' | 'op' | 'head' | 'top' (cốt đỉnh cửa).
+ */
+export function applyOpeningVertical(plan, wallId, opId, part, value, H, settings) {
+    const wall = plan.walls.find(w => w.id === wallId);
+    if (!wall) return { plan, warning: null };
+    const op = (wall.openings || []).find(o => o.id === opId);
+    if (!op) return { plan, warning: null };
+    if (value < 0) return { plan, warning: 'Số đo không hợp lệ' };
+
+    const cur = openingV(op, settings);
+    let sill = cur.sill;
+    let h = cur.h;
+
+    if (part === 'sill') {
+        // Giữ chiều cao ô cửa, chỉ nâng/hạ cả ô — lanh tô tự co giãn.
+        sill = value;
+    } else if (part === 'top') {
+        // Cốt đỉnh cửa: phép đo laser thứ hai. Giữ bệ, đổi chiều cao ô.
+        h = value - sill;
+    } else if (part === 'op') {
+        h = value;
+    } else if (part === 'head') {
+        h = H - sill - value;
+    } else {
+        return { plan, warning: null };
+    }
+
+    if (h < MIN_OPENING_H) {
+        return { plan, warning: `Ô cửa sẽ chỉ còn ${Math.round(h)}mm — tối thiểu ${MIN_OPENING_H}mm` };
+    }
+    if (sill < 0) return { plan, warning: 'Bệ cửa không thể âm' };
+    if (sill + h > H) {
+        return { plan, warning: `Vượt chiều cao trần ${Math.round(H)}mm — sửa chiều cao trần trước` };
+    }
+
+    const walls = plan.walls.map(w => w.id !== wallId ? w : {
+        ...w,
+        elev: true,
+        openings: (w.openings || []).map(o => o.id !== opId
+            ? o : { ...o, sill: Math.round(sill), h: Math.round(h) }),
+    });
+    return { plan: { ...plan, walls }, warning: null };
+}
+
+/**
+ * Đặt chiều cao thông thủy cho một phòng. Chặn khi thấp hơn ô cửa cao nhất —
+ * đối xứng với applyWallLength chặn tường ngắn hơn tổng bề rộng cửa.
+ */
+export function applyCeilingHeight(plan, roomId, H, settings) {
+    if (!(H > 0)) return { plan, warning: 'Chiều cao không hợp lệ' };
+    const room = (plan.rooms || []).find(r => r.id === roomId);
+    if (!room) return { plan, warning: null };
+    const nodeIds = new Set(room.nodeIds || []);
+    let tallest = 0;
+    let tallestName = '';
+    for (const w of plan.walls) {
+        if (!nodeIds.has(w.a) || !nodeIds.has(w.b)) continue;
+        for (const op of (w.openings || [])) {
+            const { top } = openingV(op, settings);
+            if (top > tallest) { tallest = top; tallestName = op.type === 'door' ? 'cửa đi' : 'cửa sổ'; }
+        }
+    }
+    if (tallest > H) {
+        return { plan, warning: `Trần phải cao hơn đỉnh ${tallestName} (${Math.round(tallest)}mm)` };
+    }
+    const rooms = (plan.rooms || []).map(r => r.id === roomId ? { ...r, h: Math.round(H) } : r);
+    return { plan: { ...plan, rooms }, warning: null };
+}
+
+/**
+ * Khung chiếu của một mặt đứng: hệ toạ độ (u dọc tường, z cao độ) + phía đứng nhìn.
+ * `side` = +1 khi người xem ở phía pháp tuyến n. `toU` lật trục khi đứng phía ngược
+ * lại — thiếu phép lật này thì bản khai triển bị lật gương, cửa nhảy từ trái sang phải.
+ */
+export function wallFrame(plan, wallId, room) {
+    const w = plan.walls.find(x => x.id === wallId);
+    if (!w) return null;
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    const a = nodeById.get(w.a);
+    const b = nodeById.get(w.b);
+    if (!a || !b) return null;
+    const len = dist(a, b);
+    if (len <= 0) return null;
+    const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+    const nx = -uy, ny = ux;
+    const side = room && Number.isFinite(room.cx)
+        ? (Math.sign((room.cx - a.x) * nx + (room.cy - a.y) * ny) || 1)
+        : 1;
+    return {
+        wall: w, a, b, len, ux, uy, nx, ny, side,
+        toU: (u) => side > 0 ? u : len - u,
+    };
+}
+
+/**
+ * Chiếu một món nội thất lên mặt đứng. Trả về null nếu món không thuộc mặt này.
+ * `touching` = áp sát tường (vẽ nét liền); ngược lại đứng trước tường (nét đứt).
+ */
+export function projectItemOnWall(frame, item, size) {
+    const { a, ux, uy, nx, ny, len, side, wall } = frame;
+    const th = ((item.rot || 0) * Math.PI) / 180;
+    const cs = Math.cos(th), sn = Math.sin(th);
+    const hw = (size.w || 600) / 2, hd = (size.d || 600) / 2;
+    const us = [], qs = [];
+    for (const [lx, ly] of [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]]) {
+        // khớp phép quay của Konva (y hướng xuống) — giống hệt dxf.js
+        const px = item.x + lx * cs - ly * sn;
+        const py = item.y + lx * sn + ly * cs;
+        us.push((px - a.x) * ux + (py - a.y) * uy);
+        qs.push(((px - a.x) * nx + (py - a.y) * ny) * side);
+    }
+    const u0 = Math.min(...us), u1 = Math.max(...us);
+    const qNear = Math.min(...qs), qFar = Math.max(...qs);
+    const half = (wall.thickness || 110) / 2;
+    if (qFar < half - 50) return null;            // nằm bên kia tường
+    if (qNear > half + NEAR_WALL) return null;    // quá xa, không thuộc mặt này
+    if (u1 < 0 || u0 > len) return null;
+    const gap = qNear - half;
+    return {
+        u0: side > 0 ? u0 : len - u1,
+        u1: side > 0 ? u1 : len - u0,
+        gap,
+        touching: gap <= 50,
+    };
+}
+
+/**
+ * Các mặt của một phòng, đã sắp thứ tự đọc được: A = tường có cửa đi rộng nhất
+ * (hoặc tường dài nhất), rồi quay theo chiều kim đồng hồ trên màn hình.
+ */
+export function roomFaces(plan, room) {
+    if (!room?.nodeIds?.length) return [];
+    const ids = room.nodeIds;
+    const faces = [];
+    for (let i = 0; i < ids.length; i++) {
+        const a = ids[i], b = ids[(i + 1) % ids.length];
+        const w = plan.walls.find(x => (x.a === a && x.b === b) || (x.a === b && x.b === a));
+        if (!w || faces.some(f => f.wallId === w.id)) continue;
+        const fr = wallFrame(plan, w.id, room);
+        if (!fr) continue;
+        const doorW = (w.openings || [])
+            .filter(o => o.type === 'door')
+            .reduce((m, o) => Math.max(m, o.width), 0);
+        // góc hướng nhìn (từ phòng ra tường), mốc 0 = nhìn lên, quay thuận kim đồng hồ
+        const vx = -fr.nx * fr.side, vy = -fr.ny * fr.side;
+        faces.push({ wallId: w.id, len: fr.len, doorW, angle: (Math.atan2(vx, -vy) + 2 * Math.PI) % (2 * Math.PI) });
+    }
+    if (!faces.length) return [];
+    faces.sort((p, r) => p.angle - r.angle);
+    let start = faces.reduce((best, f, i) =>
+        f.doorW > faces[best].doorW || (f.doorW === faces[best].doorW && f.len > faces[best].len) ? i : best, 0);
+    const rotated = [...faces.slice(start), ...faces.slice(0, start)];
+    return rotated.map((f, i) => ({ ...f, label: String.fromCharCode(65 + i) }));
+}
+
+/** Khung ảnh khi xuất một mặt đứng — chừa chỗ cho chuỗi kích thước và nhãn cốt. */
+export function bboxOfElevation(len, H, slabT = SLAB_DEFAULT) {
+    const pad = 900;
+    return { x: -pad, y: -(H + slabT) - pad, width: len + pad * 2, height: H + slabT + pad * 2 };
+}
+
 // Rebuild openings từ mảng chiều dài mới của chuỗi; validate trước khi ghi.
 function rebuildChain(wall, wallLen, chain, newLens) {
     for (let i = 0; i < chain.length; i++) {
@@ -383,12 +586,14 @@ export function splitWallAtPoint(plan, wallId, pt) {
     const ops = wall.openings || [];
     const newNodeId = genId('n');
     const newNode = { id: newNodeId, x: pt.x, y: pt.y };
+    // Giữ `elev` sang cả hai nửa: chia một bức tường không làm mất công dựng mặt đứng
+    // của nó — nếu mất, mặt đứng lặng lẽ biến khỏi bản xuất DXF.
     const wallA = {
-        id: genId('w'), a: wall.a, b: newNodeId, thickness: wall.thickness,
+        id: genId('w'), a: wall.a, b: newNodeId, thickness: wall.thickness, elev: wall.elev,
         openings: ops.filter(o => o.t <= tSplit).map(o => ({ ...o, t: o.t / tSplit })),
     };
     const wallB = {
-        id: genId('w'), a: newNodeId, b: wall.b, thickness: wall.thickness,
+        id: genId('w'), a: newNodeId, b: wall.b, thickness: wall.thickness, elev: wall.elev,
         openings: ops.filter(o => o.t > tSplit).map(o => ({ ...o, t: (o.t - tSplit) / (1 - tSplit) })),
     };
     const walls = plan.walls.filter(w => w.id !== wallId).concat([wallA, wallB]);

@@ -1,0 +1,228 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>elevation selftest</title>
+<pre id="out">running…</pre>
+<script type="module">
+import {
+    openingV, openingVChain, applyOpeningVertical, applyCeilingHeight, ceilingHeight,
+    wallFrame, projectItemOnWall, roomFaces, bboxOfElevation,
+    splitWallAtPoint, wallSegments, MIN_OPENING_H, H_DEFAULT,
+} from '/src/lib/geometry.js';
+import { recomputeRooms } from '/src/lib/planModel.js';
+
+const lines = [];
+let pass = 0, fail = 0;
+const eq = (name, got, want, tol = 0.6) => {
+    const ok = Math.abs(got - want) <= tol;
+    ok ? pass++ : fail++;
+    lines.push(`${ok ? 'PASS' : 'FAIL'}  ${name}: got ${Math.round(got * 10) / 10}, want ${want}`);
+};
+const ok = (name, cond) => { cond ? pass++ : fail++; lines.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`); };
+const S = { ceilingH: 3200, doorH: 2200, windowH: 1400, windowSill: 900 };
+
+// ===== Phòng 4000×3000, y-down. nodes theo chiều kim đồng hồ trên màn hình =====
+const mkRoom = (openings = {}) => {
+    const nodes = [
+        { id: 'n0', x: 0, y: 0 }, { id: 'n1', x: 4000, y: 0 },
+        { id: 'n2', x: 4000, y: 3000 }, { id: 'n3', x: 0, y: 3000 },
+    ];
+    const walls = [
+        { id: 'wTop', a: 'n0', b: 'n1', thickness: 110, openings: openings.top || [] },
+        { id: 'wRight', a: 'n1', b: 'n2', thickness: 110, openings: openings.right || [] },
+        { id: 'wBot', a: 'n2', b: 'n3', thickness: 110, openings: openings.bot || [] },
+        { id: 'wLeft', a: 'n3', b: 'n0', thickness: 110, openings: openings.left || [] },
+    ];
+    return { nodes, walls, rooms: [] };
+};
+const room = { id: 'r1', nodeIds: ['n0', 'n1', 'n2', 'n3'], cx: 2000, cy: 1500 };
+
+lines.push('--- openingV: suy đoán khi chưa đo ---');
+{
+    const d = openingV({ type: 'door' }, S);
+    eq('cửa đi: bệ = 0', d.sill, 0);
+    eq('cửa đi: cao 2200', d.h, 2200);
+    ok('cửa đi: đánh dấu là số suy đoán', d.assumed === true);
+    const w = openingV({ type: 'window' }, S);
+    eq('cửa sổ: bệ 900', w.sill, 900);
+    eq('cửa sổ: đỉnh 2300', w.top, 2300);
+    const measured = openingV({ type: 'window', sill: 800, h: 1600 }, S);
+    eq('đã đo: bệ 800', measured.sill, 800);
+    ok('đã đo: KHÔNG còn là suy đoán', measured.assumed === false);
+    // sill=0 phải được tôn trọng, không rơi về mặc định (bẫy falsy)
+    eq('bệ = 0 được tôn trọng', openingV({ type: 'window', sill: 0, h: 1400 }, S).sill, 0);
+}
+
+lines.push('--- chuỗi đứng: tổng luôn = H ---');
+{
+    const op = { id: 'o1', type: 'window', sill: 900, h: 1400 };
+    const ch = openingVChain(op, 3200, S);
+    eq('bệ', ch[0].len, 900);
+    eq('ô cửa', ch[1].len, 1400);
+    eq('lanh tô', ch[2].len, 900);
+    eq('tổng = H', ch.reduce((s, c) => s + c.len, 0), 3200);
+}
+
+lines.push('--- luật bù: H cố định, lanh tô bù ---');
+{
+    const p = mkRoom({ top: [{ id: 'o1', type: 'window', t: 0.5, width: 1200, sill: 900, h: 1400 }] });
+    // sửa BỆ 900 -> 700: ô cửa GIỮ NGUYÊN 1400, lanh tô bù
+    const r = applyOpeningVertical(p, 'wTop', 'o1', 'sill', 700, 3200, S);
+    ok('sửa bệ: không cảnh báo', !r.warning);
+    const v = openingV(r.plan.walls[0].openings[0], S);
+    eq('bệ -> 700', v.sill, 700);
+    eq('ô cửa GIỮ 1400 (số laser thứ 2 không bị phá)', v.h, 1400);
+    eq('lanh tô bù -> 1100', 3200 - v.sill - v.h, 1100);
+    ok('đánh dấu tường đã dựng mặt đứng', r.plan.walls[0].elev === true);
+}
+{
+    // sửa CỐT ĐỈNH cửa (phép đo laser thứ 2): giữ bệ, đổi chiều cao ô
+    const p = mkRoom({ top: [{ id: 'o1', type: 'window', t: 0.5, width: 1200, sill: 900, h: 1400 }] });
+    const r = applyOpeningVertical(p, 'wTop', 'o1', 'top', 2500, 3200, S);
+    const v = openingV(r.plan.walls[0].openings[0], S);
+    eq('cốt đỉnh 2500: bệ giữ 900', v.sill, 900);
+    eq('cốt đỉnh 2500: ô cửa -> 1600', v.h, 1600);
+    eq('đỉnh đúng bằng 2500', v.top, 2500);
+}
+{
+    const p = mkRoom({ top: [{ id: 'o1', type: 'door', t: 0.5, width: 900, sill: 0, h: 2200 }] });
+    const r = applyOpeningVertical(p, 'wTop', 'o1', 'op', 300, 3200, S);
+    ok('chặn ô cửa < 600mm', !!r.warning && r.plan === p);
+    const r2 = applyOpeningVertical(p, 'wTop', 'o1', 'sill', 1500, 3200, S);
+    ok('chặn khi vượt trần', !!r2.warning && r2.plan === p);
+    const r3 = applyOpeningVertical(p, 'wTop', 'o1', 'sill', -100, 3200, S);
+    ok('chặn bệ âm', !!r3.warning && r3.plan === p);
+}
+
+lines.push('--- chiều cao trần theo phòng ---');
+{
+    const p = { ...mkRoom({ top: [{ id: 'o1', type: 'door', t: 0.5, width: 900, sill: 0, h: 2200 }] }), rooms: [room] };
+    eq('chưa đo -> lấy mặc định', ceilingHeight(p.rooms[0], S), 3200);
+    const r = applyCeilingHeight(p, 'r1', 3400, S);
+    ok('đặt trần 3400 OK', !r.warning);
+    eq('đọc lại đúng 3400', ceilingHeight(r.plan.rooms[0], S), 3400);
+    const bad = applyCeilingHeight(p, 'r1', 2000, S);
+    ok('chặn trần thấp hơn đỉnh cửa', !!bad.warning && bad.plan === p);
+}
+
+lines.push('--- recomputeRooms KHÔNG được xoá chiều cao đã đo ---');
+{
+    let p = { ...mkRoom(), rooms: [] };
+    p = recomputeRooms(p);
+    ok('nhận diện được 1 phòng', p.rooms.length === 1);
+    p = applyCeilingHeight(p, p.rooms[0].id, 3400, S).plan;
+    const after = recomputeRooms(p);
+    eq('sau recompute vẫn giữ 3400', after.rooms[0].h, 3400);
+}
+
+lines.push('--- wallFrame: phép lật gương (rủi ro số 1) ---');
+{
+    // Kiểm tra BẢN CHẤT: một điểm thật trên tường phải rơi đúng bên trái/phải
+    // trong khung nhìn của người đứng GIỮA PHÒNG nhìn vào tường đó.
+    const p = mkRoom();
+    const uOf = (fr, pt) => fr.toU((pt.x - fr.a.x) * fr.ux + (pt.y - fr.a.y) * fr.uy);
+
+    const top = wallFrame(p, 'wTop', room);
+    // nhìn LÊN: trái/phải trùng màn hình → x nhỏ ở bên trái
+    eq('tường trên: điểm x=500 ở u=500', uOf(top, { x: 500, y: 0 }), 500);
+    ok('tường trên: x=500 nằm nửa TRÁI', uOf(top, { x: 500, y: 0 }) < top.len / 2);
+
+    const bot = wallFrame(p, 'wBot', room);
+    // nhìn XUỐNG: trái/phải ĐẢO → chính điểm x=500 phải sang nửa phải
+    eq('tường dưới: điểm x=500 ở u=3500 (đã lật)', uOf(bot, { x: 500, y: 3000 }), 3500);
+    ok('tường dưới: x=500 nằm nửa PHẢI', uOf(bot, { x: 500, y: 3000 }) > bot.len / 2);
+
+    const left = wallFrame(p, 'wLeft', room);
+    // nhìn sang TRÁI: phía trên màn hình là bên phải người xem
+    ok('tường trái: y=500 (phía trên) nằm nửa PHẢI', uOf(left, { x: 0, y: 500 }) > left.len / 2);
+
+    const right = wallFrame(p, 'wRight', room);
+    ok('tường phải: y=500 (phía trên) nằm nửa TRÁI', uOf(right, { x: 4000, y: 500 }) < right.len / 2);
+
+    // bất biến hình học
+    eq('toU(0) + toU(len) = len', top.toU(0) + top.toU(top.len), top.len);
+    eq('lật 2 lần = chính nó', bot.toU(bot.toU(500)), 500);
+    ok('mọi mặt đều có hướng nhìn xác định', [top, bot, left, right].every(f => Math.abs(f.side) === 1));
+}
+{
+    // Cửa đi ở u=1000 trên tường TRÊN. Nhìn từ trong phòng phải thấy nó bên TRÁI.
+    const p = mkRoom({ top: [{ id: 'o1', type: 'door', t: 1000 / 4000, width: 900 }] });
+    const fr = wallFrame(p, 'wTop', room);
+    const ch = wallSegments(p.walls[0], fr.len);
+    const opSeg = ch.find(s => s.kind === 'op');
+    const uMid = fr.toU((opSeg.from + opSeg.to) / 2);
+    eq('cửa nằm ở u=1000 trên khung nhìn', uMid, 1000);
+    ok('cửa ở nửa TRÁI khung', uMid < fr.len / 2);
+}
+
+lines.push('--- roomFaces: 4 mặt, A = tường có cửa đi ---');
+{
+    const p = mkRoom({
+        bot: [{ id: 'od', type: 'door', t: 0.5, width: 900 }],
+        top: [{ id: 'ow', type: 'window', t: 0.5, width: 1200 }],
+    });
+    const faces = roomFaces(p, room);
+    eq('đủ 4 mặt', faces.length, 4);
+    ok('nhãn A B C D', faces.map(f => f.label).join('') === 'ABCD');
+    ok('A = tường có cửa đi', faces[0].wallId === 'wBot');
+    ok('không lặp tường', new Set(faces.map(f => f.wallId)).size === 4);
+    // không có cửa đi -> A = tường dài nhất
+    const f2 = roomFaces(mkRoom(), room);
+    eq('không cửa: A dài nhất = 4000', f2[0].len, 4000);
+}
+
+lines.push('--- chiếu nội thất lên mặt đứng ---');
+{
+    const p = mkRoom();
+    const fr = wallFrame(p, 'wTop', room);
+    // tủ áo 2400×600 áp tường trên, tâm x=2000, y = 55 + 300 = 355
+    const pr = projectItemOnWall(fr, { x: 2000, y: 355, rot: 0 }, { w: 2400, d: 600 });
+    ok('bắt được món áp tường', !!pr);
+    eq('u0 = 800', pr.u0, 800);
+    eq('u1 = 3200', pr.u1, 3200);
+    ok('nhận là áp sát tường', pr.touching === true);
+    // món giữa phòng -> không thuộc mặt này (mép gần tường cách 1050mm)
+    ok('sofa giữa phòng bị loại', projectItemOnWall(fr, { x: 2000, y: 1500, rot: 0 }, { w: 2100, d: 900 }) === null);
+    // kê hụt khỏi chân tường 300mm thì VẪN phải thuộc mặt đó
+    const off = projectItemOnWall(fr, { x: 2000, y: 655, rot: 0 }, { w: 1200, d: 600 });
+    ok('tủ kê hụt 300mm vẫn thuộc mặt tường', !!off);
+    ok('nhưng đánh dấu là KHÔNG áp sát (vẽ nét đứt)', off && off.touching === false);
+    eq('khoảng hở đo được = 300', off.gap, 300);
+    // món quay 90 độ: w và d hoán vai
+    const rot = projectItemOnWall(fr, { x: 2000, y: 355, rot: 90 }, { w: 600, d: 2400 });
+    ok('món quay 90 vẫn bắt được', !!rot);
+    eq('quay 90: bề rộng trên mặt đứng = 2400', rot.u1 - rot.u0, 2400);
+}
+{
+    // Cùng món, nhìn từ tường ĐỐI DIỆN phải ra toạ độ lật
+    const p = mkRoom();
+    const frTop = wallFrame(p, 'wTop', room);
+    const frBot = wallFrame(p, 'wBot', room);
+    const item = { x: 1000, y: 355, rot: 0 };
+    const a = projectItemOnWall(frTop, item, { w: 600, d: 600 });
+    const b = projectItemOnWall(frBot, item, { w: 600, d: 600 });
+    ok('tường trên thấy món', !!a);
+    ok('tường dưới KHÔNG thấy (quá xa)', b === null);
+    eq('trên: u0 = 700', a.u0, 700);
+}
+
+lines.push('--- splitWallAtPoint giữ cờ mặt đứng ---');
+{
+    const p = mkRoom({ top: [{ id: 'o1', type: 'door', t: 0.5, width: 900 }] });
+    p.walls[0].elev = true;
+    const r = splitWallAtPoint(p, 'wTop', { x: 1000, y: 0 });
+    const halves = r.plan.walls.filter(w => w.a === 'n0' || w.b === 'n1');
+    ok('cả hai nửa giữ cờ elev', halves.length === 2 && halves.every(w => w.elev === true));
+}
+
+lines.push('--- khung ảnh xuất ---');
+{
+    const bb = bboxOfElevation(4000, 3200, 300);
+    ok('bao hết chiều ngang tường', bb.width >= 4000);
+    ok('bao hết chiều cao + sàn', bb.height >= 3500);
+    ok('sàn z=0 nằm trong khung', bb.y < 0 && bb.y + bb.height > 0);
+}
+
+document.getElementById('out').textContent =
+    lines.join('\n') + `\n\n===== ${pass} pass, ${fail} fail =====`;
+document.title = fail === 0 ? 'ALL PASS' : `${fail} FAIL`;
+</script>

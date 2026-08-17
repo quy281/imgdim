@@ -120,6 +120,9 @@ export function recomputeRooms(plan) {
         return {
             id: old ? old.id : genId('r'),
             name: old ? old.name : null,
+            // Chiều cao thông thủy là số ĐO TAY — recompute chạy sau mỗi lần sửa tường,
+            // không giữ lại thì sửa một bức tường là mất trắng số đã đo.
+            h: old?.h,
             key,
             nodeIds: f.nodeIds,
             area: Math.abs(shoelaceArea(f.pts)),
