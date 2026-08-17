@@ -1,0 +1,150 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TeamAdminSheet — test nhánh backend chưa dựng</title>
+<link rel="stylesheet" href="/src/theme.css">
+<style>body { margin: 0 } #log { font: 12px ui-monospace, monospace; padding: 8px; white-space: pre-wrap }</style>
+<div id="log">running…</div>
+<div id="root"></div>
+
+<script>
+// Mock PHẢI đặt trước khi module app chạy — pb.js gọi fetch lúc runtime nên bắt được.
+window.__calls = [];
+const realFetch = window.fetch;
+window.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    window.__calls.push({ url: u, method: opts.method || 'GET', body: opts.body });
+    if (!u.includes('db.mkg.vn/api/')) return realFetch(url, opts);
+    const json = (data, status = 200) => new Response(JSON.stringify(data),
+        { status, headers: { 'Content-Type': 'application/json' } });
+
+    // teams chưa tồn tại → đúng tình huống đang gặp
+    if (u.includes('collections/teams/records') && !window.__provisioned) {
+        return json({ code: 404, message: 'Missing collection context.' }, 404);
+    }
+    if (u.includes('collections/teams/records')) {
+        // Truy vấn có filter slug='mkg' = bước "team MKG đã có chưa" → trả RỖNG để code đi
+        // nhánh tạo mới, giống lần dựng đầu tiên trên server thật.
+        if (u.includes('filter=')) return json({ items: [], totalPages: 1 });
+        return json({ items: [{ id: 't1', name: 'MKG', slug: 'mkg', members: ['u1'] }], totalPages: 1 });
+    }
+    // danh sách schema: có users + survey_items, CHƯA có teams/shares
+    // Dữ liệu cũ chưa có updated_ms/scope → phải được backfill
+    if (u.includes('collections/survey_items/records') && (opts.method || 'GET') === 'GET') {
+        return json({
+            items: [
+                { id: 'r1', item_id: 'p1', owner: 'u1', data: { updatedAt: 1700000000000 } },
+                { id: 'r2', item_id: 'd1', owner: 'u1', data: { updatedAt: 1700000001000 } },
+                { id: 'r3', item_id: 'd2', owner: 'u1', data: { updatedAt: 1700000002000, _deleted: true } },
+            ],
+            totalPages: 1,
+        });
+    }
+    if (u.includes('collections/users/records')) {
+        return json({ items: [{ id: 'u1', email: 'founder@mkg.vn' }], totalPages: 1 });
+    }
+    if (u.includes('/api/collections?')) {
+        return json({
+            items: [
+                { id: 'colUsers', name: 'users', fields: [] },
+                {
+                    id: 'colSurvey', name: 'survey_items',
+                    fields: [{ id: 'f1', name: 'item_id', type: 'text' }, { id: 'f2', name: 'owner', type: 'relation' }],
+                    indexes: [], listRule: '', updateRule: '',
+                },
+            ],
+            totalPages: 1,
+        });
+    }
+    if (u.includes('/api/collections') && (opts.method === 'POST' || opts.method === 'PATCH')) {
+        // Sau khi collection `teams` được tạo, các truy vấn teams tiếp theo phải thành công
+        // — giống hệt server thật, nếu không bước tạo team MKG sẽ thấy 404 giả.
+        if ((opts.body || '').includes('"name":"teams"')) window.__provisioned = true;
+        return json({ id: 'colTeams', fields: [{ name: 'id', max: 10 }] });
+    }
+    return json({ items: [], totalPages: 1 });
+};
+</script>
+
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import TeamAdminSheet from '/src/ui/TeamAdminSheet.jsx';
+import { ToastHost } from '/src/ui/Toast.jsx';
+
+const out = [];
+let pass = 0, fail = 0;
+const ok = (name, cond) => { cond ? pass++ : fail++; out.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`); render(); };
+const render = () => { document.getElementById('log').textContent = out.join('\n'); };
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+const txt = () => document.getElementById('root').innerText;
+const btn = (label) => [...document.querySelectorAll('#root button')].find(b => b.textContent.includes(label));
+
+// phiên superuser
+localStorage.setItem('ks_auth', JSON.stringify({
+    token: 'tok', model: { id: 'su1', email: 'founder@mkg.vn' },
+    superuser: true, identityId: 'u1', identityName: 'Founder', teams: [], team: null,
+}));
+
+createRoot(document.getElementById('root')).render(
+    React.createElement(React.Fragment, null,
+        React.createElement(TeamAdminSheet, { open: true, onClose: () => {} }),
+        React.createElement(ToastHost, null),
+    )
+);
+
+await wait(700);
+ok('hiện khối "Backend chưa dựng xong"', txt().includes('Backend chưa dựng xong'));
+ok('KHÔNG còn bảo đi chạy pb-setup.mjs', !txt().includes('pb-setup.mjs'));
+ok('có nút "Dựng ngay"', !!btn('Dựng ngay'));
+ok('có nút "Kiểm tra trước"', !!btn('Kiểm tra trước'));
+ok('ẩn nút "Team mới" khi chưa dựng', !btn('Team mới'));
+
+// --- Kiểm tra trước: chỉ đọc, không được ghi ---
+window.__calls.length = 0;
+btn('Kiểm tra trước').click();
+await wait(600);
+const wrote = window.__calls.some(c => c.method === 'POST' || c.method === 'PATCH');
+ok('“Kiểm tra trước” KHÔNG ghi gì lên server', !wrote);
+ok('liệt kê thiếu bảng teams', txt().includes('teams'));
+ok('liệt kê thiếu cột scope', txt().includes('scope'));
+
+// --- Dựng: phải hỏi xác nhận trước ---
+btn('Dựng ngay').click();
+await wait(300);
+ok('hỏi xác nhận trước khi đổi schema', txt().includes('Tôi hiểu, dựng'));
+ok('nêu rõ tác động lên db.mkg.vn', txt().includes('db.mkg.vn'));
+ok('báo có tải bản sao cấu trúc cũ', txt().includes('Bản sao cấu trúc cũ'));
+
+// chặn tải file thật khi test
+const realCreate = document.createElement.bind(document);
+document.createElement = (tag) => {
+    const el = realCreate(tag);
+    if (tag === 'a') el.click = () => { window.__downloaded = true; };
+    return el;
+};
+
+window.__calls.length = 0;
+btn('Tôi hiểu, dựng').click();
+await wait(2500);
+window.__provisioned = true;
+
+const posted = window.__calls.filter(c => c.method === 'POST' && c.url.includes('/api/collections'));
+const patched = window.__calls.filter(c => c.method === 'PATCH');
+ok('đã tải bản sao cấu trúc về máy', !!window.__downloaded);
+ok('tạo collection teams', posted.some(c => (c.body || '').includes('"name":"teams"')));
+ok('tạo collection shares', posted.some(c => (c.body || '').includes('"name":"shares"')));
+ok('PATCH survey_items thêm cột', patched.some(c => (c.body || '').includes('updated_ms')));
+ok('giữ nguyên cột cũ khi PATCH (không mất dữ liệu)',
+    patched.some(c => (c.body || '').includes('"item_id"') && (c.body || '').includes('"owner"')));
+// Rule nằm trong JSON nên dấu nháy bị escape: scope = \"team\"
+ok('đặt quyền đọc theo team',
+    patched.some(c => (c.body || '').includes('scope = \\"team\\"') && (c.body || '').includes('team.members.id')));
+ok('cấm đổi chủ sở hữu record', patched.some(c => (c.body || '').includes('@request.body.owner = owner')));
+ok('tạo team MKG', window.__calls.some(c => c.method === 'POST' && (c.body || '').includes('"slug":"mkg"')));
+ok('backfill gắn dữ liệu cũ vào team',
+    window.__calls.some(c => c.method === 'PATCH' && c.url.includes('survey_items/records/')));
+
+document.getElementById('log').textContent =
+    out.join('\n') + `\n\n===== ${pass} pass, ${fail} fail =====`;
+document.title = fail === 0 ? 'ALL PASS' : `${fail} FAIL`;
+</script>

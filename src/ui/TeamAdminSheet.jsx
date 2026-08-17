@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
-    Users, Plus, ArrowLeft, Trash2, Copy, RefreshCw, AlertCircle, UserPlus,
+    Users, Plus, ArrowLeft, Trash2, Copy, RefreshCw, AlertCircle, UserPlus, Database,
 } from 'lucide-react';
 import Sheet from './Sheet';
 import { toast } from './Toast';
+import { downloadText } from '../lib/export';
 import * as pb from '../lib/pb';
 
 /**
@@ -22,24 +23,71 @@ export default function TeamAdminSheet({ open, onClose }) {
     const [addForm, setAddForm] = useState(null); // { email, name, password } | null
     const [revealed, setRevealed] = useState(null); // { email, password } — hiện một lần sau khi tạo
     const [busy, setBusy] = useState(false);
+    const [needsSetup, setNeedsSetup] = useState(false);
+    const [setupLog, setSetupLog] = useState(null); // dòng tiến độ đang chạy
+    const [confirmSetup, setConfirmSetup] = useState(false);
+    const [inspect, setInspect] = useState(null); // kết quả kiểm tra trước khi ghi
 
     useEffect(() => {
-        if (open) { load(); setSelected(null); setRevealed(null); setAddForm(null); }
+        if (open) { load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false); }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
     const load = async () => {
         setError(null);
+        setNeedsSetup(false);
         try {
             setTeams(await pb.listTeams());
         } catch (err) {
-            // PocketBase trả 404 "Missing collection context." khi collection `teams` chưa
-            // tồn tại — nghĩa là pb-setup.mjs chưa chạy thành công, không phải lỗi ở đây.
-            // Hiện thẳng message nội bộ đó ("Missing collection context.") chỉ gây hoang mang.
-            setError(err.status === 404
-                ? 'Backend chưa có collection `teams` — chạy scripts/pb-setup.mjs để tạo trước.'
-                : err.message);
+            // 404 = collection `teams` chưa tồn tại. Trước đây chỗ này chỉ bảo người dùng đi
+            // chạy script CLI — không làm được từ điện thoại. Giờ dựng thẳng trong app.
+            if (err.status === 404 && pb.isSuperuser()) {
+                setNeedsSetup(true);
+                setError(null);
+            } else {
+                setError(err.status === 404
+                    ? 'Backend chưa dựng xong — cần tài khoản quản trị để khởi tạo.'
+                    : err.message);
+            }
             setTeams([]);
+        }
+    };
+
+    const doInspect = async () => {
+        setBusy(true);
+        setSetupLog('Đang đọc cấu trúc trên máy chủ...');
+        try {
+            const r = await pb.inspectBackend();
+            setInspect(r);
+            setSetupLog(null);
+        } catch (err) {
+            setSetupLog(null);
+            setError('Không đọc được cấu trúc: ' + err.message);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const doProvision = async () => {
+        setBusy(true);
+        setSetupLog('Đang kiểm tra backend...');
+        try {
+            const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+            const lines = await pb.provisionBackend(
+                (msg) => setSetupLog(msg),
+                (json) => downloadText(json, `pb-schema-backup-${stamp}.json`, 'application/json'),
+            );
+            setSetupLog(null);
+            setNeedsSetup(false);
+            setConfirmSetup(false);
+            await load();
+            toast('Đã dựng xong backend — tạo team được rồi', 'ok');
+            console.info('provisionBackend:\n' + lines.join('\n'));
+        } catch (err) {
+            setSetupLog(null);
+            setError('Dựng backend thất bại: ' + err.message);
+        } finally {
+            setBusy(false);
         }
     };
 
@@ -123,8 +171,86 @@ export default function TeamAdminSheet({ open, onClose }) {
                 </div>
             )}
 
+            {/* ===== Backend chưa dựng — làm ngay tại đây, không cần terminal ===== */}
+            {needsSetup && !selected && (
+                <div style={{ padding: '4px 16px 16px' }}>
+                    <div style={{
+                        padding: 14, borderRadius: 12,
+                        background: 'var(--warn-soft)', border: '1px solid #f0d999',
+                    }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                            <Database size={17} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />
+                            <div style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--ink)' }}>
+                                <b>Backend chưa dựng xong.</b> Máy chủ chưa có bảng team và bảng
+                                chia sẻ, nên chưa tạo được người dùng.
+                            </div>
+                        </div>
+
+                        {inspect && !busy && (
+                            <div style={{ marginTop: 10, fontSize: 12.5, lineHeight: 1.6, color: 'var(--ink-2)' }}>
+                                <b style={{ color: 'var(--ink)' }}>Máy chủ đang thiếu:</b>
+                                <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                                    {!inspect.teams && <li>bảng <code>teams</code></li>}
+                                    {!inspect.shares && <li>bảng <code>shares</code></li>}
+                                    {inspect.missingFields.length > 0 && <li>cột: {inspect.missingFields.join(', ')}</li>}
+                                    {inspect.missingIndexes.length > 0 && <li>{inspect.missingIndexes.length} index</li>}
+                                    {!inspect.rulesOk && <li>quyền truy cập theo team</li>}
+                                    {inspect.teams && inspect.shares && !inspect.missingFields.length
+                                        && !inspect.missingIndexes.length && inspect.rulesOk && <li>(không thiếu gì)</li>}
+                                </ul>
+                            </div>
+                        )}
+
+                        {!confirmSetup && !busy && (
+                            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                                <button className="btn" style={{ flex: 1, border: '1.5px solid var(--line)', background: 'none' }}
+                                    onClick={doInspect}>
+                                    Kiểm tra trước
+                                </button>
+                                <button className="btn btn-primary" style={{ flex: 1 }}
+                                    onClick={() => setConfirmSetup(true)}>
+                                    <Database size={16} /> Dựng ngay
+                                </button>
+                            </div>
+                        )}
+
+                        {confirmSetup && !busy && (
+                            <>
+                                <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 10, color: 'var(--ink-2)' }}>
+                                    Thao tác này sẽ đổi cấu trúc dữ liệu trên máy chủ <b>db.mkg.vn</b>:
+                                    <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                                        <li>Tạo bảng <code>teams</code> và <code>shares</code></li>
+                                        <li>Thêm cột vào <code>survey_items</code> (không xoá cột nào)</li>
+                                        <li>Đặt lại quyền truy cập theo team</li>
+                                        <li>Tạo team MKG, nạp toàn bộ tài khoản hiện có vào</li>
+                                        <li>Gắn dữ liệu cũ vào team MKG</li>
+                                    </ul>
+                                    <div style={{ marginTop: 8 }}>
+                                        Bản sao cấu trúc cũ sẽ tự tải về máy trước khi sửa. Chạy lại nhiều
+                                        lần vẫn an toàn. Nên làm lúc cả nhà không ai đang nhập liệu.
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                                    <button className="btn" style={{ flex: 1 }} onClick={() => setConfirmSetup(false)}>Để sau</button>
+                                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={doProvision}>
+                                        Tôi hiểu, dựng
+                                    </button>
+                                </div>
+                            </>
+                        )}
+
+                        {busy && (
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, fontSize: 13, color: 'var(--ink-2)' }}>
+                                <RefreshCw size={15} className="spin" />
+                                {setupLog || 'Đang dựng...'}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
             {/* ===== Danh sách team ===== */}
-            {!selected && !error && (
+            {!selected && !error && !needsSetup && (
                 <>
                     {teams === null && (
                         <div style={{ padding: '16px', display: 'flex', gap: 8, color: 'var(--muted)', fontSize: 13.5 }}>
