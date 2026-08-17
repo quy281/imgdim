@@ -820,9 +820,9 @@ export async function removeTeamMember(teamId, userId) {
 }
 
 // ===== Dựng schema backend ngay trong app (chỉ superuser) =====
-// Cùng schema với scripts/pb-setup.mjs — nhưng chạy từ app để Founder không phải mở
-// terminal, cài Node và nhớ credential. Idempotent: bấm lại nhiều lần vẫn an toàn,
-// mỗi bước đều kiểm tra "đã có thì bỏ qua".
+// Dùng PocketBase JS SDK cho thao tác schema — cleaner API, tự retry 429.
+// Idempotent: bấm lại nhiều lần vẫn an toàn, mỗi bước kiểm "đã có thì bỏ qua".
+import PocketBase from 'pocketbase';
 
 const F = {
     id: (pattern = '[a-z0-9]{15}', len = 15, charset = 'a-z0-9') => ({
@@ -848,6 +848,13 @@ const WANT_INDEXES = [
 ];
 const idxName = (sql) => sql.match(/INDEX\s+`?(\w+)`?/i)?.[1];
 
+function makePbClient() {
+    const pb = new PocketBase(BASE);
+    const auth = getAuth();
+    if (auth?.token) pb.authStore.save(auth.token, auth.model || {});
+    return pb;
+}
+
 async function listAllRecords(col, fields) {
     const out = [];
     for (let page = 1; ; page++) {
@@ -865,48 +872,59 @@ export async function inspectBackend() {
     const byName = new Map((all.items || []).map(c => [c.name, c]));
     const users = byName.get('users');
     const survey = byName.get(COL);
-    if (!users || !survey) {
-        const missing = [!users && 'users', !survey && COL].filter(Boolean).join(', ');
+    if (!users) {
         throw new PbError(
-            `Không tìm thấy collection ${missing} trên ${BASE}. Tài khoản này đang thấy một `
-            + 'project PocketBase khác, không phải project của app Khảo Sát.', 404);
+            `Không tìm thấy collection users trên ${BASE}. `
+            + 'Tài khoản này đang thấy một project PocketBase khác.', 404);
     }
-    const have = new Set(survey.fields.map(f => f.name));
-    const haveIdx = new Set((survey.indexes || []).map(idxName));
+    const have = new Set((survey?.fields || []).map(f => f.name));
+    const haveIdx = new Set((survey?.indexes || []).map(idxName));
     return {
+        surveyExists: !!survey,
         teams: !!byName.get(TEAMS),
         shares: !!byName.get(SHARES),
-        missingFields: ['scope', 'team', 'updated_ms', 'deleted', 'rev', 'schema_v', 'photo', 'photo_hash', 'owner_name']
-            .filter(n => !have.has(n)),
+        missingFields: survey
+            ? ['scope', 'team', 'updated_ms', 'deleted', 'rev', 'schema_v', 'photo', 'photo_hash', 'owner_name']
+                .filter(n => !have.has(n))
+            : [],
         missingIndexes: WANT_INDEXES.map(idxName).filter(n => !haveIdx.has(n)),
-        rulesOk: survey.listRule === READ_RULE && survey.updateRule === WRITE_RULE,
+        rulesOk: !!survey && survey.listRule === READ_RULE && survey.updateRule === WRITE_RULE,
         userCount: null,
     };
 }
 
 /**
- * Dựng đầy đủ schema v3. onProgress(text) để UI hiện tiến độ.
+ * Dựng đầy đủ schema v3 qua PocketBase SDK. onProgress(text) để UI hiện tiến độ.
  * Trả về mảng dòng log để hiện lại cho người dùng.
+ * Hoạt động cả khi survey_items chưa tồn tại (fresh install) lẫn khi đã có nhưng thiếu cột.
  */
 export async function provisionBackend(onProgress, onBackup) {
     requireSuperuser();
     const log = [];
     const say = (s) => { log.push(s); onProgress?.(s); };
 
-    const all = await api('collections?perPage=200');
-    // Tải schema hiện tại về máy TRƯỚC khi sửa. Đây là thao tác trên dữ liệu thật của cả
-    // công ty — nếu có gì sai, file này là căn cứ để khôi phục trong PB Admin.
+    const pb = makePbClient();
+
+    // Tải toàn bộ schema hiện tại qua SDK
+    let allCols;
+    try {
+        allCols = await pb.collections.getFullList({ batch: 200 });
+    } catch (err) {
+        throw new PbError(`Không kết nối được PocketBase: ${err.message}`, err.status || 0);
+    }
+
+    // Tải bản sao TRƯỚC khi sửa — thao tác trên dữ liệu thật, file này để khôi phục.
     if (onBackup) {
         try {
-            onBackup(JSON.stringify(all.items, null, 2));
+            onBackup(JSON.stringify(allCols, null, 2));
             say('Đã tải bản sao cấu trúc cũ về máy');
         } catch (err) { console.warn('backup schema:', err.message); }
     }
-    const byName = new Map((all.items || []).map(c => [c.name, c]));
+
+    const byName = new Map(allCols.map(c => [c.name, c]));
     const usersCol = byName.get('users');
-    const surveyCol = byName.get(COL);
-    if (!usersCol || !surveyCol) {
-        throw new PbError(`Không tìm thấy collection ${!usersCol ? 'users' : COL} — sai project PocketBase`, 404);
+    if (!usersCol) {
+        throw new PbError('Không tìm thấy collection users — sai project PocketBase', 404);
     }
 
     // ===== 1. teams =====
@@ -914,20 +932,17 @@ export async function provisionBackend(onProgress, onBackup) {
     if (teamsCol) {
         say('Collection teams: đã có');
     } else {
-        teamsCol = await api('collections', {
-            method: 'POST',
-            body: JSON.stringify({
-                name: TEAMS, type: 'base',
-                fields: [
-                    F.id(), F.text('name', 120, true), F.text('slug', 60, true),
-                    F.rel('members', usersCol.id, 500),
-                    F.date('created', false), F.date('updated', true),
-                ],
-                indexes: ['CREATE UNIQUE INDEX `idx_teams_slug` ON `teams` (`slug`)'],
-                listRule: 'members.id ?= @request.auth.id',
-                viewRule: 'members.id ?= @request.auth.id',
-                createRule: null, updateRule: null, deleteRule: null,
-            }),
+        teamsCol = await pb.collections.create({
+            name: TEAMS, type: 'base',
+            fields: [
+                F.id(), F.text('name', 120, true), F.text('slug', 60, true),
+                F.rel('members', usersCol.id, 500),
+                F.date('created', false), F.date('updated', true),
+            ],
+            indexes: ['CREATE UNIQUE INDEX `idx_teams_slug` ON `teams` (`slug`)'],
+            listRule: 'members.id ?= @request.auth.id',
+            viewRule: 'members.id ?= @request.auth.id',
+            createRule: null, updateRule: null, deleteRule: null,
         });
         say('Collection teams: đã tạo');
     }
@@ -936,7 +951,7 @@ export async function provisionBackend(onProgress, onBackup) {
     if (byName.get(SHARES)) {
         say('Collection shares: đã có');
     } else {
-        const body = {
+        const sharesBody = {
             name: SHARES, type: 'base',
             fields: [
                 F.id('[a-zA-Z0-9]{10}', 10, 'a-zA-Z0-9'),
@@ -954,76 +969,97 @@ export async function provisionBackend(onProgress, onBackup) {
             deleteRule: 'owner = @request.auth.id',
         };
         try {
-            await api('collections', { method: 'POST', body: JSON.stringify(body) });
+            await pb.collections.create(sharesBody);
             say('Collection shares: đã tạo (mã 10 ký tự)');
         } catch {
-            // Bản PocketBase cũ không cho tuỳ biến độ dài id → dùng mặc định 15 ký tự.
-            body.fields[0] = F.id();
-            await api('collections', { method: 'POST', body: JSON.stringify(body) });
+            sharesBody.fields[0] = F.id();
+            await pb.collections.create(sharesBody);
             say('Collection shares: đã tạo (mã 15 ký tự — bản PB cũ)');
         }
     }
 
-    // ===== 3. survey_items: field + index + rule =====
-    const existing = new Set(surveyCol.fields.map(f => f.name));
-    const wanted = [
-        ['scope', { name: 'scope', type: 'select', values: ['private', 'team'], maxSelect: 1 }],
-        ['team', F.rel('team', teamsCol.id, 1)],
-        ['updated_ms', F.num('updated_ms')],
-        ['deleted', F.bool('deleted')],
-        ['rev', F.num('rev')],
-        ['schema_v', F.num('schema_v')],
-        ['photo', {
+    // ===== 3. survey_items: TẠO MỚI nếu chưa có, hoặc PATCH thêm cột còn thiếu =====
+    let surveyCol = byName.get(COL);
+
+    const V3_FIELDS = [
+        { name: 'scope', type: 'select', values: ['private', 'team'], maxSelect: 1 },
+        F.rel('team', teamsCol.id, 1),
+        F.num('updated_ms'),
+        F.bool('deleted'),
+        F.num('rev'),
+        F.num('schema_v'),
+        {
             name: 'photo', type: 'file', maxSelect: 1, maxSize: 6_000_000, protected: true,
             mimeTypes: ['image/jpeg', 'image/png', 'image/webp'], thumbs: [],
-        }],
-        ['photo_hash', F.text('photo_hash', 64)],
-        ['owner_name', F.text('owner_name', 120)],
+        },
+        F.text('photo_hash', 64),
+        F.text('owner_name', 120),
     ];
-    const toAdd = wanted.filter(([n]) => !existing.has(n)).map(([, def]) => def);
 
-    const haveIdx = new Set((surveyCol.indexes || []).map(idxName));
-    let newIndexes = WANT_INDEXES.filter(sql => !haveIdx.has(idxName(sql)));
+    const SURVEY_RULES = {
+        listRule: READ_RULE, viewRule: READ_RULE,
+        createRule: '@request.auth.id != "" && @request.body.owner = @request.auth.id',
+        updateRule: WRITE_RULE,
+        deleteRule: 'owner = @request.auth.id',
+    };
 
-    // Unique index (owner,item_id) sẽ fail nếu dữ liệu đang có cặp trùng — kiểm tra trước
-    // để không làm hỏng cả lượt PATCH chỉ vì một index.
-    if (newIndexes.some(sql => idxName(sql) === 'idx_si_owner_item')) {
-        const recs = await listAllRecords(COL, 'id,owner,item_id');
-        const seen = new Map();
-        let dup = 0;
-        for (const r of recs) {
-            const k = `${r.owner}/${r.item_id}`;
-            if (seen.has(k)) dup++; else seen.set(k, r.id);
+    if (!surveyCol) {
+        // Fresh install: tạo luôn với đầy đủ schema v3
+        surveyCol = await pb.collections.create({
+            name: COL, type: 'base',
+            fields: [
+                F.rel('owner', usersCol.id, 1, true, true),
+                F.text('item_id', 60, true),
+                F.text('kind', 20),
+                F.text('project_id', 60),
+                F.text('name', 255),
+                { name: 'data', type: 'json', maxSize: 20_000_000 },
+                ...V3_FIELDS,
+                F.date('created', false), F.date('updated', true),
+            ],
+            indexes: WANT_INDEXES,
+            ...SURVEY_RULES,
+        });
+        say(`Collection ${COL}: đã tạo mới với đầy đủ schema v3`);
+    } else {
+        // Patch: chỉ thêm những cột còn thiếu
+        const existing = new Set(surveyCol.fields.map(f => f.name));
+        const toAdd = V3_FIELDS.filter(f => !existing.has(f.name));
+
+        const haveIdx = new Set((surveyCol.indexes || []).map(idxName));
+        let newIndexes = WANT_INDEXES.filter(sql => !haveIdx.has(idxName(sql)));
+
+        // Unique index (owner,item_id): kiểm trùng trước để không hỏng lượt PATCH
+        if (newIndexes.some(sql => idxName(sql) === 'idx_si_owner_item')) {
+            const recs = await listAllRecords(COL, 'id,owner,item_id');
+            const seen = new Map();
+            let dup = 0;
+            for (const r of recs) {
+                const k = `${r.owner}/${r.item_id}`;
+                if (seen.has(k)) dup++; else seen.set(k, r.id);
+            }
+            if (dup > 0) {
+                newIndexes = newIndexes.filter(sql => idxName(sql) !== 'idx_si_owner_item');
+                say(`Bỏ qua unique index: có ${dup} bản ghi trùng (owner, item_id) — dọn trong PB Admin trước`);
+            }
         }
-        if (dup > 0) {
-            newIndexes = newIndexes.filter(sql => idxName(sql) !== 'idx_si_owner_item');
-            say(`Bỏ qua unique index: có ${dup} bản ghi trùng (owner, item_id) — cần dọn trong PB Admin trước`);
-        }
-    }
 
-    if (toAdd.length || newIndexes.length || surveyCol.listRule !== READ_RULE) {
-        await api(`collections/${surveyCol.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-                // PATCH thay THẾ toàn bộ mảng fields → phải gộp field cũ (kèm id) vào,
-                // bỏ sót là mất dữ liệu của cột đó.
+        if (toAdd.length || newIndexes.length || surveyCol.listRule !== READ_RULE) {
+            await pb.collections.update(surveyCol.id, {
                 fields: [...surveyCol.fields, ...toAdd],
                 indexes: [...(surveyCol.indexes || []), ...newIndexes],
-                listRule: READ_RULE, viewRule: READ_RULE,
-                createRule: '@request.auth.id != "" && @request.body.owner = @request.auth.id',
-                updateRule: WRITE_RULE,
-                deleteRule: 'owner = @request.auth.id',
-            }),
-        });
-        say(`survey_items: thêm ${toAdd.length} cột, ${newIndexes.length} index, cập nhật quyền`);
-    } else {
-        say('survey_items: đã đủ cột và quyền');
+                ...SURVEY_RULES,
+            });
+            say(`survey_items: thêm ${toAdd.length} cột, ${newIndexes.length} index, cập nhật quyền`);
+        } else {
+            say('survey_items: đã đủ cột và quyền');
+        }
     }
 
     // ===== 4. Team MKG + nạp toàn bộ user =====
     const users = await listAllRecords('users', 'id,email');
-    const found = await api(`collections/${TEAMS}/records?perPage=1&${q(`slug='${TEAM_SLUG}'`)}`);
     const memberIds = users.map(u => u.id);
+    const found = await api(`collections/${TEAMS}/records?perPage=1&${q(`slug='${TEAM_SLUG}'`)}`);
     let team;
     if (found.items?.length) {
         team = found.items[0];
@@ -1045,7 +1081,7 @@ export async function provisionBackend(onProgress, onBackup) {
         say(`Team MKG: đã tạo với ${memberIds.length} thành viên`);
     }
 
-    // ===== 5. Backfill record cũ =====
+    // ===== 5. Backfill record cũ (chỉ khi survey_items đã tồn tại trước) =====
     const recs = await listAllRecords(COL, 'id,item_id,updated_ms,scope,team,rev,schema_v,data,deleted');
     let done = 0;
     for (const r of recs) {
@@ -1067,7 +1103,7 @@ export async function provisionBackend(onProgress, onBackup) {
             console.warn('backfill', r.id, err.message);
         }
     }
-    say(`Dữ liệu cũ: cập nhật ${done}/${recs.length} bản ghi`);
+    if (recs.length) say(`Dữ liệu cũ: cập nhật ${done}/${recs.length} bản ghi`);
 
     // Nạp lại team vào phiên hiện tại để app dùng được ngay, không cần đăng nhập lại.
     await refreshTeam().catch(() => {});
