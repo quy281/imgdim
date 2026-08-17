@@ -4,7 +4,8 @@ import Sheet from './Sheet';
 
 /**
  * Numeric bottom-sheet keypad for mm input — the on-site laser-meter workflow.
- * cfg = { title, initial, hint, onOK(value) } | null
+ * cfg = { title, initial, hint, allowZero?, onOK(value) } | null
+ * allowZero: cho phép nhập 0 — bệ cửa đi luôn bằng 0, là số hợp lệ và thường gặp nhất.
  */
 export default function NumPad({ cfg, onClose }) {
     const [val, setVal] = useState('');
@@ -14,7 +15,7 @@ export default function NumPad({ cfg, onClose }) {
     const press = (d) => setVal(v => (v.length >= 6 ? v : (v === '0' ? d : v + d)));
     const back = () => setVal(v => v.slice(0, -1));
     const num = parseFloat(val);
-    const valid = !isNaN(num) && num > 0;
+    const valid = !isNaN(num) && (num > 0 || (cfg.allowZero && num === 0));
 
     const submit = () => {
         if (!valid) return;

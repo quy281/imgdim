@@ -24,6 +24,8 @@ export function newPlanDoc(projectId, name) {
         settings: {
             thickness: 110, ortho: true, gridSnap: true, gridMinor: 100, gridMajor: 1000,
             doorWidth: 900, windowWidth: 1200, furnitureDefaults: {},
+            // Cao độ — dùng khi chưa đo tay. Xem openingV()/ceilingHeight() trong geometry.js
+            ceilingH: 3200, slabT: 300, doorH: 2200, windowH: 1400, windowSill: 900,
         },
         view: null, // computed on first open
         thumb: null,

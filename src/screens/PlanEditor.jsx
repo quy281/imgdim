@@ -3,13 +3,14 @@ import { Stage, Layer, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
-    ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate,
+    ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
 import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
+import ElevationView from '../plan/ElevationView';
 import { GROUPS, FURNITURE, catalogItem, defaultSize } from '../lib/furnitureCatalog';
 import NoteMarker from '../photo/NoteMarker';
 import Sheet from '../ui/Sheet';
@@ -22,6 +23,7 @@ import {
     genId, dist, snapToGrid, snapOrtho, findNearbyNode,
     applyWallLength, scaleAllWalls, snapToWall, splitWallAtPoint, bboxOfPlan,
     applySegmentLength, applyOpeningWidth, wallSegments, snapFurnitureToWall,
+    roomFaces, ceilingHeight, openingV, applyOpeningVertical, applyCeilingHeight,
 } from '../lib/geometry';
 import {
     addWallSegment, deleteWall, moveNode, renameRoom, recomputeRooms,
@@ -63,6 +65,9 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [showFurnSizes, setShowFurnSizes] = useState(false);
     const [templates, setTemplates] = useState(null); // null = chưa mở picker
     const [roomMenu, setRoomMenu] = useState(null);
+    // Lưu wallId đang xem, KHÔNG lưu chỉ số: danh sách mặt được tính lại sau mỗi commit,
+    // chỉ số sẽ trôi và nhảy sang mặt khác giữa chừng.
+    const [elev, setElev] = useState(null); // { roomId, faces:[{wallId,len,label}], wallId }
     const [, bumpHist] = useState(0);
 
     const stageRef = useRef(null);
@@ -118,6 +123,18 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             if (s.kind === 'note' && !notes.some(n => n.id === s.id)) return null;
             if (s.kind === 'furniture' && !(furniture || []).some(f => f.id === s.id)) return null;
             return s;
+        });
+        // Mặt đứng đang mở mà tường/phòng của nó biến mất (undo, xóa tường) → đóng lại,
+        // không thì overlay treo màn trắng. Tường còn nhưng đổi hình thì cập nhật độ dài.
+        setElev(e => {
+            if (!e) return e;
+            const room = (plan.rooms || []).find(r => r.id === e.roomId);
+            if (!room) return null;
+            const faces = roomFaces(plan, room);
+            if (!faces.length) return null;
+            // giữ đúng mặt đang xem; chỉ rơi về mặt đầu khi tường đó thật sự biến mất
+            const stillThere = faces.some(f => f.wallId === e.wallId);
+            return { ...e, faces, wallId: stillThere ? e.wallId : faces[0].wallId };
         });
     };
 
@@ -267,11 +284,11 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     };
 
     const addFurniture = (key) => {
-        const { w, d } = defaultSize(key, docRef.current.settings);
+        const { w, d, h, z } = defaultSize(key, docRef.current.settings);
         // đặt vào giữa vùng đang xem
         const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
         const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
-        const item = { id: genId('f'), kind: key, x: Math.round(cx), y: Math.round(cy), w, d, rot: 0 };
+        const item = { id: genId('f'), kind: key, x: Math.round(cx), y: Math.round(cy), w, d, h, z, rot: 0 };
         const cat = catalogItem(key);
         let placed = item;
         if (cat?.back) {
@@ -308,6 +325,75 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                     commit(undefined, undefined, list);
                 },
             }),
+        });
+    };
+
+    // ===== Mặt đứng (khai triển tường) =====
+    const openCeilingNumPad = (roomId, opts = {}) => {
+        const plan = docRef.current.plan;
+        const room = (plan.rooms || []).find(r => r.id === roomId);
+        if (!room) return;
+        const cur = ceilingHeight(room, docRef.current.settings);
+        setNumpad({
+            title: `Chiều cao thông thủy${room.name ? ` — ${room.name}` : ''}`,
+            initial: Math.round(cur),
+            hint: 'Đo một lần, áp cho cả 4 mặt của phòng',
+            onOK: (val) => {
+                const p = docRef.current.plan;
+                const { plan: next, warning } = applyCeilingHeight(p, roomId, val, docRef.current.settings);
+                if (next !== p) commit(next, undefined);
+                if (warning) toast(warning, 'err');
+            },
+        });
+    };
+
+    const openElevation = (room) => {
+        const plan = docRef.current.plan;
+        if (!plan.calibrated) {
+            toast('Nhập số đo laser cho một tường trước để có tỉ lệ thật', 'err');
+            return;
+        }
+        const faces = roomFaces(plan, room);
+        if (!faces.length) { toast('Phòng chưa khép kín — chưa dựng được mặt đứng', 'err'); return; }
+        setSel(null);
+        setElev({ roomId: room.id, faces, wallId: faces[0].wallId });
+        // Chưa đo trần thì hỏi luôn — phát laser đầu tiên khi bước vào phòng.
+        // Mở màn hình TRƯỚC rồi mới hỏi: bấm Hủy vẫn xem được với số mặc định.
+        if (!Number.isFinite(room.h)) openCeilingNumPad(room.id);
+    };
+
+    const elevRoom = () => (docRef.current.plan.rooms || []).find(r => r.id === elev?.roomId);
+    const elevH = () => ceilingHeight(elevRoom(), docRef.current.settings);
+
+    const openVerticalNumPad = (opId, part, value) => {
+        const el = elev;
+        if (!el) return;
+        const wallId = el.wallId;
+        const wall = docRef.current.plan.walls.find(w => w.id === wallId);
+        const op = (wall?.openings || []).find(o => o.id === opId);
+        if (!op) return;
+        const v = openingV(op, docRef.current.settings);
+        const TITLES = {
+            sill: 'Cao độ bệ cửa (từ sàn)',
+            op: 'Chiều cao ô cửa',
+            head: 'Từ đỉnh cửa lên trần',
+            top: 'Cốt đỉnh cửa (từ sàn)',
+        };
+        const CUR = { sill: v.sill, op: v.h, head: elevH() - v.top, top: v.top };
+        setNumpad({
+            title: TITLES[part] || 'Cao độ',
+            initial: Math.round(value ?? CUR[part] ?? 0),
+            allowZero: part === 'sill',
+            hint: part === 'sill'
+                ? 'Chiều cao trần giữ nguyên — phần trên cửa tự bù'
+                : 'Chiều cao trần giữ nguyên',
+            onOK: (val) => {
+                const p = docRef.current.plan;
+                const { plan: next, warning } = applyOpeningVertical(
+                    p, wallId, opId, part, val, elevH(), docRef.current.settings);
+                if (next !== p) commit(next, undefined);
+                if (warning) toast(warning, 'err');
+            },
         });
     };
 
@@ -623,6 +709,18 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="icon-btn" style={{ color: 'var(--red-dark)' }} onClick={() => setShowExport(true)}><Share2 size={20} /></button>
             </div>
 
+            {/* Mặt đứng — overlay trong chính màn hình này để dùng chung undo/history */}
+            {elev && (
+                <ElevationView
+                    doc={doc} elev={elev}
+                    onClose={() => setElev(null)}
+                    onPick={(wallId) => setElev(e => ({ ...e, wallId }))}
+                    onSegmentTap={openSegmentNumPad}
+                    onVerticalTap={openVerticalNumPad}
+                    onCeilingTap={() => openCeilingNumPad(elev.roomId)}
+                />
+            )}
+
             {/* Mode banner */}
             <div className={`mode-banner ${mode}`}>
                 <span>{bannerText()}</span>
@@ -826,6 +924,21 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 }}>
                     <Pencil size={19} style={{ color: 'var(--blue)' }} />
                     <div style={{ flex: 1 }}>Đổi tên phòng</div>
+                </button>
+                <button className="sheet-row" onClick={() => {
+                    const r = roomMenu;
+                    setRoomMenu(null);
+                    openElevation(r);
+                }}>
+                    <Frame size={19} style={{ color: 'var(--blue)' }} />
+                    <div style={{ flex: 1 }}>
+                        Dựng mặt đứng 4 mặt
+                        <div className="sub">
+                            {Number.isFinite(roomMenu?.h)
+                                ? `Cao trần ${Math.round(roomMenu.h)}mm`
+                                : 'Sẽ hỏi chiều cao trần một lần'}
+                        </div>
+                    </div>
                 </button>
                 <button className="sheet-row" onClick={() => {
                     const r = roomMenu;
