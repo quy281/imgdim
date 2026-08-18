@@ -210,10 +210,20 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                         <button className="btn btn-primary btn-block" onClick={onSync}>
                             <RefreshCw size={15} /> Đồng bộ lại ngay
                         </button>
-                        {(status.brokenShare > 0 || status.wrongTeam > 0) && onRepairTeam && (
+                        {/* Luôn hiện khi đã đăng nhập. Trước đây nút này chỉ hiện khi phát hiện
+                            được bản ghi hỏng — mà ca tệ nhất là cloud TRỐNG RỖNG: không có gì
+                            để phát hiện, và người dùng cũng không còn cần gạt nào để kéo. */}
+                        {status.loggedIn && onRepairTeam && (
                             <button className="btn btn-block" onClick={onRepairTeam}
-                                style={{ background: 'var(--warn)', color: '#fff', border: 'none' }}>
-                                <Users size={15} /> Gắn team &amp; đẩy lại
+                                style={{
+                                    background: (status.brokenShare > 0 || status.wrongTeam > 0 || !status.totalRemote)
+                                        ? 'var(--warn)' : 'none',
+                                    color: (status.brokenShare > 0 || status.wrongTeam > 0 || !status.totalRemote)
+                                        ? '#fff' : 'var(--ink-2)',
+                                    border: (status.brokenShare > 0 || status.wrongTeam > 0 || !status.totalRemote)
+                                        ? 'none' : '1.5px solid var(--line)',
+                                }}>
+                                <Users size={15} /> Gắn team &amp; đẩy lại toàn bộ
                             </button>
                         )}
                         <button className="btn btn-block" onClick={loadStatus} style={{ background: 'none', border: '1.5px solid var(--line)', color: 'var(--ink-2)' }}>
