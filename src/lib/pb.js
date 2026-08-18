@@ -168,6 +168,57 @@ function randomPassword(len = 16) {
 /** PocketBase mặc định từ chối mật khẩu ngắn hơn — không tự ý hạ ràng buộc này. */
 export const PASSWORD_MIN = 8;
 
+// ===== PIN =====
+// Người đi khảo sát bấm 4 số, không gõ mật khẩu. Nhưng PocketBase từ chối mật khẩu
+// dưới 8 ký tự, nên PIN được NỞ ra thành mật khẩu thật một cách xác định.
+//
+// Nói thẳng: đây KHÔNG phải một lớp bảo mật. PIN 4 số vẫn là 10^4 tổ hợp và công
+// thức nở nằm trong JS tải về máy khách. Nó chỉ để thoả ràng buộc độ dài, và để sau
+// này đổi độ dài PIN không phải đổi cơ chế. Chỗ bảo vệ thật là: mỗi người tự đổi PIN
+// sau khi nhận tài khoản, và phiên hết hạn sau 30 ngày.
+export const PIN_MIN = 4;
+export const PIN_MAX = 8;
+const PIN_RE = /^\d{4,8}$/;
+
+export const isPin = (s) => PIN_RE.test(String(s || '').trim());
+
+export function pinToPassword(pin) {
+    const s = String(pin ?? '').trim();
+    if (!PIN_RE.test(s)) throw new PbError(`PIN phải là ${PIN_MIN}–${PIN_MAX} chữ số`, 400);
+    return `mkgks-${s}-v1`;
+}
+
+// ===== Thời hạn phiên =====
+// 30 ngày kể từ lần ĐĂNG NHẬP, không phải từ lần gia hạn token — gia hạn mà dịch mốc
+// thì phiên sống vĩnh viễn và con số 30 ngày thành vô nghĩa.
+export const SESSION_DAYS = 30;
+const SESSION_MS = SESSION_DAYS * 86400_000;
+
+/** Quản trị không hết hạn (họ cần vào bất cứ lúc nào để cấp tài khoản). */
+const sessionExempt = (a) => !!a?.superuser || a?.role === 'admin';
+
+/** Mốc hết hạn, hoặc null nếu phiên này không hết hạn. */
+export function sessionExpiresAt() {
+    const a = getAuth();
+    if (!a?.token || !a.loginAt || sessionExempt(a)) return null;
+    return a.loginAt + SESSION_MS;
+}
+
+export function sessionExpired() {
+    const at = sessionExpiresAt();
+    return at != null && Date.now() > at;
+}
+
+/** Số ngày còn lại, null nếu không hết hạn. Để UI nhắc trước khi người dùng ra công trường. */
+export function sessionDaysLeft() {
+    const at = sessionExpiresAt();
+    return at == null ? null : Math.max(0, Math.ceil((at - Date.now()) / 86400_000));
+}
+
+export function myRole() { return getAuth()?.role || ''; }
+/** Quản trị ứng dụng: cấp tài khoản, gán team. KHÔNG phải superuser (không sửa được schema). */
+export function isAdmin() { return isSuperuser() || myRole() === 'admin'; }
+
 /**
  * Tìm-hoặc-tạo record `users` cùng email — danh tính để GHI dữ liệu (owner, team.members)
  * khi phiên đăng nhập thực tế là superuser (bảng `_superusers`, không thuộc `users`).
@@ -248,10 +299,54 @@ export async function login(identity, password) {
     }
     saveAuth({
         token: data.token, model: data.record, superuser,
+        role: superuser ? '' : (data.record.role || ''),
+        loginAt: Date.now(),
         team: null, teams: [], identityId: null, identityName: null,
     });
     await resolveIdentityAndTeams(data.record.email, superuser);
     return data.record;
+}
+
+/**
+ * Đăng nhập bằng tên ngắn (username) hoặc email, với PIN hoặc mật khẩu thật.
+ * Toàn số 4–8 ký tự thì thử PIN trước rồi mới rơi về mật khẩu thô — nhờ vậy Founder
+ * vẫn vào được bằng mật khẩu superuser cũ mà không cần hai ô nhập khác nhau.
+ */
+export async function loginSmart(identity, secret) {
+    const s = String(secret ?? '');
+    if (isPin(s)) {
+        try {
+            return await login(identity, pinToPassword(s));
+        } catch (err) {
+            if (err.status !== 400) throw err;   // lỗi mạng/server thì đừng thử lại vô ích
+        }
+    }
+    return login(identity, s);
+}
+
+/**
+ * Tự đổi PIN. PocketBase thu hồi mọi token khi mật khẩu đổi, nên phải đăng nhập lại
+ * ngay trong cùng một lượt — không thì phiên chết giữa lúc đang đo ngoài công trường.
+ */
+export async function changePin(oldPin, newPin) {
+    if (!isLoggedIn()) throw new PbError('Chưa đăng nhập', 401);
+    if (isSuperuser()) {
+        throw new PbError('Tài khoản superuser đổi mật khẩu trong PocketBase Admin, không đổi ở đây', 400);
+    }
+    if (String(oldPin) === String(newPin)) throw new PbError('PIN mới phải khác PIN cũ', 400);
+    const newPass = pinToPassword(newPin);
+    const id = myId();
+    if (!id) throw new PbError('Không xác định được tài khoản đang đăng nhập', 400);
+    await api(`collections/users/records/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+            oldPassword: pinToPassword(oldPin),
+            password: newPass,
+            passwordConfirm: newPass,
+        }),
+    }, 1);
+    const ident = me()?.username || me()?.email;
+    await login(ident, newPass);
 }
 
 /**
@@ -267,6 +362,11 @@ let sessionCheckedAt = 0;
 let verifiedToken = null;
 export async function ensureSession(force) {
     if (!isLoggedIn()) return false;
+    // Kiểm hạn TRƯỚC cả throttle: hết 30 ngày thì phải đá ra ngay, không đợi lượt kiểm sau.
+    if (sessionExpired()) {
+        logout();
+        return false;
+    }
     const token = getAuth().token;
     // Throttle theo CẢ thời gian và token: token đổi (đăng nhập lại, hoặc bản lưu bị
     // thay từ tab khác) thì phải xác thực lại ngay, không ăn theo lần kiểm trước.
@@ -282,7 +382,13 @@ export async function ensureSession(force) {
             console.warn('ensureSession: phản hồi auth-refresh bất thường', res);
             return true; // coi như lỗi mạng — giữ phiên cũ, thử lại lần sau
         }
-        saveAuth({ token: res.token, model: res.record, superuser: isSuperuser() });
+        // Cập nhật cả `role` — Founder cấp quyền quản trị cho ai đó thì máy họ nhận được
+        // ở lượt gia hạn kế tiếp, không phải đăng xuất/đăng nhập lại. `loginAt` giữ nguyên:
+        // gia hạn token KHÔNG được dịch mốc 30 ngày (xem sessionExpiresAt).
+        saveAuth({
+            token: res.token, model: res.record, superuser: isSuperuser(),
+            role: isSuperuser() ? '' : (res.record.role || ''),
+        });
         sessionCheckedAt = Date.now();
         verifiedToken = res.token;
         return true;
@@ -732,7 +838,16 @@ export async function fetchShare(code) {
 // rule, nên chỉ chạy được khi phiên hiện tại là superuser. Rule phía server đã khoá việc
 // này (teams.createRule/updateRule = null); check ở đây chỉ để báo lỗi sớm, gọn hơn.
 function requireSuperuser() {
-    if (!isSuperuser()) throw new PbError('Chỉ tài khoản quản trị mới thực hiện được thao tác này', 403);
+    if (!isSuperuser()) throw new PbError('Thao tác này cần tài khoản superuser của PocketBase', 403);
+}
+
+/**
+ * Quản người (tạo tài khoản, gán team) mở cho cả `role=admin`, không đòi superuser.
+ * Đây là chỗ tách hai tầng quyền: quản trị ứng dụng cấp được tài khoản, nhưng KHÔNG
+ * sửa được cấu trúc dữ liệu và không đọc được thẳng cơ sở dữ liệu.
+ */
+function requireAdmin() {
+    if (!isAdmin()) throw new PbError('Chỉ tài khoản quản trị mới thực hiện được thao tác này', 403);
 }
 
 /** Toàn bộ team (thành viên thường chỉ thấy team của mình; superuser thấy tất cả). */
@@ -743,7 +858,7 @@ export async function listTeams() {
 }
 
 export async function createTeam(name) {
-    requireSuperuser();
+    requireAdmin();
     const clean = (name || '').trim();
     if (!clean) throw new PbError('Tên team không được để trống', 400);
     const base = clean.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -776,7 +891,7 @@ export async function getTeamMembers(teamId) {
  * PocketBase không cho đọc lại mật khẩu sau khi tạo.
  */
 export async function addTeamMember(teamId, email, opts = {}) {
-    requireSuperuser();
+    requireAdmin();
     const clean = (email || '').trim().toLowerCase();
     if (!clean.includes('@')) throw new PbError('Email không hợp lệ', 400);
     const password = (opts.password || '').trim() || randomPassword(12);
@@ -811,7 +926,7 @@ export async function addTeamMember(teamId, email, opts = {}) {
 }
 
 export async function removeTeamMember(teamId, userId) {
-    requireSuperuser();
+    requireAdmin();
     const team = await api(`collections/${TEAMS}/records/${teamId}`);
     await api(`collections/${TEAMS}/records/${teamId}`, {
         method: 'PATCH',
@@ -847,6 +962,28 @@ const WANT_INDEXES = [
     'CREATE INDEX `idx_si_scope_team` ON `survey_items` (`scope`, `team`)',
 ];
 const idxName = (sql) => sql.match(/INDEX\s+`?(\w+)`?/i)?.[1];
+
+// ===== Hai tầng quyền =====
+// `role = "admin"` cấp được tài khoản và gán team, nhưng KHÔNG sửa được schema và
+// không đọc thẳng cơ sở dữ liệu — việc đó vẫn phải là superuser. Nhờ vậy tài khoản
+// quản trị dùng PIN 4 số không kéo theo toàn quyền cơ sở dữ liệu.
+const IS_ADMIN = '@request.auth.role = "admin"';
+// Người dùng tự sửa record của mình, nhưng KHÔNG tự nâng mình lên admin.
+const USERS_SELF = `(id = @request.auth.id && (@request.body.role:isset = false || @request.body.role = role))`;
+const USERS_RULES = {
+    listRule: `id = @request.auth.id || ${IS_ADMIN}`,
+    viewRule: `id = @request.auth.id || ${IS_ADMIN}`,
+    createRule: IS_ADMIN,
+    updateRule: `${USERS_SELF} || ${IS_ADMIN}`,
+    deleteRule: IS_ADMIN,
+};
+const TEAMS_RULES = {
+    listRule: `members.id ?= @request.auth.id || ${IS_ADMIN}`,
+    viewRule: `members.id ?= @request.auth.id || ${IS_ADMIN}`,
+    createRule: IS_ADMIN,
+    updateRule: IS_ADMIN,
+    deleteRule: IS_ADMIN,
+};
 
 function makePbClient() {
     const pb = new PocketBase(BASE);
@@ -922,15 +1059,69 @@ export async function provisionBackend(onProgress, onBackup) {
     }
 
     const byName = new Map(allCols.map(c => [c.name, c]));
-    const usersCol = byName.get('users');
+    let usersCol = byName.get('users');
     if (!usersCol) {
         throw new PbError('Không tìm thấy collection users — sai project PocketBase', 404);
+    }
+
+    // ===== 0. users: cột role/username, đăng nhập bằng tên ngắn, token 30 ngày =====
+    // `username` bị bỏ khỏi collection users mặc định từ PocketBase 0.23, nên phải tự
+    // thêm lại — không có nó thì không đăng nhập được bằng tên ngắn, chỉ còn gõ email.
+    {
+        const have = new Set(usersCol.fields.map(f => f.name));
+        const addU = [];
+        if (!have.has('role')) {
+            addU.push({ name: 'role', type: 'select', values: ['admin'], maxSelect: 1 });
+        }
+        if (!have.has('username')) addU.push(F.text('username', 60));
+
+        // BƯỚC 1 — thêm cột trước, RIÊNG một lượt. identityFields được PocketBase kiểm
+        // theo cột đang có; gộp chung một lượt thì nó soi trạng thái cũ và từ chối vì
+        // "username không tồn tại", làm hỏng cả lần dựng.
+        if (addU.length) {
+            usersCol = await pb.collections.update(usersCol.id, {
+                fields: [...usersCol.fields, ...addU],
+            });
+            say(`users: thêm cột ${addU.map(f => f.name).join(', ')}`);
+        }
+
+        // Unique index cho username: chỉ áp cho hàng CÓ username. Index unique thường sẽ
+        // đổ ngay nếu backend đang có từ hai tài khoản username rỗng trở lên — SQLite coi
+        // hai chuỗi rỗng là trùng nhau (khác với NULL).
+        const uIdx = new Set((usersCol.indexes || []).map(idxName));
+        const newUIdx = uIdx.has('idx_users_username')
+            ? []
+            : ["CREATE UNIQUE INDEX `idx_users_username` ON `users` (`username`) WHERE `username` != ''"];
+
+        const ident = usersCol.passwordAuth?.identityFields || ['email'];
+        const wantIdent = [...new Set([...ident, 'username'])];
+        const identChanged = wantIdent.length !== ident.length;
+        const tokenChanged = usersCol.authToken?.duration !== SESSION_DAYS * 86400;
+        const rulesChanged = usersCol.listRule !== USERS_RULES.listRule;
+
+        // BƯỚC 2 — giờ cột đã có thật, mới bật đăng nhập bằng tên ngắn.
+        if (newUIdx.length || identChanged || tokenChanged || rulesChanged) {
+            usersCol = await pb.collections.update(usersCol.id, {
+                indexes: [...(usersCol.indexes || []), ...newUIdx],
+                passwordAuth: { ...(usersCol.passwordAuth || {}), enabled: true, identityFields: wantIdent },
+                authToken: { ...(usersCol.authToken || {}), duration: SESSION_DAYS * 86400 },
+                ...USERS_RULES,
+            });
+            say(`users: đăng nhập bằng ${wantIdent.join('/')}, phiên ${SESSION_DAYS} ngày, quyền quản trị`);
+        } else if (!addU.length) {
+            say('users: đã đủ cột và quyền');
+        }
     }
 
     // ===== 1. teams =====
     let teamsCol = byName.get(TEAMS);
     if (teamsCol) {
-        say('Collection teams: đã có');
+        if (teamsCol.listRule !== TEAMS_RULES.listRule) {
+            teamsCol = await pb.collections.update(teamsCol.id, TEAMS_RULES);
+            say('Collection teams: cập nhật quyền cho tài khoản quản trị');
+        } else {
+            say('Collection teams: đã có');
+        }
     } else {
         teamsCol = await pb.collections.create({
             name: TEAMS, type: 'base',
@@ -940,9 +1131,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 F.date('created', false), F.date('updated', true),
             ],
             indexes: ['CREATE UNIQUE INDEX `idx_teams_slug` ON `teams` (`slug`)'],
-            listRule: 'members.id ?= @request.auth.id',
-            viewRule: 'members.id ?= @request.auth.id',
-            createRule: null, updateRule: null, deleteRule: null,
+            ...TEAMS_RULES,
         });
         say('Collection teams: đã tạo');
     }
@@ -1109,4 +1298,97 @@ export async function provisionBackend(onProgress, onBackup) {
     await refreshTeam().catch(() => {});
     say('Xong — đã sẵn sàng tạo team và người dùng');
     return log;
+}
+
+// ===== Cấp sẵn tài khoản cho tổ khảo sát =====
+// PIN giao ban đầu dùng chung để phát cho nhanh; mỗi người TỰ ĐỔI sau khi nhận máy
+// (changePin). Chừng nào chưa ai đổi thì cột `owner` trên bản ghi chưa đáng tin, vì
+// ai cũng đăng nhập được vào tên người khác — nên UI phải nhắc việc đổi PIN.
+export const SEED_PIN_KTS = '1111';
+export const SEED_PIN_ADMIN = '2222';
+export const SEED_DOMAIN = 'mkg.vn';
+
+export const SEED_USERS = [
+    { username: 'kts1', name: 'KTS 1', pin: SEED_PIN_KTS },
+    { username: 'kts2', name: 'KTS 2', pin: SEED_PIN_KTS },
+    { username: 'kts3', name: 'KTS 3', pin: SEED_PIN_KTS },
+    { username: 'kts4', name: 'KTS 4', pin: SEED_PIN_KTS },
+    { username: 'admin', name: 'Quản trị', pin: SEED_PIN_ADMIN, role: 'admin' },
+];
+
+/**
+ * Tạo sẵn 4 tài khoản KTS + 1 quản trị, nạp cả vào team MKG.
+ *
+ * Idempotent nhưng KHÔNG reset PIN của tài khoản đã tồn tại — ai đã đổi PIN riêng thì
+ * bấm lại nút này không đá họ ra khỏi máy của chính họ. Trả về danh sách kèm PIN của
+ * những tài khoản VỪA tạo, để admin copy đi giao một lần.
+ */
+export async function provisionUsers(onProgress) {
+    requireAdmin();
+    const p = (m) => onProgress?.(m);
+    const out = [];
+
+    // Team MKG phải có trước, vì tài khoản tạo ra là để vào đó.
+    p('Đang kiểm team MKG...');
+    let team;
+    const foundTeam = await api(`collections/${TEAMS}/records?perPage=1&${q(`slug='${TEAM_SLUG}'`)}`);
+    if (foundTeam.items?.length) {
+        team = foundTeam.items[0];
+    } else {
+        team = await api(`collections/${TEAMS}/records`, {
+            method: 'POST',
+            body: JSON.stringify({ name: 'MKG', slug: TEAM_SLUG, members: [] }),
+        });
+    }
+
+    for (const u of SEED_USERS) {
+        const email = `${u.username}@${SEED_DOMAIN}`;
+        p(`Đang tạo ${u.username}...`);
+        // Tra theo CẢ username và email: tài khoản có thể đã tạo tay bằng một trong hai.
+        let rec = null;
+        try {
+            const f = await api(`collections/users/records?perPage=1&${q(`username='${esc(u.username)}' || email='${esc(email)}'`)}`);
+            rec = f.items?.[0] || null;
+        } catch (err) {
+            // `username` chưa có trên collection → lọc theo mỗi email.
+            const f = await api(`collections/users/records?perPage=1&${q(`email='${esc(email)}'`)}`);
+            rec = f.items?.[0] || null;
+            console.warn('provisionUsers filter:', err.message);
+        }
+
+        if (rec) {
+            // Chỉ vá phần THIẾU (tên, quyền admin), tuyệt đối không đụng tới mật khẩu.
+            const patch = {};
+            if (u.role && rec.role !== u.role) patch.role = u.role;
+            if (!rec.name) patch.name = u.name;
+            if (!rec.username) patch.username = u.username;
+            if (Object.keys(patch).length) {
+                rec = await api(`collections/users/records/${rec.id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+            }
+            out.push({ username: u.username, email, name: rec.name || u.name, role: rec.role || '', created: false, pin: null });
+        } else {
+            const password = pinToPassword(u.pin);
+            const created = await api('collections/users/records', {
+                method: 'POST',
+                body: JSON.stringify({
+                    email, password, passwordConfirm: password,
+                    username: u.username, name: u.name,
+                    ...(u.role ? { role: u.role } : {}),
+                    emailVisibility: true, verified: true,
+                }),
+            });
+            rec = created;
+            out.push({ username: u.username, email, name: u.name, role: u.role || '', created: true, pin: u.pin });
+        }
+
+        if (rec && !(team.members || []).includes(rec.id)) {
+            team = await api(`collections/${TEAMS}/records/${team.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ members: [...(team.members || []), rec.id] }),
+            });
+        }
+    }
+
+    await refreshTeam().catch(() => {});
+    return { team: { id: team.id, name: team.name }, users: out };
 }

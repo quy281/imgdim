@@ -66,10 +66,15 @@ export default function App() {
             // Xác thực token thật với server trước khi tin là đang đăng nhập — xem
             // pb.ensureSession(): PocketBase trả 200 rỗng cho token hết hạn, nên nếu chỉ
             // tin localStorage thì app báo "đã sync" trong khi thực tế là khách.
+            // Phân biệt "đủ 30 ngày" với "token bị thu hồi" — ensureSession đã xoá auth
+            // nên phải đọc cờ TRƯỚC, không thì chỉ báo được thông điệp chung chung.
+            const expired = pb.sessionExpired();
             if (await pb.ensureSession(true)) syncAll(true);
             else {
                 setAccount(null);
-                toast('Phiên đăng nhập hết hạn — đăng nhập lại để đồng bộ', 'err');
+                toast(expired
+                    ? `Phiên đã dùng đủ ${pb.SESSION_DAYS} ngày — đăng nhập lại bằng PIN`
+                    : 'Phiên đăng nhập hết hạn — đăng nhập lại để đồng bộ', 'err');
             }
         })();
         history.replaceState({ screen: 'projects' }, '');
@@ -358,9 +363,11 @@ export default function App() {
         }
     };
 
-    const login = async (email, password) => {
+    const login = async (identity, secret) => {
         try {
-            const user = await pb.login(email, password);
+            // loginSmart: PIN 4–8 số thì nở thành mật khẩu thật, còn lại coi là mật khẩu
+            // thô — nhờ vậy Founder vẫn vào được bằng mật khẩu superuser cũ.
+            const user = await pb.loginSmart(identity, secret);
             const sw = await db.setAccount(user.id);
             setAccount(user);
             setProjects(await db.loadProjects());

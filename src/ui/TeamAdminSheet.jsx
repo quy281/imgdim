@@ -27,6 +27,7 @@ export default function TeamAdminSheet({ open, onClose }) {
     const [setupLog, setSetupLog] = useState(null); // dòng tiến độ đang chạy
     const [confirmSetup, setConfirmSetup] = useState(false);
     const [inspect, setInspect] = useState(null); // kết quả kiểm tra trước khi ghi
+    const [seeded, setSeeded] = useState(null);    // { team, users } — bảng PIN hiện một lần
 
     useEffect(() => {
         if (open) { load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false); }
@@ -86,6 +87,24 @@ export default function TeamAdminSheet({ open, onClose }) {
         } catch (err) {
             setSetupLog(null);
             setError('Dựng backend thất bại: ' + err.message);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const doSeedUsers = async () => {
+        setBusy(true);
+        setSetupLog('Đang cấp tài khoản...');
+        try {
+            const r = await pb.provisionUsers((msg) => setSetupLog(msg));
+            setSetupLog(null);
+            await load();
+            setSeeded(r);
+            const made = r.users.filter(u => u.created).length;
+            toast(made ? `Đã tạo ${made} tài khoản` : 'Tài khoản đã có đủ từ trước', 'ok');
+        } catch (err) {
+            setSetupLog(null);
+            setError('Không cấp được tài khoản: ' + err.message);
         } finally {
             setBusy(false);
         }
@@ -263,6 +282,47 @@ export default function TeamAdminSheet({ open, onClose }) {
                             <div style={{ flex: 1 }}>{t.name}<div className="sub">{t.memberCount} thành viên</div></div>
                         </button>
                     ))}
+
+                    {/* Cấp sẵn tổ khảo sát — thao tác một lần, bấm lại không reset PIN ai */}
+                    {seeded ? (
+                        <div style={{ margin: '12px 16px', padding: 14, borderRadius: 12, background: 'var(--warn-soft)' }}>
+                            <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 4 }}>
+                                Tài khoản đã cấp — team {seeded.team.name}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--ink-2)', marginBottom: 10, lineHeight: 1.5 }}>
+                                PIN chỉ hiện MỘT LẦN ở đây. Copy đi giao, rồi nhắc mỗi người vào
+                                Cài đặt → Đổi mã PIN. Chưa ai đổi thì ai cũng vào được tên người khác,
+                                và cột "người sửa" trên bản ghi chưa đáng tin.
+                            </div>
+                            {seeded.users.map(u => (
+                                <div key={u.username} style={{
+                                    display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 13,
+                                    fontFamily: 'ui-monospace, monospace', padding: '3px 0',
+                                }}>
+                                    <span style={{ fontWeight: 700, minWidth: 58 }}>{u.username}</span>
+                                    <span style={{ flex: 1 }}>{u.pin ? `PIN ${u.pin}` : 'đã có từ trước — PIN không đổi'}</span>
+                                    {u.role === 'admin' && <span style={{ fontSize: 10.5, color: 'var(--blue)' }}>QUẢN TRỊ</span>}
+                                </div>
+                            ))}
+                            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                                <button className="btn" style={{ flex: 1 }}
+                                    onClick={() => copy(seeded.users.filter(u => u.pin)
+                                        .map(u => `${u.username} / ${u.pin}`).join('\n') || 'Không có PIN mới')}>
+                                    <Copy size={15} /> Copy
+                                </button>
+                                <button className="btn" style={{ flex: 1 }} onClick={() => setSeeded(null)}>Đóng</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div style={{ padding: '12px 16px 0' }}>
+                            <button className="btn btn-block" disabled={busy}
+                                style={{ border: '1.5px dashed var(--line)', background: 'none', color: 'var(--ink-2)' }}
+                                onClick={doSeedUsers}>
+                                <UserPlus size={17} /> Cấp sẵn tổ khảo sát (kts1–kts4 + admin)
+                            </button>
+                        </div>
+                    )}
+
                     <div style={{ padding: '12px 16px' }}>
                         {creatingTeam ? (
                             <div className="field">

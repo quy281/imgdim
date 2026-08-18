@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
-    Share2, ListChecks, Users, Lock, ShieldCheck, Check,
+    Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
 import Confirm from '../ui/Confirm';
+import { toast } from '../ui/Toast';
 import * as pb from '../lib/pb';
 
 const fmtSince = (ts) => {
@@ -31,6 +32,8 @@ export default function ProjectsScreen({
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loggingIn, setLoggingIn] = useState(false);
+    const [pinForm, setPinForm] = useState(null); // { old, next, again }
+    const [pinBusy, setPinBusy] = useState(false);
 
     const logged = pb.isLoggedIn();
     // ownerId() chứ không myId(): với superuser, myId() là id trong _superusers, không
@@ -49,6 +52,25 @@ export default function ProjectsScreen({
             setShowSettings(false);
         } catch { /* toast đã báo */ } finally {
             setLoggingIn(false);
+        }
+    };
+
+    const daysLeft = logged ? pb.sessionDaysLeft() : null;
+
+    const doChangePin = async () => {
+        const { old, next, again } = pinForm;
+        if (next !== again) { toast('Hai lần nhập PIN mới không giống nhau', 'err'); return; }
+        setPinBusy(true);
+        try {
+            await pb.changePin(old, next);
+            setPinForm(null);
+            toast('Đã đổi PIN — lần sau đăng nhập bằng PIN mới', 'ok');
+        } catch (err) {
+            // 400 ở đây gần như luôn là sai PIN cũ; thông báo của PocketBase quá kỹ thuật.
+            toast(err.status === 400 && /oldPassword|password/i.test(err.message)
+                ? 'PIN hiện tại không đúng' : err.message, 'err');
+        } finally {
+            setPinBusy(false);
         }
     };
 
@@ -210,10 +232,16 @@ export default function ProjectsScreen({
                 {logged ? (
                     <>
                         <div className="sheet-row" style={{ borderBottom: '1px solid var(--line)' }}>
-                            <CheckCircle2 size={20} style={{ color: 'var(--ok)' }} />
+                            <CheckCircle2 size={20} style={{ color: daysLeft != null && daysLeft <= 3 ? 'var(--warn)' : 'var(--ok)' }} />
                             <div style={{ flex: 1 }}>
-                                Đã đăng nhập
-                                <div className="sub">{account?.email || pb.myName()}</div>
+                                {pb.myName() || account?.email}
+                                <div className="sub">
+                                    {daysLeft == null
+                                        ? 'Tài khoản quản trị — phiên không hết hạn'
+                                        : daysLeft === 0
+                                            ? 'Phiên hết hạn hôm nay — đăng nhập lại để không mất đồng bộ'
+                                            : `Còn ${daysLeft} ngày trước khi phải đăng nhập lại`}
+                                </div>
                             </div>
                         </div>
                         <div className="sheet-row" style={{ borderBottom: '1px solid var(--line)' }}>
@@ -234,11 +262,46 @@ export default function ProjectsScreen({
                             <ListChecks size={19} style={{ color: 'var(--blue)' }} />
                             <div style={{ flex: 1 }}>Kiểm tra đồng bộ<div className="sub">So sánh local ↔ cloud từng dự án</div></div>
                         </button>
-                        {pb.isSuperuser() && (
+                        {!pb.isSuperuser() && (
+                            <button className="sheet-row" onClick={() => setPinForm({ old: '', next: '', again: '' })}>
+                                <KeyRound size={19} style={{ color: 'var(--violet)' }} />
+                                <div style={{ flex: 1 }}>
+                                    Đổi mã PIN
+                                    <div className="sub">Đổi ngay nếu vẫn đang dùng PIN quản trị giao</div>
+                                </div>
+                            </button>
+                        )}
+                        {pb.isAdmin() && (
                             <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenTeamAdmin?.(); }}>
                                 <ShieldCheck size={19} style={{ color: 'var(--blue)' }} />
-                                <div style={{ flex: 1 }}>Quản lý team & người dùng<div className="sub">Tạo team, thêm/xoá thành viên</div></div>
+                                <div style={{ flex: 1 }}>Quản lý team & người dùng<div className="sub">Cấp tài khoản, gán team</div></div>
                             </button>
+                        )}
+                        {pinForm && (
+                            <div style={{ padding: '4px 0 12px' }}>
+                                <div className="field">
+                                    <label>PIN hiện tại</label>
+                                    <input type="password" inputMode="numeric" value={pinForm.old} placeholder="••••"
+                                        onChange={e => setPinForm(f => ({ ...f, old: e.target.value }))} />
+                                </div>
+                                <div className="field">
+                                    <label>PIN mới ({pb.PIN_MIN}–{pb.PIN_MAX} chữ số)</label>
+                                    <input type="password" inputMode="numeric" value={pinForm.next} placeholder="••••"
+                                        onChange={e => setPinForm(f => ({ ...f, next: e.target.value }))} />
+                                </div>
+                                <div className="field">
+                                    <label>Nhập lại PIN mới</label>
+                                    <input type="password" inputMode="numeric" value={pinForm.again} placeholder="••••"
+                                        onChange={e => setPinForm(f => ({ ...f, again: e.target.value }))}
+                                        onKeyDown={e => { if (e.key === 'Enter') doChangePin(); }} />
+                                </div>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <button className="btn btn-block" onClick={() => setPinForm(null)}>Hủy</button>
+                                    <button className="btn btn-primary btn-block" disabled={pinBusy} onClick={doChangePin}>
+                                        {pinBusy ? 'Đang đổi...' : 'Đổi PIN'}
+                                    </button>
+                                </div>
+                            </div>
                         )}
                         <button className="sheet-row" style={{ color: '#dc2626' }} onClick={() => { onLogout(); setShowSettings(false); }}>
                             <LogOut size={19} />
@@ -249,20 +312,27 @@ export default function ProjectsScreen({
                     <>
                         <div className="field">
                             {/* type="text" chứ không phải "email": bảng users cho đăng nhập bằng
-                                username, mà input email sẽ bị trình duyệt chặn khi nhập "mkg20144". */}
-                            <label>Tài khoản / Email</label>
-                            <input type="text" value={email} placeholder="mkg20144 hoặc email@mkg.vn"
+                                username, mà input email sẽ bị trình duyệt chặn khi nhập "kts1". */}
+                            <label>Tên đăng nhập</label>
+                            <input type="text" value={email} placeholder="kts1"
+                                autoCapitalize="none" autoCorrect="off" spellCheck="false"
                                 onChange={e => setEmail(e.target.value)} autoComplete="username" />
                         </div>
                         <div className="field">
-                            <label>Mật khẩu</label>
-                            <input type="password" value={password} placeholder="••••••••"
+                            <label>Mã PIN</label>
+                            {/* inputMode numeric → điện thoại bật bàn số, không phải bàn chữ.
+                                Vẫn là type=password để PIN không hiện giữa công trường. */}
+                            <input type="password" inputMode="numeric" value={password} placeholder="••••"
                                 onChange={e => setPassword(e.target.value)} autoComplete="current-password"
                                 onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} />
                         </div>
                         <button className="btn btn-primary btn-block" disabled={loggingIn} onClick={doLogin}>
                             <LogIn size={18} /> {loggingIn ? 'Đang đăng nhập...' : 'Đăng nhập để đồng bộ'}
                         </button>
+                        <div style={{ fontSize: 12, color: 'var(--muted)', paddingTop: 12, lineHeight: 1.5 }}>
+                            Phiên đăng nhập dùng được {pb.SESSION_DAYS} ngày rồi phải đăng nhập lại.
+                            Nhận PIN từ quản trị, và đổi ngay sau lần đăng nhập đầu.
+                        </div>
                     </>
                 )}
                 <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--muted)', paddingTop: 14 }}>

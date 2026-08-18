@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>selftest — PIN &amp; hạn phiên</title>
+<pre id="out">running…</pre>
+<script type="module">
+import * as pb from '/src/lib/pb.js';
+
+const lines = [];
+let pass = 0, fail = 0;
+const ok = (name, cond) => {
+    cond ? pass++ : fail++;
+    lines.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
+};
+const eq = (name, got, want) => ok(`${name}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`, got === want);
+const head = (s) => lines.push(`\n== ${s} ==`);
+const threw = (name, fn) => {
+    try { fn(); ok(name + ' (phải throw)', false); }
+    catch { ok(name, true); }
+};
+
+// Test ghi vào localStorage thật của tab này → chụp lại rồi trả về nguyên trạng.
+const SNAP = localStorage.getItem('ks_auth');
+const setAuth = (o) => localStorage.setItem('ks_auth', JSON.stringify(o));
+const DAY = 86400_000;
+
+try {
+    head('1. Nở PIN thành mật khẩu thật');
+    ok('PIN 4 số hợp lệ', pb.isPin('1111'));
+    ok('PIN 8 số hợp lệ', pb.isPin('12345678'));
+    ok('3 số không hợp lệ', !pb.isPin('111'));
+    ok('9 số không hợp lệ', !pb.isPin('123456789'));
+    ok('có chữ không phải PIN', !pb.isPin('11a1'));
+    ok('rỗng không phải PIN', !pb.isPin(''));
+    ok('mật khẩu thật không bị nhận là PIN', !pb.isPin('MatKhau@2026'));
+
+    const p1 = pb.pinToPassword('1111');
+    ok(`nở ra đủ ${pb.PASSWORD_MIN} ký tự (${p1.length})`, p1.length >= pb.PASSWORD_MIN);
+    eq('xác định — cùng PIN cùng kết quả', pb.pinToPassword('1111'), p1);
+    ok('PIN khác cho mật khẩu khác', pb.pinToPassword('2222') !== p1);
+    // Số 0 đứng đầu phải được giữ: nếu ở đâu đó PIN bị ép qua Number thì '0123' hoá 123
+    // và hai PIN khác nhau lại mở được cùng một tài khoản.
+    ok('PIN 0 đầu giữ nguyên chữ số', pb.pinToPassword('0123').includes('0123'));
+    ok('0123 khác 1230', pb.pinToPassword('0123') !== pb.pinToPassword('1230'));
+    threw('PIN 3 số bị từ chối', () => pb.pinToPassword('111'));
+    threw('PIN có chữ bị từ chối', () => pb.pinToPassword('11a1'));
+    threw('PIN rỗng bị từ chối', () => pb.pinToPassword(''));
+    threw('PIN null bị từ chối', () => pb.pinToPassword(null));
+
+    head('2. Hạn 30 ngày cho người dùng thường');
+    setAuth({ token: 't', model: { id: 'u1' }, role: '', loginAt: Date.now() });
+    eq('vừa đăng nhập → còn 30 ngày', pb.sessionDaysLeft(), 30);
+    ok('chưa hết hạn', !pb.sessionExpired());
+
+    setAuth({ token: 't', model: { id: 'u1' }, role: '', loginAt: Date.now() - 29 * DAY });
+    eq('ngày 29 → còn 1 ngày', pb.sessionDaysLeft(), 1);
+    ok('ngày 29 chưa hết hạn', !pb.sessionExpired());
+
+    setAuth({ token: 't', model: { id: 'u1' }, role: '', loginAt: Date.now() - 30 * DAY - 1000 });
+    eq('quá 30 ngày → còn 0', pb.sessionDaysLeft(), 0);
+    ok('quá 30 ngày → HẾT HẠN', pb.sessionExpired());
+
+    head('3. Quản trị không hết hạn');
+    setAuth({ token: 't', model: { id: 'a1' }, role: 'admin', loginAt: Date.now() - 400 * DAY });
+    eq('role admin → không có mốc hết hạn', pb.sessionExpiresAt(), null);
+    ok('admin 400 ngày vẫn không hết hạn', !pb.sessionExpired());
+    eq('admin không hiện số ngày', pb.sessionDaysLeft(), null);
+    ok('isAdmin() đúng với role admin', pb.isAdmin());
+    ok('admin role KHÔNG phải superuser', !pb.isSuperuser());
+
+    setAuth({ token: 't', model: { id: 's1' }, superuser: true, loginAt: Date.now() - 400 * DAY });
+    ok('superuser 400 ngày vẫn không hết hạn', !pb.sessionExpired());
+    ok('isAdmin() đúng với superuser', pb.isAdmin());
+
+    head('4. Chưa đăng nhập');
+    localStorage.removeItem('ks_auth');
+    eq('không có phiên → không có mốc', pb.sessionExpiresAt(), null);
+    ok('không có phiên → không coi là hết hạn', !pb.sessionExpired());
+    ok('không có phiên → không phải admin', !pb.isAdmin());
+
+    head('5. Phiên cũ chưa có loginAt (dữ liệu trước bản này)');
+    setAuth({ token: 't', model: { id: 'u1' }, role: '' });
+    eq('thiếu loginAt → không tự đá ra', pb.sessionExpiresAt(), null);
+    ok('thiếu loginAt → chưa hết hạn', !pb.sessionExpired());
+
+    head('6. Danh sách cấp sẵn');
+    eq('5 tài khoản', pb.SEED_USERS.length, 5);
+    eq('4 KTS dùng PIN giao chung', pb.SEED_USERS.filter(u => u.pin === pb.SEED_PIN_KTS).length, 4);
+    eq('đúng 1 quản trị', pb.SEED_USERS.filter(u => u.role === 'admin').length, 1);
+    eq('PIN admin khác PIN KTS', pb.SEED_PIN_ADMIN !== pb.SEED_PIN_KTS, true);
+    ok('tên đăng nhập toàn chữ thường không dấu',
+        pb.SEED_USERS.every(u => /^[a-z0-9]+$/.test(u.username)));
+    ok('mọi PIN cấp sẵn đều nở được',
+        pb.SEED_USERS.every(u => pb.pinToPassword(u.pin).length >= pb.PASSWORD_MIN));
+} finally {
+    if (SNAP === null) localStorage.removeItem('ks_auth');
+    else localStorage.setItem('ks_auth', SNAP);
+    lines.push('\n(đã trả localStorage về nguyên trạng)');
+}
+
+lines.unshift(`${fail ? 'FAIL' : 'OK'} — ${pass} pass, ${fail} fail`);
+document.getElementById('out').textContent = lines.join('\n');
+</script>
