@@ -21,6 +21,10 @@ const BASE = 'https://db.mkg.vn';
 const COL = 'survey_items';
 const TEAMS = 'teams';
 const SHARES = 'shares';
+// Bảng dấu xoá. Bản ghi khảo sát bị XOÁ THẬT khỏi survey_items (kèm ảnh); ở đây chỉ còn
+// item_id + thời điểm. Không có dấu này thì máy đang offline lúc xoá sẽ đẩy bản cũ lên
+// lại ở lần sync sau — xoá rồi tự sống lại.
+const DELETIONS = 'deletions';
 const TEAM_SLUG = 'mkg';
 
 const AUTH_KEY = 'ks_auth';
@@ -521,6 +525,35 @@ async function fetchMeta() {
 
 const keyOf = (owner, itemId) => `${owner || ''}/${itemId}`;
 
+// ===== Dấu xoá =====
+// Bảng riêng, mỗi dòng ~60 byte. Tách khỏi survey_items để bản ghi khảo sát được xoá THẬT
+// (kèm ảnh) mà lệnh xoá vẫn lan tới máy đang offline. Backend chưa có bảng này thì mọi hàm
+// dưới đây im lặng bỏ qua — sync vẫn chạy, chỉ là chưa lan được lệnh xoá.
+async function fetchDeletions() {
+    const out = new Map();
+    try {
+        for (let page = 1; ; page++) {
+            const res = await api(`collections/${DELETIONS}/records?page=${page}&perPage=500&fields=id,item_id,kind,at`);
+            for (const r of res.items || []) out.set(r.item_id, { id: r.id, item_id: r.item_id, kind: r.kind, at: Number(r.at) || 0 });
+            if (page >= (res.totalPages || 1)) break;
+        }
+    } catch (err) {
+        if (err.status !== 404) console.warn('fetchDeletions:', err.message);
+    }
+    return out;
+}
+
+async function putDeletion(itemId, kind, at, by) {
+    const body = { item_id: String(itemId), kind: kind || 'doc', at: Number(at) || 0, by: by || '' };
+    try {
+        await api(`collections/${DELETIONS}/records`, { method: 'POST', body: JSON.stringify(body) });
+    } catch (err) {
+        // Unique index trên item_id → 400 nghĩa là máy khác vừa ghi dấu. Đó là kết quả
+        // mong muốn, không phải lỗi.
+        if (err.status !== 400) throw err;
+    }
+}
+
 /**
  * Chạy song song có giới hạn.
  *
@@ -704,40 +737,40 @@ export async function fullSync(local, onProgress) {
         return any?.length === 1 ? any[0] : null;
     };
 
-    // ===== 1. Đẩy các lệnh xóa (soft-delete) =====
+    // ===== 1. Dấu xoá trên cloud =====
+    // Đọc trước để cả bước pull và push đều biết cái gì đã bị xoá.
+    const remoteDel = await fetchDeletions();
+
+    // ===== 1b. Đẩy các lệnh xoá — XOÁ THẬT rồi ghi dấu =====
+    //
+    // Trước đây chỉ đánh dấu `deleted:true`: bản ghi cùng ảnh nằm nguyên trên cloud mãi,
+    // và quản trị (bỏ qua rule) vẫn thấy hết. Nay DELETE thật, dấu xoá sang bảng riêng chỉ
+    // giữ item_id — đủ để máy đang offline lúc xoá biết mà xoá theo thay vì đẩy bản cũ lên
+    // lại. Thứ tự bắt buộc: GHI DẤU TRƯỚC, xoá sau. Xoá trước mà mất mạng giữa đường là
+    // không còn gì cho máy khác biết, và bản ghi hồi sinh từ máy đó.
     const clearedTombstones = [];
     let deleted = 0;
     let delDone = 0;
     await mapLimit(local.tombstones, SYNC_LIMIT, async (t) => {
         const rec = remoteByItem.get(t.item_id)?.find(r => r.owner === uid) || remoteByItem.get(t.item_id)?.[0];
-        if (!rec) {
-            // Chưa từng lên cloud. Giữ tombstone (db.js tự dọn sau 90 ngày) để nếu máy
-            // khác đẩy item này lên thì lần sync sau ta vẫn xóa được.
-            return;
-        }
-        if (rec.deleted) { clearedTombstones.push(t.item_id); return; }
-        if ((rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); return; } // cloud mới hơn → thắng
-        p(`Đang xóa trên cloud ${++delDone}/${local.tombstones.length}...`);
+        const already = remoteDel.get(t.item_id);
+        if (!rec && already) { clearedTombstones.push(t.item_id); return; }  // xong từ trước
+        if (rec && (rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); return; } // cloud mới hơn → thắng
+        p(`Đang xoá trên cloud ${++delDone}/${local.tombstones.length}...`);
         try {
-            // `data._deleted` là dấu xóa mà CẢ HAI schema đều đọc được; các cột kia chỉ
-            // gửi khi backend đã có, để không dựa vào việc PocketBase bỏ qua field lạ.
-            const delBody = {
-                name: '_deleted_',
-                data: { id: t.item_id, _deleted: true, updatedAt: t.deletedAt },
-            };
-            if (!legacy) Object.assign(delBody, {
-                deleted: true,
-                updated_ms: t.deletedAt,
-                rev: (rec.rev || 0) + 1,
-                schema_v: SCHEMA_V,
-            });
-            await api(`collections/${COL}/records/${rec.id}`, { method: 'PATCH', body: JSON.stringify(delBody) });
-            deleted++;
+            if (!already) {
+                await putDeletion(t.item_id, t.kind, t.deletedAt, ownerName());
+                remoteDel.set(t.item_id, { item_id: t.item_id, at: t.deletedAt });
+            }
+            if (rec) {
+                await api(`collections/${COL}/records/${rec.id}`, { method: 'DELETE' });
+                remoteByItem.delete(t.item_id);
+                remoteByKey.delete(keyOf(rec.owner, t.item_id));
+                deleted++;
+            }
             clearedTombstones.push(t.item_id);
-            rec.deleted = true;
-            rec.updated_ms = t.deletedAt;
         } catch (err) {
-            console.warn('soft-delete failed:', t.item_id, err.message);
+            console.warn('hard-delete failed:', t.item_id, err.status, err.message);
             // Giữ tombstone để thử lại lần sync sau.
         }
     });
@@ -746,10 +779,22 @@ export async function fullSync(local, onProgress) {
     const toPull = [];
     const deletedProjects = [];
     const deletedDocs = [];
+    // Máy khác đã xoá → xoá theo trên máy này. Đây là lý do bảng dấu xoá tồn tại: bản ghi
+    // gốc đã biến mất khỏi cloud nên không còn gì trong `remote` để suy ra lệnh xoá.
+    for (const [itemId, d] of remoteDel) {
+        const loc = localMap.get(itemId);
+        if (!loc) continue;
+        // Người dùng sửa lại SAU khi máy kia xoá → bản sửa thắng, giữ lại và đẩy lên.
+        if ((loc.item.updatedAt || 0) > d.at) continue;
+        (loc.kind === 'project' ? deletedProjects : deletedDocs).push(itemId);
+    }
+
     for (const rec of remote) {
+        if (remoteDel.has(rec.item_id)) continue;               // đã xoá, xử lý ở trên
         const t = tombstoneMap.get(rec.item_id);
         if (t && (rec.updated_ms || 0) <= t.deletedAt) continue; // ta vừa xóa, đừng kéo về
         const loc = localMap.get(rec.item_id);
+        // `deleted` là dấu của schema cũ, còn sót trên bản ghi chưa dọn.
         if (rec.deleted) {
             if (loc && (rec.updated_ms || 0) >= (loc.item.updatedAt || 0)) {
                 (rec.kind === 'project' ? deletedProjects : deletedDocs).push(rec.item_id);
@@ -759,8 +804,14 @@ export async function fullSync(local, onProgress) {
         if (!loc || (rec.updated_ms || 0) > (loc.item.updatedAt || 0)) toPull.push(rec);
     }
 
+    const deletedSet = new Set([...deletedProjects, ...deletedDocs]);
     const toPush = [];
     for (const [id, loc] of localMap) {
+        // Vừa quyết định xoá theo lệnh của máy khác → tuyệt đối không đẩy lại, nếu không
+        // nó hồi sinh ngay trong cùng một lượt sync.
+        if (deletedSet.has(id)) continue;
+        const d = remoteDel.get(id);
+        if (d && (loc.item.updatedAt || 0) <= d.at) continue;
         const rec = findRemote(id, loc.item);
         // Cloud đã xóa và mốc xóa không cũ hơn local → tôn trọng lệnh xóa, không đẩy lại.
         if (rec?.deleted && (rec.updated_ms || 0) >= (loc.item.updatedAt || 0)) continue;
@@ -1308,6 +1359,33 @@ export async function provisionBackend(onProgress, onBackup) {
         say('Collection teams: đã tạo');
     }
 
+    // ===== 2b. deletions — dấu xoá, để xoá THẬT mà máy offline vẫn xoá theo =====
+    if (byName.get(DELETIONS)) {
+        say('Collection deletions: đã có');
+    } else {
+        try {
+            await pb.collections.create({
+                name: DELETIONS, type: 'base',
+                fields: [
+                    F.id(), F.text('item_id', 60, true), F.text('kind', 20),
+                    F.num('at'), F.text('by', 120),
+                    F.date('created', false), F.date('updated', true),
+                ],
+                indexes: [`CREATE UNIQUE INDEX \`idx_del_item\` ON \`${DELETIONS}\` (\`item_id\`)`],
+                // Ai đăng nhập cũng phải ĐỌC được dấu xoá, không thì máy họ không biết mà
+                // xoá theo. Bản ghi chỉ có id nội bộ, không mang nội dung khảo sát.
+                listRule: '@request.auth.id != ""',
+                viewRule: '@request.auth.id != ""',
+                createRule: '@request.auth.id != ""',
+                updateRule: '@request.auth.id != ""',
+                deleteRule: IS_ADMIN,
+            });
+            say('Collection deletions: đã tạo (xoá thật + dấu xoá)');
+        } catch (err) {
+            warn('deletions — tạo collection', err);
+        }
+    }
+
     // ===== 2. shares =====
     if (byName.get(SHARES)) {
         say('Collection shares: đã có');
@@ -1361,7 +1439,9 @@ export async function provisionBackend(onProgress, onBackup) {
         listRule: READ_RULE, viewRule: READ_RULE,
         createRule: '@request.auth.id != "" && @request.body.owner = @request.auth.id',
         updateRule: WRITE_RULE,
-        deleteRule: 'owner = @request.auth.id',
+        // Quản trị xoá được cả bản ghi của người khác. Nếu chỉ chủ sở hữu xoá được thì
+        // dữ liệu của người đã nghỉ việc thành rác vĩnh viễn, không ai dọn nổi.
+        deleteRule: `owner = @request.auth.id || ${IS_ADMIN}`,
     };
 
     if (!surveyCol) {
@@ -1473,7 +1553,9 @@ export async function provisionBackend(onProgress, onBackup) {
     }
 
     // ===== 5. Backfill record cũ (chỉ khi survey_items đã tồn tại trước) =====
-    const recs = await listAllRecords(COL, 'id,item_id,updated_ms,scope,team,rev,schema_v,data,deleted');
+    // `kind` cần cho bước dọn bên dưới: dấu xoá phải ghi đúng project/doc, nếu không máy
+    // khác xoá sai chỗ (xoá doc trong khi thứ bị xoá là cả dự án).
+    const recs = await listAllRecords(COL, 'id,item_id,kind,updated_ms,scope,team,rev,schema_v,data,deleted');
     let done = 0;
     for (const r of recs) {
         const ms = Number(r.data?.updatedAt) || 0;
@@ -1499,12 +1581,85 @@ export async function provisionBackend(onProgress, onBackup) {
     }
     if (recs.length) say(`Dữ liệu cũ: cập nhật ${done}/${recs.length} bản ghi`);
 
+    // ===== 6. Dọn hẳn bản ghi đã xoá mềm =====
+    // Đây là thứ quản trị vẫn thấy sau khi người dùng đã xoá: bản ghi cùng ảnh nằm nguyên
+    // trên cloud, chỉ mang cờ `deleted`. Xoá thật, giữ lại dấu ở bảng deletions để máy nào
+    // còn bản cũ trong máy vẫn xoá theo chứ không đẩy lên lại.
+    const soft = recs.filter(r => r.deleted || r.data?._deleted);
+    if (soft.length) {
+        let purged = 0;
+        await mapLimit(soft, SYNC_LIMIT, async (r) => {
+            try {
+                await putDeletion(r.item_id, r.kind || 'doc', Number(r.updated_ms) || Number(r.data?.updatedAt) || 0, 'dọn hệ thống');
+                await api(`collections/${COL}/records/${r.id}`, { method: 'DELETE' });
+                purged++;
+            } catch (err) {
+                console.warn('purge', r.id, err.message);
+            }
+        });
+        say(`Dọn hẳn ${purged}/${soft.length} bản ghi đã xoá (kèm ảnh)`);
+    }
+
     // Nạp lại team vào phiên hiện tại để app dùng được ngay, không cần đăng nhập lại.
     await refreshTeam().catch(() => {});
     say(warnings.length
         ? `Xong nhưng có ${warnings.length} bước chưa đạt — xem chi tiết bên dưới`
         : 'Xong — đã sẵn sàng cấp tài khoản');
     return { log, warnings };
+}
+
+/**
+ * Gom toàn bộ survey_items về một chủ sở hữu và một đội.
+ *
+ * Cần vì lớp "nhận dữ liệu chưa đăng nhập" (db.setAccount) đưa cả kho dự án của công ty
+ * sang tài khoản NÀO đăng nhập đầu tiên trên máy đó. Hệ quả: một KTS bỗng là chủ sở hữu
+ * 32 dự án, và vì deleteRule bám theo owner nên chỉ họ xoá được.
+ *
+ * Chạy được nhờ superuser bỏ qua API rule. Trả về { moved, skipped, conflicts }.
+ */
+export async function reassignAllToOwner(identityId, teamId, onProgress) {
+    requireSuperuser();
+    if (!identityId) throw new PbError('Chưa xác định được danh tính Founder trong bảng `users`', 400);
+    const p = (m) => onProgress?.(m);
+
+    p('Đang đọc toàn bộ bản ghi...');
+    const recs = await listAllRecords(COL, 'id,item_id,owner,scope,team');
+    const name = ownerName();
+
+    // Unique index (owner, item_id): nếu Founder ĐÃ có bản ghi cùng item_id thì đổi owner
+    // của bản kia sang Founder sẽ đụng index và cả lượt PATCH đổ. Phát hiện trước, bỏ qua
+    // và báo ra chứ không âm thầm làm hỏng.
+    const ownedByTarget = new Set(recs.filter(r => r.owner === identityId).map(r => r.item_id));
+    const conflicts = [];
+    let moved = 0, skipped = 0;
+
+    const todo = recs.filter(r => r.owner !== identityId || r.team !== teamId || r.scope !== 'team');
+    let done = 0;
+    await mapLimit(todo, SYNC_LIMIT, async (r) => {
+        const patch = {};
+        if (r.owner !== identityId) {
+            if (ownedByTarget.has(r.item_id)) {
+                conflicts.push(r.item_id);
+                skipped++;
+                return;
+            }
+            patch.owner = identityId;
+            patch.owner_name = name;
+        }
+        if (r.scope !== 'team') patch.scope = 'team';
+        if (teamId && r.team !== teamId) patch.team = teamId;
+        if (!Object.keys(patch).length) return;
+        try {
+            await api(`collections/${COL}/records/${r.id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+            moved++;
+        } catch (err) {
+            skipped++;
+            console.warn('reassign', r.id, err.message);
+        } finally {
+            p(`Đang chuyển ${++done}/${todo.length}...`);
+        }
+    });
+    return { total: recs.length, moved, skipped, conflicts };
 }
 
 // ===== Cấp sẵn tài khoản cho tổ khảo sát =====

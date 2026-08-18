@@ -29,6 +29,7 @@ export default function TeamAdminSheet({ open, onClose }) {
     const [inspect, setInspect] = useState(null); // kết quả kiểm tra trước khi ghi
     const [seeded, setSeeded] = useState(null);    // { team, users } — bảng PIN hiện một lần
     const [report, setReport] = useState(null);    // { log, warnings } sau khi dựng
+    const [confirmReassign, setConfirmReassign] = useState(null); // team object
 
     useEffect(() => {
         if (open) { load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false); }
@@ -111,6 +112,27 @@ export default function TeamAdminSheet({ open, onClose }) {
         } catch (err) {
             setSetupLog(null);
             setError('Không cấp được tài khoản: ' + err.message);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const doReassign = async (teamId) => {
+        setBusy(true);
+        setSetupLog('Đang gom bản ghi về Founder...');
+        try {
+            const r = await pb.reassignAllToOwner(pb.ownerId(), teamId, (m) => setSetupLog(m));
+            setSetupLog(null);
+            setConfirmReassign(null);
+            const bits = [`chuyển ${r.moved}/${r.total} bản ghi`];
+            if (r.skipped) bits.push(`bỏ qua ${r.skipped}`);
+            if (r.conflicts.length) bits.push(`${r.conflicts.length} trùng item_id`);
+            setReport({ log: [`Gom chủ sở hữu: ${bits.join(', ')}`], warnings: r.conflicts.length ? ['⚠ có bản ghi trùng item_id, xem console'] : [] });
+            if (r.conflicts.length) console.warn('reassign conflicts:', r.conflicts);
+            toast(`Đã chuyển ${r.moved} bản ghi về Founder`, 'ok');
+        } catch (err) {
+            setSetupLog(null);
+            setError('Không chuyển được chủ sở hữu: ' + err.message);
         } finally {
             setBusy(false);
         }
@@ -315,6 +337,40 @@ export default function TeamAdminSheet({ open, onClose }) {
                             <button className="btn btn-block" style={{ marginTop: 10 }}
                                 onClick={() => setReport(null)}>Đóng nhật ký</button>
                         </div>
+                    )}
+
+                    {/* Gom chủ sở hữu — sửa hệ quả của việc "nhận dữ liệu chưa đăng nhập" */}
+                    {pb.isSuperuser() && teams?.length > 0 && (
+                        confirmReassign ? (
+                            <div style={{ margin: '12px 16px', padding: 14, borderRadius: 12, background: 'var(--warn-soft)' }}>
+                                <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>
+                                    Gom toàn bộ dữ liệu về Founder, đội {confirmReassign.name}?
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+                                    Mọi bản ghi trên <b>db.mkg.vn</b> sẽ đổi chủ sở hữu sang{' '}
+                                    <b>{pb.ownerName() || 'Founder'}</b>, đặt phạm vi đội và gắn vào đội{' '}
+                                    <b>{confirmReassign.name}</b>. Nội dung khảo sát KHÔNG bị sửa.
+                                    <div style={{ marginTop: 6 }}>
+                                        Cần khi một tài khoản đã vô tình nhận cả kho dự án của công ty — vì
+                                        quyền xoá bám theo chủ sở hữu, để nguyên là chỉ tài khoản đó xoá được.
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                                    <button className="btn" style={{ flex: 1 }} disabled={busy}
+                                        onClick={() => setConfirmReassign(null)}>Để sau</button>
+                                    <button className="btn btn-primary" style={{ flex: 1 }} disabled={busy}
+                                        onClick={() => doReassign(confirmReassign.id)}>Gom lại</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div style={{ padding: '12px 16px 0' }}>
+                                <button className="btn btn-block" disabled={busy}
+                                    style={{ border: '1.5px dashed var(--line)', background: 'none', color: 'var(--ink-2)' }}
+                                    onClick={() => setConfirmReassign(teams.find(t => t.slug === 'mkg') || teams[0])}>
+                                    <Database size={17} /> Gom chủ sở hữu về Founder
+                                </button>
+                            </div>
+                        )
                     )}
 
                     {/* Cấp sẵn tổ khảo sát — thao tác một lần, bấm lại không reset PIN ai */}

@@ -41,7 +41,14 @@ export default function ProjectsScreen({
     const myId = pb.ownerId();
     const teams = pb.myTeams();
     const team = teams[0] || null;
-    const teamNameOf = (p) => teams.find(t => t.id === p.teamId)?.name || team?.name || 'MKG';
+    // Nhãn phải nói ĐÚNG cái đang lưu, không rơi về team của người đang xem. Bản cũ rơi
+    // về team?.name nên cùng một dự án hiện "Team Đội 1" trên máy này và "Team MKG" trên
+    // máy kia — không có gì đổi ngoài người xem, và không ai lần ra được dự án thật sự
+    // đang chia sẻ cho ai.
+    const teamNameOf = (p) => {
+        if (!p.teamId) return null;
+        return teams.find(t => t.id === p.teamId)?.name || '(đội khác)';
+    };
 
     const doLogin = async () => {
         if (!email.trim() || !password) return;
@@ -123,11 +130,20 @@ export default function ProjectsScreen({
                             <div className="project-icon"><FolderOpen size={23} /></div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                                 <div className="project-name">{p.name}</div>
+                                {/* Hiện CẢ hai việc: chia sẻ cho đội nào, và của ai. Bản cũ thấy
+                                    dự án của đồng nghiệp thì thay tên đội bằng tên người, nên
+                                    không cách nào biết nó đang chia sẻ tới đâu. */}
                                 <div className="project-meta" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                                    {isTeam(p)
-                                        ? <><Users size={11.5} style={{ color: 'var(--blue)' }} />
-                                            {isMine(p) ? `Team ${teamNameOf(p)}` : (p.ownerName || 'Đồng nghiệp')}</>
-                                        : <><Lock size={11} /> Riêng tư</>}
+                                    {isTeam(p) ? (
+                                        teamNameOf(p)
+                                            ? <><Users size={11.5} style={{ color: 'var(--blue)' }} />Team {teamNameOf(p)}</>
+                                            : <><Users size={11.5} style={{ color: 'var(--warn)' }} />
+                                                <span style={{ color: 'var(--warn)' }}>chưa gắn đội</span></>
+                                    ) : <><Lock size={11} /> Riêng tư</>}
+                                    {!isMine(p) && <>
+                                        <span style={{ opacity: .5 }}>·</span>
+                                        {p.ownerName || 'Đồng nghiệp'}
+                                    </>}
                                     <span style={{ opacity: .5 }}>·</span>{fmtDate(p.createdAt)}
                                 </div>
                             </div>
@@ -157,7 +173,9 @@ export default function ProjectsScreen({
                         <div style={{ flex: 1 }}>
                             Đổi phạm vi chia sẻ
                             <div className="sub">
-                                {menuFor && isTeam(menuFor) ? `Đang chia sẻ: Team ${teamNameOf(menuFor)}` : 'Đang: Riêng tư'}
+                                {!menuFor || !isTeam(menuFor) ? 'Đang: Riêng tư'
+                                    : teamNameOf(menuFor) ? `Đang chia sẻ: Team ${teamNameOf(menuFor)}`
+                                        : 'Chia sẻ theo đội nhưng CHƯA gắn đội — chưa ai khác đọc được'}
                             </div>
                         </div>
                     </button>
