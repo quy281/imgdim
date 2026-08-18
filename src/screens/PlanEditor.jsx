@@ -3,13 +3,14 @@ import { Stage, Layer, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
-    ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame,
+    ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
 import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
+import ColumnPreview from '../plan/ColumnPreview';
 import ElevationView from '../plan/ElevationView';
 import { GROUPS, FURNITURE, catalogItem, defaultSize } from '../lib/furnitureCatalog';
 import NoteMarker from '../photo/NoteMarker';
@@ -24,6 +25,8 @@ import {
     applyWallLength, scaleAllWalls, snapToWall, splitWallAtPoint, bboxOfPlan,
     applySegmentLength, applyOpeningWidth, wallSegments, snapFurnitureToWall,
     roomFaces, ceilingHeight, openingV, applyOpeningVertical, applyCeilingHeight,
+    columnTargetAt, columnSizeFromDrag, insertCornerColumn, insertWallColumn,
+    columnParts, resizeColumn, removeColumn, COLUMN_DEFAULT,
 } from '../lib/geometry';
 import {
     addWallSegment, deleteWall, moveNode, renameRoom, recomputeRooms,
@@ -38,6 +41,7 @@ const MODES = [
     { id: 'editKT', icon: Ruler, label: 'Sửa KT' },
     { id: 'door', icon: DoorOpen, label: 'Cửa' },
     { id: 'window', icon: AppWindow, label: 'Cửa sổ' },
+    { id: 'column', icon: Columns3, label: 'Cột' },
     { id: 'furniture', icon: Sofa, label: 'Nội thất' },
     { id: 'note', icon: MessageSquareText, label: 'Ghi chú' },
 ];
@@ -57,6 +61,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [checklistSheet, setChecklistSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const [openingSheet, setOpeningSheet] = useState(null); // {wallId, openingId}
+    const [colDrag, setColDrag] = useState(null); // {target, a, b} — chỉ để vẽ preview
     const [showExport, setShowExport] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [showNotes, setShowNotes] = useState(false);
@@ -174,6 +179,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         setSel(null);
         setPreview(null);
         setOpeningSheet(null);
+        setColDrag(null);
         if (m === 'furniture') { setChain(null); setShowFurnPicker(true); return; }
         if (m === 'draw') {
             // resume from the end of the last wall so the next segment continues the outline
@@ -327,6 +333,51 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             }),
         });
     };
+
+    // ===== Cột =====
+    // Cột chỉ ghi vào plan khi THẢ TAY. Kéo qua kéo lại không đẩy gì vào lịch sử undo.
+    const commitColumn = (target, a, b) => {
+        const plan = docRef.current.plan;
+        const r = target.kind === 'corner'
+            ? insertCornerColumn(plan, target, a, b)
+            : insertWallColumn(plan, target, a, b);
+        if (r.error) { toast(r.error, 'err'); return; }
+        commit(recomputeRooms(r.plan), undefined);
+        setSel({ kind: 'column', id: r.columnId });
+        if (r.droppedOpenings) toast(`Đã đặt cột — ${r.droppedOpenings} ô cửa nằm trong cột bị bỏ`, 'err');
+        else toast(`Cột ${a}×${b} — chạm số để nhập kích thước đo được`, 'ok');
+    };
+
+    const resizeColumnPad = (colId) => {
+        const cur = columnParts(docRef.current.plan, colId);
+        if (!cur) return;
+        setNumpad({
+            title: 'Cạnh cột thứ nhất (mm)',
+            initial: Math.round(cur.a),
+            hint: 'Số đo thật của cột — tường kề tự bù, tổng không đổi',
+            onOK: (av) => setNumpad({
+                title: 'Cạnh cột thứ hai (mm)',
+                initial: Math.round(cur.b),
+                onOK: (bv) => {
+                    const r = resizeColumn(docRef.current.plan, colId, av, bv);
+                    if (r.error) { toast(r.error, 'err'); return; }
+                    commit(recomputeRooms(r.plan), undefined);
+                },
+            }),
+        });
+    };
+
+    const deleteColumn = (colId) => setConfirm({
+        title: 'Bỏ cột này?',
+        message: 'Tường sẽ được hàn lại như trước khi khoét.',
+        actionLabel: 'Bỏ cột',
+        onOK: () => {
+            const r = removeColumn(docRef.current.plan, colId);
+            if (r.error) { toast(r.error, 'err'); return; }
+            commit(recomputeRooms(r.plan), undefined);
+            setSel(null);
+        },
+    });
 
     // ===== Mặt đứng (khai triển tường) =====
     const openCeilingNumPad = (roomId, opts = {}) => {
@@ -497,7 +548,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             toast(`Chạm vào một bức tường để đặt ${mode === 'door' ? 'cửa đi' : 'cửa sổ'}`);
             return;
         }
-        if (mode === 'select') {
+        if (mode === 'select' || mode === 'column') {
             setSel(null);
             setOpeningSheet(null);
         }
@@ -517,7 +568,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             setOpeningSheet({ wallId, openingId });
             return;
         }
-        setSel({ kind: 'wall', id: wallId });
+        // Chạm vào một cạnh của cột thì chọn CẢ CỘT, không phải một cạnh rời — sửa lẻ
+        // từng cạnh là cách chắc chắn nhất để làm cột hết vuông.
+        const w = docRef.current.plan.walls.find(x => x.id === wallId);
+        setSel(w?.column ? { kind: 'column', id: w.column } : { kind: 'wall', id: wallId });
         setOpeningSheet(null);
     };
 
@@ -580,6 +634,16 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (e.evt?.cancelable) e.evt.preventDefault();
         const p = getPos(e);
         if (!p) return;
+        if (mode === 'column') {
+            // Bắt chỗ neo ngay lúc đặt ngón xuống — kéo sau đó chỉ còn quyết định kích thước,
+            // nên ngón có trượt bao nhiêu cũng không làm cột lệch khỏi góc/tường.
+            const target = columnTargetAt(docRef.current.plan, toWorld(p), 24 / view.scale);
+            if (target) {
+                gestureRef.current = { type: 'column', sx: p.x, sy: p.y, target };
+                setColDrag({ target, a: 0, b: 0 });
+                return;
+            }
+        }
         gestureRef.current = { type: 'tap', sx: p.x, sy: p.y, startView: { ...view } };
     };
 
@@ -602,6 +666,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         }
         const p = getPos(e);
         if (!p) return;
+        if (g?.type === 'column') {
+            if (e.evt?.cancelable) e.evt.preventDefault();
+            const s = columnSizeFromDrag(g.target, toWorld(p));
+            g.size = s;
+            setColDrag({ target: g.target, ...s });
+            return;
+        }
         if (g && g.type === 'tap') {
             if (Math.hypot(p.x - g.sx, p.y - g.sy) > 10) g.type = 'pan';
         }
@@ -618,6 +689,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const onUp = (e) => {
         const g = gestureRef.current;
         gestureRef.current = null;
+        if (g?.type === 'column') {
+            setColDrag(null);
+            // Chạm mà không kéo = cột tiết diện mặc định; ai cũng đo lại số thật sau.
+            const { a, b } = g.size || { a: COLUMN_DEFAULT, b: COLUMN_DEFAULT };
+            commitColumn(g.target, a || COLUMN_DEFAULT, b || COLUMN_DEFAULT);
+            return;
+        }
         if (!g || g.type !== 'tap') return;
         if (e.evt?.touches?.length > 0) return; // another finger still down
         const t = e.target;
@@ -679,6 +757,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         ? (doc.plan.walls.find(w => w.id === openingSheet.wallId)?.openings || []).find(o => o.id === openingSheet.openingId)
         : null;
     const selNote = sel?.kind === 'note' ? (doc.notes || []).find(n => n.id === sel.id) : null;
+    const selCol = sel?.kind === 'column' && !elev ? columnParts(doc.plan, sel.id) : null;
     const selFurn = sel?.kind === 'furniture' ? (doc.furniture || []).find(f => f.id === sel.id) : null;
 
     const bannerText = () => {
@@ -688,6 +767,9 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (mode === 'editKT') return 'Chạm tường để nhập số đo laser · nhãn đỏ = đã nhập';
         if (mode === 'door') return `Chạm vào tường để đặt cửa đi (${settings.doorWidth || 900}mm)`;
         if (mode === 'window') return `Chạm vào tường để đặt cửa sổ (${settings.windowWidth || 1200}mm)`;
+        if (mode === 'column') return colDrag
+            ? 'Kéo để chỉnh hai cạnh · thả tay là xong'
+            : 'Chạm vào góc phòng hoặc giữa tường rồi kéo ra';
         if (mode === 'furniture') return 'Chọn món trong danh sách để thêm vào mặt bằng';
         if (mode === 'note') return 'Chạm vào vị trí cần ghi chú';
         return doc.plan.walls.length
@@ -798,6 +880,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                                 <DrawPreview anchor={chain?.anchor} preview={preview}
                                     thickness={settings.thickness || 110} scale={view.scale} />
                             )}
+                            {mode === 'column' && colDrag && (
+                                <ColumnPreview target={colDrag.target} a={colDrag.a} b={colDrag.b}
+                                    scale={view.scale} />
+                            )}
                         </Layer>
                     </Stage>
                 )}
@@ -814,6 +900,20 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                             onOK: () => { commit(recomputeRooms(deleteWall(docRef.current.plan, sel.id)), undefined); setSel(null); },
                         })}>
                             <Trash2 size={16} /> Xóa
+                        </button>
+                        <div className="fb-sep" />
+                        <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
+                    </div>
+                )}
+                {selCol && (
+                    <div className="float-bar">
+                        <button className="fb-btn" style={{ color: 'var(--violet)' }}
+                            onClick={() => resizeColumnPad(sel.id)}>
+                            <Maximize2 size={16} /> {Math.round(selCol.a)}×{Math.round(selCol.b)}
+                        </button>
+                        <div className="fb-sep" />
+                        <button className="fb-btn" style={{ color: '#dc2626' }} onClick={() => deleteColumn(sel.id)}>
+                            <Trash2 size={16} /> Bỏ cột
                         </button>
                         <div className="fb-sep" />
                         <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
@@ -938,7 +1038,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 }}>
                     <Frame size={19} style={{ color: 'var(--blue)' }} />
                     <div style={{ flex: 1 }}>
-                        Dựng mặt đứng 4 mặt
+                        Dựng mặt đứng các mặt tường
                         <div className="sub">
                             {Number.isFinite(roomMenu?.h)
                                 ? `Cao trần ${Math.round(roomMenu.h)}mm`

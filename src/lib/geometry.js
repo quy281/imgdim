@@ -356,6 +356,9 @@ export function roomFaces(plan, room) {
         const a = ids[i], b = ids[(i + 1) % ids.length];
         const w = plan.walls.find(x => (x.a === a && x.b === b) || (x.a === b && x.b === a));
         if (!w || faces.some(f => f.wallId === w.id)) continue;
+        // Cạnh cột không phải một mặt đứng riêng — trong hồ sơ nội thất nó là phần hồi
+        // của mặt tường kề. Tính riêng thì sinh ra mặt "E, F" rộng 220mm, vô nghĩa.
+        if (w.column) continue;
         const fr = wallFrame(plan, w.id, room);
         if (!fr) continue;
         const doorW = (w.openings || [])
@@ -598,6 +601,341 @@ export function splitWallAtPoint(plan, wallId, pt) {
     };
     const walls = plan.walls.filter(w => w.id !== wallId).concat([wallA, wallB]);
     return { plan: { ...plan, nodes: [...plan.nodes, newNode], walls }, newNodeId };
+}
+
+// ===== Cột kết cấu =====
+// Vẽ tay ba cạnh của cột thì mỗi đỉnh là một lần chạm ngón tay, và tổng tường lệch —
+// đo thực tế: tường 4000 thành 4201 sau khi khoét một hốc cột. Ở đây ô cột LUÔN sinh
+// theo đúng trục của tường đang chạm, nên vuông góc là hệ quả của cấu trúc chứ không
+// phải của độ chính xác ngón tay. Tường kề chỉ bị RÚT NGẮN, tim tường không xê dịch.
+
+export const COLUMN_DEFAULT = 220;  // mm — tiết diện cột BTCT nhà phố phổ biến nhất
+export const COLUMN_MIN = 80;
+export const COLUMN_SNAP = 50;      // mm — bước làm tròn khi kéo
+
+const snapCol = (v) => Math.max(COLUMN_MIN, Math.round(v / COLUMN_SNAP) * COLUMN_SNAP);
+
+/**
+ * Chỗ đặt cột gần `pt` nhất — ưu tiên GÓC phòng, sau đó tới thân tường.
+ *   corner: { kind:'corner', nodeId, p, u1, u2, w1, w2, len1, len2 }
+ *   wall:   { kind:'wall', wallId, t, p, u, n, len }
+ * u1/u2 chạy dọc hai tường kề, hướng RA XA góc. `n` đã lật để trỏ vào trong phòng.
+ */
+export function columnTargetAt(plan, pt, tol) {
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    const node = findNearbyNode(plan.nodes, pt, tol);
+    if (node) {
+        const around = plan.walls
+            .filter(w => w.a === node.id || w.b === node.id)
+            .map(w => {
+                const other = nodeById.get(w.a === node.id ? w.b : w.a);
+                const len = other ? dist(node, other) : 0;
+                if (!other || len < 1) return null;
+                return { wall: w, len, ux: (other.x - node.x) / len, uy: (other.y - node.y) / len };
+            })
+            .filter(Boolean);
+        // Đúng HAI tường: node chữ T/chữ thập mà xoá đi thì tường thứ ba mồ côi.
+        if (around.length === 2) {
+            const [p, q] = around;
+            // Hai tường thẳng hàng không phải góc — đó là chỗ nối, đặt cột kiểu góc ở đó vô nghĩa.
+            if (Math.abs(p.ux * q.ux + p.uy * q.uy) < 0.4) {
+                return {
+                    kind: 'corner', nodeId: node.id, p: { x: node.x, y: node.y },
+                    w1: p.wall, w2: q.wall, len1: p.len, len2: q.len,
+                    u1: { x: p.ux, y: p.uy }, u2: { x: q.ux, y: q.uy },
+                };
+            }
+        }
+    }
+
+    const hit = snapToWall(plan, pt, tol);
+    if (!hit) return null;
+    const wall = plan.walls.find(w => w.id === hit.wallId);
+    const a = nodeById.get(wall.a), b = nodeById.get(wall.b);
+    const len = dist(a, b);
+    if (len < 1) return null;
+    const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    let n = { x: -u.y, y: u.x };
+    // Lật pháp tuyến về phía CÓ PHÒNG: cột kết cấu lộ vào trong nhà là ca chiếm đa số.
+    const probe = { x: hit.x + n.x * 300, y: hit.y + n.y * 300 };
+    const inside = (plan.rooms || []).some(r => {
+        const pts = (r.nodeIds || []).map(id => nodeById.get(id)).filter(Boolean);
+        return pts.length >= 3 && pointInPolygon(probe, pts);
+    });
+    if (!inside) n = { x: -n.x, y: -n.y };
+    return { kind: 'wall', wallId: wall.id, t: hit.t, p: { x: hit.x, y: hit.y }, u, n, len };
+}
+
+/** Kích thước cột suy từ điểm đang kéo tới — đã làm tròn về bước COLUMN_SNAP. */
+export function columnSizeFromDrag(target, pt) {
+    const rx = pt.x - target.p.x, ry = pt.y - target.p.y;
+    if (target.kind === 'corner') {
+        return {
+            a: snapCol(rx * target.u1.x + ry * target.u1.y),
+            b: snapCol(rx * target.u2.x + ry * target.u2.y),
+        };
+    }
+    return {
+        // Cột giữa tường mọc đều hai bên điểm chạm → kéo một nửa, ăn cả hai.
+        a: snapCol(Math.abs(rx * target.u.x + ry * target.u.y) * 2),
+        b: snapCol(rx * target.n.x + ry * target.n.y),
+    };
+}
+
+/** 4 đỉnh ô cột để vẽ preview. */
+export function columnPolygon(target, a, b) {
+    if (target.kind === 'corner') {
+        const { p, u1, u2 } = target;
+        return [
+            { x: p.x, y: p.y },
+            { x: p.x + u1.x * a, y: p.y + u1.y * a },
+            { x: p.x + u1.x * a + u2.x * b, y: p.y + u1.y * a + u2.y * b },
+            { x: p.x + u2.x * b, y: p.y + u2.y * b },
+        ];
+    }
+    const { p, u, n } = target;
+    const h = a / 2;
+    const q1 = { x: p.x - u.x * h, y: p.y - u.y * h };
+    const q2 = { x: p.x + u.x * h, y: p.y + u.y * h };
+    return [q1, q2, { x: q2.x + n.x * b, y: q2.y + n.y * b }, { x: q1.x + n.x * b, y: q1.y + n.y * b }];
+}
+
+/** Rút ngắn tường ở đầu chạm `atNodeId` đi `cut` mm, nối vào node mới. */
+function shortenWallEnd(wall, atNodeId, newNodeId, oldLen, cut) {
+    const newLen = oldLen - cut;
+    const atA = wall.a === atNodeId;
+    const openings = (wall.openings || []).map(o => {
+        const s = o.t * oldLen;              // vị trí tuyệt đối tính từ đầu `a` cũ
+        const s2 = atA ? s - cut : s;
+        return { ...o, t: Math.max(0.02, Math.min(0.98, s2 / newLen)) };
+    });
+    return { ...wall, a: atA ? newNodeId : wall.a, b: atA ? wall.b : newNodeId, openings };
+}
+
+/**
+ * Cột ăn góc: bỏ đỉnh góc, thay bằng ba đỉnh tạo hốc chữ nhật a×b nằm gọn trong góc.
+ * a đo dọc tường w1, b đo dọc tường w2. Trả về { plan, columnId } | { plan, error }.
+ */
+export function insertCornerColumn(plan, target, a, b) {
+    const { nodeId, p, u1, u2, w1, w2, len1, len2 } = target;
+    if (a < COLUMN_MIN || b < COLUMN_MIN) return { plan, error: `Cạnh cột tối thiểu ${COLUMN_MIN}mm` };
+    if (a > len1 - COLUMN_MIN || b > len2 - COLUMN_MIN) {
+        return { plan, error: 'Cột lớn hơn tường kề — giảm kích thước lại' };
+    }
+    const colId = genId('c');
+    const n1 = { id: genId('n'), x: p.x + u1.x * a, y: p.y + u1.y * a };
+    const n2 = { id: genId('n'), x: p.x + u2.x * b, y: p.y + u2.y * b };
+    const nc = { id: genId('n'), x: p.x + u1.x * a + u2.x * b, y: p.y + u1.y * a + u2.y * b };
+    const th = w1.thickness;
+    const walls = plan.walls.map(w => {
+        if (w.id === w1.id) return shortenWallEnd(w, nodeId, n1.id, len1, a);
+        if (w.id === w2.id) return shortenWallEnd(w, nodeId, n2.id, len2, b);
+        return w;
+    }).concat([
+        { id: genId('w'), a: n1.id, b: nc.id, thickness: th, openings: [], column: colId },
+        { id: genId('w'), a: nc.id, b: n2.id, thickness: th, openings: [], column: colId },
+    ]);
+    const nodes = plan.nodes.filter(n => n.id !== nodeId).concat([n1, nc, n2]);
+    return { plan: { ...plan, nodes, walls }, columnId: colId };
+}
+
+/**
+ * Cột giữa tường: chèn bướu a (dọc tường) × b (vuông góc). Tường gốc tách thành năm đoạn.
+ * Cửa nằm lọt trong phạm vi cột bị bỏ — cột không thể đè lên ô cửa.
+ */
+export function insertWallColumn(plan, target, a, b) {
+    const { wallId, t, u, n, len } = target;
+    if (a < COLUMN_MIN || b < COLUMN_MIN) return { plan, error: `Cạnh cột tối thiểu ${COLUMN_MIN}mm` };
+    const wall = plan.walls.find(w => w.id === wallId);
+    if (!wall) return { plan, error: 'Không tìm thấy tường' };
+    const nodeById = new Map(plan.nodes.map(x => [x.id, x]));
+    const A = nodeById.get(wall.a);
+    const s = t * len, s1 = s - a / 2, s2 = s + a / 2;
+    if (s1 < COLUMN_MIN || s2 > len - COLUMN_MIN) {
+        return { plan, error: 'Cột chạm vào góc — kéo vào giữa tường hoặc thu bề rộng' };
+    }
+    const colId = genId('c');
+    const at = (d) => ({ x: A.x + u.x * d, y: A.y + u.y * d });
+    const m1 = { id: genId('n'), ...at(s1) };
+    const m2 = { id: genId('n'), ...at(s2) };
+    const c1 = { id: genId('n'), x: m1.x + n.x * b, y: m1.y + n.y * b };
+    const c2 = { id: genId('n'), x: m2.x + n.x * b, y: m2.y + n.y * b };
+
+    const keepA = [], keepB = [];
+    let dropped = 0;
+    for (const o of wall.openings || []) {
+        const os = o.t * len;
+        if (os < s1) keepA.push({ ...o, t: Math.min(0.98, os / s1) });
+        else if (os > s2) keepB.push({ ...o, t: Math.max(0.02, (os - s2) / (len - s2)) });
+        else dropped++;
+    }
+
+    const seg = (na, nb, openings, col) => ({
+        id: genId('w'), a: na, b: nb, thickness: wall.thickness, elev: wall.elev,
+        openings: openings || [], ...(col ? { column: colId } : {}),
+    });
+    const walls = plan.walls.filter(w => w.id !== wallId).concat([
+        seg(wall.a, m1.id, keepA),
+        seg(m1.id, c1.id, [], true),
+        seg(c1.id, c2.id, [], true),
+        seg(c2.id, m2.id, [], true),
+        seg(m2.id, wall.b, keepB),
+    ]);
+    return {
+        plan: { ...plan, nodes: [...plan.nodes, m1, c1, c2, m2], walls },
+        columnId: colId, droppedOpenings: dropped,
+    };
+}
+
+/**
+ * Đọc lại hình dạng cột TỪ CHÍNH các node của nó, không giữ bản ghi song song.
+ * Bản ghi song song sẽ lệch ngay khi ai đó kéo tay một đỉnh; suy ngược thì luôn khớp
+ * với thứ đang hiển thị. Trả về { kind, a, b, ... } hoặc null.
+ */
+export function columnParts(plan, columnId) {
+    const cw = plan.walls.filter(w => w.column === columnId);
+    if (!cw.length) return null;
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    const deg = new Map();
+    for (const w of cw) {
+        deg.set(w.a, (deg.get(w.a) || 0) + 1);
+        deg.set(w.b, (deg.get(w.b) || 0) + 1);
+    }
+    const ends = [...deg].filter(([, d]) => d === 1).map(([id]) => id);
+    if (ends.length !== 2) return null;
+
+    if (cw.length === 2) {
+        // Góc: hai đoạn n1–nc, nc–n2. Đỉnh góc cũ suy ra bằng n1 + n2 − nc.
+        const ncId = [...deg].find(([, d]) => d === 2)?.[0];
+        const n1 = nodeById.get(ends[0]), n2 = nodeById.get(ends[1]), nc = nodeById.get(ncId);
+        if (!n1 || !n2 || !nc) return null;
+        const p = { x: n1.x + n2.x - nc.x, y: n1.y + n2.y - nc.y };
+        const a = dist(p, n1), b = dist(p, n2);
+        if (a < 1 || b < 1) return null;
+        return {
+            kind: 'corner', a, b, p, ids: { n1: n1.id, nc: nc.id, n2: n2.id },
+            u1: { x: (n1.x - p.x) / a, y: (n1.y - p.y) / a },
+            u2: { x: (n2.x - p.x) / b, y: (n2.y - p.y) / b },
+        };
+    }
+    if (cw.length === 3) {
+        // Giữa tường: chuỗi m1–c1–c2–m2. m1/m2 là hai đầu bậc 1.
+        const m1 = nodeById.get(ends[0]), m2 = nodeById.get(ends[1]);
+        const c1Id = cw.find(w => w.a === m1.id || w.b === m1.id);
+        const c2Id = cw.find(w => w.a === m2.id || w.b === m2.id);
+        const c1 = nodeById.get(c1Id.a === m1.id ? c1Id.b : c1Id.a);
+        const c2 = nodeById.get(c2Id.a === m2.id ? c2Id.b : c2Id.a);
+        if (!c1 || !c2) return null;
+        const a = dist(m1, m2), b = dist(m1, c1);
+        if (a < 1 || b < 1) return null;
+        return {
+            kind: 'wall', a, b, ids: { m1: m1.id, c1: c1.id, c2: c2.id, m2: m2.id },
+            mid: { x: (m1.x + m2.x) / 2, y: (m1.y + m2.y) / 2 },
+            u: { x: (m2.x - m1.x) / a, y: (m2.y - m1.y) / a },
+            n: { x: (c1.x - m1.x) / b, y: (c1.y - m1.y) / b },
+        };
+    }
+    return null;
+}
+
+/**
+ * Đổi kích thước cột đã đặt — chỉ dời node, không đụng tường, nên góc vẫn vuông tuyệt đối
+ * và các số đo đã nhập tay ở chỗ khác không bị động vào.
+ */
+export function resizeColumn(plan, columnId, a, b) {
+    const c = columnParts(plan, columnId);
+    if (!c) return { plan, error: 'Không đọc được hình dạng cột' };
+    if (a < COLUMN_MIN || b < COLUMN_MIN) return { plan, error: `Cạnh cột tối thiểu ${COLUMN_MIN}mm` };
+    const move = new Map();
+    if (c.kind === 'corner') {
+        const { p, u1, u2, ids } = c;
+        move.set(ids.n1, { x: p.x + u1.x * a, y: p.y + u1.y * a });
+        move.set(ids.n2, { x: p.x + u2.x * b, y: p.y + u2.y * b });
+        move.set(ids.nc, { x: p.x + u1.x * a + u2.x * b, y: p.y + u1.y * a + u2.y * b });
+    } else {
+        const { mid, u, n, ids } = c;
+        const h = a / 2;
+        const m1 = { x: mid.x - u.x * h, y: mid.y - u.y * h };
+        const m2 = { x: mid.x + u.x * h, y: mid.y + u.y * h };
+        move.set(ids.m1, m1);
+        move.set(ids.m2, m2);
+        move.set(ids.c1, { x: m1.x + n.x * b, y: m1.y + n.y * b });
+        move.set(ids.c2, { x: m2.x + n.x * b, y: m2.y + n.y * b });
+    }
+    const nodes = plan.nodes.map(nd => move.has(nd.id) ? { ...nd, ...move.get(nd.id) } : nd);
+    return { plan: { ...plan, nodes }, error: null };
+}
+
+/**
+ * Gỡ cột: trả tường về nguyên trạng trước khi khoét. Có hàm này thì cột mới là thứ
+ * sửa được — không có, đặt nhầm mà lỡ tay đóng app là mắc kẹt vĩnh viễn với hốc sai.
+ */
+export function removeColumn(plan, columnId) {
+    const c = columnParts(plan, columnId);
+    if (!c) return { plan, error: 'Không đọc được hình dạng cột' };
+    const colIds = new Set(plan.walls.filter(w => w.column === columnId).map(w => w.id));
+    const rest = plan.walls.filter(w => !colIds.has(w.id));
+    const nb = new Map(plan.nodes.map(n => [n.id, n]));
+
+    if (c.kind === 'corner') {
+        const apex = { id: genId('n'), x: c.p.x, y: c.p.y };
+        // cut âm = kéo dài lại đúng phần đã cắt, cửa dịch theo đúng khoảng đó
+        const walls = rest.map(w => {
+            if (w.a === c.ids.n1 || w.b === c.ids.n1) {
+                const other = nb.get(w.a === c.ids.n1 ? w.b : w.a);
+                return shortenWallEnd(w, c.ids.n1, apex.id, dist(nb.get(c.ids.n1), other), -c.a);
+            }
+            if (w.a === c.ids.n2 || w.b === c.ids.n2) {
+                const other = nb.get(w.a === c.ids.n2 ? w.b : w.a);
+                return shortenWallEnd(w, c.ids.n2, apex.id, dist(nb.get(c.ids.n2), other), -c.b);
+            }
+            return w;
+        });
+        const drop = new Set([c.ids.n1, c.ids.nc, c.ids.n2]);
+        return {
+            plan: { ...plan, nodes: plan.nodes.filter(n => !drop.has(n.id)).concat([apex]), walls },
+            error: null,
+        };
+    }
+
+    // Giữa tường: hàn hai nửa còn lại thành một tường liền.
+    const segA = rest.find(w => w.a === c.ids.m1 || w.b === c.ids.m1);
+    const segB = rest.find(w => w.a === c.ids.m2 || w.b === c.ids.m2);
+    if (!segA || !segB) return { plan, error: 'Cột không còn nối vào tường nào' };
+    const endA = segA.a === c.ids.m1 ? segA.b : segA.a;
+    const endB = segB.a === c.ids.m2 ? segB.b : segB.a;
+    const pA = nb.get(endA), pB = nb.get(endB);
+    const lenA = dist(pA, nb.get(c.ids.m1));
+    const lenB = dist(nb.get(c.ids.m2), pB);
+    const total = lenA + c.a + lenB;
+    const ops = [];
+    for (const o of segA.openings || []) {
+        const s = segA.a === endA ? o.t * lenA : (1 - o.t) * lenA;   // khoảng cách từ endA
+        ops.push({ ...o, t: s / total });
+    }
+    for (const o of segB.openings || []) {
+        const s = segB.a === c.ids.m2 ? o.t * lenB : (1 - o.t) * lenB; // khoảng cách từ m2
+        ops.push({ ...o, t: (lenA + c.a + s) / total });
+    }
+    const merged = {
+        id: genId('w'), a: endA, b: endB,
+        thickness: segA.thickness, elev: segA.elev || segB.elev, openings: ops,
+    };
+    const drop = new Set([c.ids.m1, c.ids.c1, c.ids.c2, c.ids.m2]);
+    return {
+        plan: {
+            ...plan,
+            nodes: plan.nodes.filter(n => !drop.has(n.id)),
+            walls: rest.filter(w => w.id !== segA.id && w.id !== segB.id).concat([merged]),
+        },
+        error: null,
+    };
+}
+
+/** Tất cả cột đang có trong plan, kèm kích thước đọc ngược từ node. */
+export function listColumns(plan) {
+    const ids = [...new Set(plan.walls.filter(w => w.column).map(w => w.column))];
+    return ids.map(id => ({ id, ...columnParts(plan, id) })).filter(c => c.kind);
 }
 
 // Signed area (shoelace)

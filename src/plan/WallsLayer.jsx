@@ -145,6 +145,9 @@ const WallsLayer = ({
 
             {/* dimension labels: nhãn tổng tường + nhãn từng đoạn giữa các cửa */}
             {plan.walls.map(w => {
+                // Cạnh cột không có nhãn riêng: ba nhãn 220 chen nhau thì rối hình, mà sửa
+                // lẻ một cạnh lại làm cột hết vuông. Kích thước cột nằm ở chip khi chọn cột.
+                if (w.column) return null;
                 const a = nodeById.get(w.a);
                 const b = nodeById.get(w.b);
                 if (!a || !b) return null;

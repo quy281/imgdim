@@ -1,0 +1,257 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>selftest — cột</title>
+<pre id="out">running…</pre>
+<script type="module">
+import {
+    columnTargetAt, columnSizeFromDrag, columnPolygon, insertCornerColumn,
+    insertWallColumn, columnParts, resizeColumn, removeColumn, listColumns,
+    dist, shoelaceArea, COLUMN_MIN,
+} from '/src/lib/geometry.js';
+import { recomputeRooms } from '/src/lib/planModel.js';
+
+const lines = [];
+let pass = 0, fail = 0;
+const ok = (name, cond) => {
+    cond ? pass++ : fail++;
+    lines.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
+};
+const eq = (name, got, want, tol = 0.001) => {
+    const good = Math.abs(got - want) <= tol;
+    good ? pass++ : fail++;
+    lines.push(`${good ? 'PASS' : 'FAIL'}  ${name}: got ${got}, want ${want}`);
+};
+const head = (s) => lines.push(`\n== ${s} ==`);
+
+// Phòng 4000 x 4500 — đúng mặt bằng người dùng đang khảo sát
+const mk = () => recomputeRooms({
+    nodes: [
+        { id: 'A', x: 0, y: 0 }, { id: 'B', x: 4000, y: 0 },
+        { id: 'C', x: 4000, y: 4500 }, { id: 'D', x: 0, y: 4500 },
+    ],
+    walls: [
+        { id: 'w1', a: 'A', b: 'B', thickness: 110, openings: [] },
+        { id: 'w2', a: 'B', b: 'C', thickness: 110, openings: [] },
+        { id: 'w3', a: 'C', b: 'D', thickness: 110, openings: [] },
+        { id: 'w4', a: 'D', b: 'A', thickness: 110, openings: [] },
+    ],
+    rooms: [],
+});
+const nmap = (p) => new Map(p.nodes.map(x => [x.id, x]));
+const wallLen = (p, id) => {
+    const w = p.walls.find(x => x.id === id), n = nmap(p);
+    return dist(n.get(w.a), n.get(w.b));
+};
+const roomPts = (p) => {
+    const n = nmap(p);
+    return p.rooms[0].nodeIds.map(id => n.get(id));
+};
+const area = (p) => Math.abs(shoelaceArea(roomPts(p)));
+
+head('1. Nhận diện chỗ đặt cột');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    ok('chạm đỉnh C → góc', t?.kind === 'corner' && t.nodeId === 'C');
+    eq('u1 ⟂ u2', t.u1.x * t.u2.x + t.u1.y * t.u2.y, 0, 1e-9);
+    eq('u1 là vector đơn vị', Math.hypot(t.u1.x, t.u1.y), 1, 1e-9);
+
+    const tw = columnTargetAt(p, { x: 2000, y: 30 }, 200);
+    ok('chạm giữa tường trên → wall', tw?.kind === 'wall' && tw.wallId === 'w1');
+    ok('pháp tuyến lật vào trong phòng', tw.n.y > 0);
+    ok('giữa phòng → không có chỗ đặt', columnTargetAt(p, { x: 2000, y: 2200 }, 200) === null);
+}
+
+head('2. Cột góc — tổng tường KHÔNG đổi (lỗi 4000 hoá 4201)');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    const r = insertCornerColumn(p, t, 600, 900);
+    ok('chèn được', !r.error);
+    const p2 = recomputeRooms(r.plan);
+    ok('đỉnh góc cũ đã bỏ', !p2.nodes.some(n => n.id === 'C'));
+    ok('6 đỉnh', p2.nodes.length === 6);
+    ok('6 tường', p2.walls.length === 6);
+
+    eq('tường đối diện giữ nguyên 4000', wallLen(p2, 'w1'), 4000);
+    eq('w2 rút đúng 600', wallLen(p2, 'w2'), 4500 - 600);
+    eq('w3 rút đúng 900', wallLen(p2, 'w3'), 4000 - 900);
+
+    const nb = nmap(p2);
+    const cw = p2.walls.filter(x => x.column);
+    ok('2 cạnh hốc mang tag cột', cw.length === 2);
+    const [va, vb] = cw.map(w => {
+        const a = nb.get(w.a), b = nb.get(w.b);
+        return { x: b.x - a.x, y: b.y - a.y };
+    });
+    eq('hai cạnh hốc vuông góc TUYỆT ĐỐI', va.x * vb.x + va.y * vb.y, 0, 1e-6);
+    eq('diện tích trừ đúng phần cột', area(p2), 4000 * 4500 - 600 * 900, 1);
+}
+
+head('3. Cột góc — cửa trên tường kề dời theo');
+{
+    const p = mk();
+    p.walls.find(w => w.id === 'w2').openings = [{ id: 'o1', type: 'door', t: 0.5, width: 900 }];
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    const r = insertCornerColumn(p, t, 600, 900);
+    const w2 = r.plan.walls.find(w => w.id === 'w2');
+    eq('cửa giữ nguyên khoảng cách tuyệt đối tới đầu B', w2.openings[0].t, 2250 / 3900, 1e-6);
+}
+
+head('4. Cột giữa tường');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 2000, y: 30 }, 200);
+    const r = insertWallColumn(p, t, 400, 300);
+    ok('chèn được', !r.error);
+    const p2 = recomputeRooms(r.plan);
+    ok('4-1+5 = 8 tường', p2.walls.length === 8);
+    ok('3 cạnh bướu mang tag cột', p2.walls.filter(w => w.column).length === 3);
+
+    const nb = nmap(p2);
+    for (const w of p2.walls.filter(w => w.column)) {
+        const L = dist(nb.get(w.a), nb.get(w.b));
+        ok(`cạnh cột 400 hoặc 300 (got ${Math.round(L)})`,
+            Math.abs(L - 400) < 1e-6 || Math.abs(L - 300) < 1e-6);
+    }
+    eq('diện tích trừ đúng bướu', area(p2), 4000 * 4500 - 400 * 300, 1);
+
+    const onTop = p2.walls.filter(w => Math.abs(nb.get(w.a).y) < 1 && Math.abs(nb.get(w.b).y) < 1);
+    const sum = onTop.reduce((s, w) => s + dist(nb.get(w.a), nb.get(w.b)), 0);
+    eq('phần tường còn lại trên trục cũ = 4000 - 400', sum, 3600);
+}
+
+head('5. Cửa bị cột đè thì bỏ, cửa ngoài thì giữ nguyên chỗ');
+{
+    const p = mk();
+    p.walls.find(w => w.id === 'w1').openings = [
+        { id: 'oL', type: 'window', t: 0.1, width: 600 },   // 400mm
+        { id: 'oM', type: 'door', t: 0.5, width: 900 },     // 2000mm — chỗ cột
+        { id: 'oR', type: 'window', t: 0.9, width: 600 },   // 3600mm
+    ];
+    const t = columnTargetAt(p, { x: 2000, y: 30 }, 200);
+    const r = insertWallColumn(p, t, 400, 300);
+    ok('bỏ đúng 1 cửa', r.droppedOpenings === 1);
+    const kept = r.plan.walls.filter(w => !w.column).flatMap(w => w.openings || []).map(o => o.id);
+    ok('giữ oL/oR, bỏ oM', kept.includes('oL') && kept.includes('oR') && !kept.includes('oM'));
+    const nb = nmap(r.plan);
+    const segL = r.plan.walls.find(w => (w.openings || []).some(o => o.id === 'oL'));
+    const oL = segL.openings.find(o => o.id === 'oL');
+    eq('oL giữ nguyên 400mm', oL.t * dist(nb.get(segL.a), nb.get(segL.b)), 400);
+}
+
+head('6. Đọc ngược hình dạng + đổi kích thước (cột góc)');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    const r = insertCornerColumn(p, t, 600, 900);
+    const parts = columnParts(r.plan, r.columnId);
+    ok('đọc ngược ra corner', parts?.kind === 'corner');
+    eq('suy lại a', parts.a, 600);
+    eq('suy lại b', parts.b, 900);
+    eq('suy lại đỉnh góc x', parts.p.x, 4000);
+    eq('suy lại đỉnh góc y', parts.p.y, 4500);
+
+    const rz = resizeColumn(r.plan, r.columnId, 220, 220);
+    ok('resize ok', !rz.error);
+    const p3 = recomputeRooms(rz.plan);
+    const again = columnParts(p3, r.columnId);
+    eq('sau resize a', again.a, 220);
+    eq('sau resize b', again.b, 220);
+    eq('diện tích cập nhật theo', area(p3), 4000 * 4500 - 220 * 220, 1);
+    ok('resize KHÔNG đẻ thêm tường', p3.walls.length === 6);
+
+    const nb = nmap(p3);
+    const [va, vb] = p3.walls.filter(w => w.column).map(w => {
+        const a = nb.get(w.a), b = nb.get(w.b);
+        return { x: b.x - a.x, y: b.y - a.y };
+    });
+    eq('vẫn vuông góc sau resize', va.x * vb.x + va.y * vb.y, 0, 1e-6);
+}
+
+head('7. Đổi kích thước cột giữa tường');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 2000, y: 30 }, 200);
+    const r = insertWallColumn(p, t, 400, 300);
+    const parts = columnParts(r.plan, r.columnId);
+    ok('đọc ngược ra wall', parts?.kind === 'wall');
+    eq('suy lại a', parts.a, 400);
+    eq('suy lại b', parts.b, 300);
+    const p3 = recomputeRooms(resizeColumn(r.plan, r.columnId, 220, 220).plan);
+    eq('diện tích sau resize', area(p3), 4000 * 4500 - 220 * 220, 1);
+    eq('tâm cột không xê dịch', columnParts(p3, r.columnId).mid.x, 2000);
+}
+
+head('8. Chặn trường hợp vô lý');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    ok('chặn cạnh nhỏ hơn tối thiểu', !!insertCornerColumn(p, t, 50, 220).error);
+    ok('chặn cột to hơn tường kề', !!insertCornerColumn(p, t, 5000, 220).error);
+    const tw = columnTargetAt(p, { x: 2000, y: 30 }, 200);
+    ok('chặn bướu chạm hai góc', !!insertWallColumn(p, tw, 3990, 300).error);
+}
+
+head('9. Kéo → kích thước, làm tròn bước 50');
+{
+    const p = mk();
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    const s = columnSizeFromDrag(t, { x: 4000 - 237, y: 4500 - 612 });
+    ok('luôn là bội của 50', s.a % 50 === 0 && s.b % 50 === 0);
+    eq('612 → 600', s.a, 600);
+    eq('237 → 250', s.b, 250);
+    ok('kéo 0 → kẹp về tối thiểu', columnSizeFromDrag(t, { x: 4000, y: 4500 }).a === COLUMN_MIN);
+    const poly = columnPolygon(t, 600, 900);
+    ok('preview 4 đỉnh', poly.length === 4);
+    eq('preview đúng diện tích', Math.abs(shoelaceArea(poly)), 600 * 900, 1);
+}
+
+head('10. Gỡ cột góc — trả tường về nguyên trạng');
+{
+    const p = mk();
+    p.walls.find(w => w.id === 'w2').openings = [{ id: 'o1', type: 'door', t: 0.5, width: 900 }];
+    const t = columnTargetAt(p, { x: 4000, y: 4500 }, 200);
+    const r = insertCornerColumn(p, t, 600, 900);
+    ok('listColumns thấy 1 cột', listColumns(r.plan).length === 1);
+    const back = removeColumn(r.plan, r.columnId);
+    ok('gỡ được', !back.error);
+    const p2 = recomputeRooms(back.plan);
+    ok('về lại 4 tường', p2.walls.length === 4);
+    ok('về lại 4 đỉnh', p2.nodes.length === 4);
+    eq('diện tích về nguyên 18 m²', area(p2), 4000 * 4500, 1);
+    eq('cửa về đúng chỗ cũ 2250mm', p2.walls.find(w => w.id === 'w2').openings[0].t * 4500, 2250);
+    ok('không còn cột nào', listColumns(p2).length === 0);
+}
+
+head('11. Gỡ cột giữa tường — hàn hai nửa thành một');
+{
+    const p = mk();
+    p.walls.find(w => w.id === 'w1').openings = [
+        { id: 'oL', type: 'window', t: 0.1, width: 600 },
+        { id: 'oR', type: 'window', t: 0.9, width: 600 },
+    ];
+    const t = columnTargetAt(p, { x: 2000, y: 30 }, 200);
+    const r = insertWallColumn(p, t, 400, 300);
+    const back = removeColumn(r.plan, r.columnId);
+    ok('gỡ được', !back.error);
+    const p2 = recomputeRooms(back.plan);
+    ok('hàn lại còn 4 tường', p2.walls.length === 4);
+    ok('còn 4 đỉnh', p2.nodes.length === 4);
+    eq('diện tích về nguyên', area(p2), 4000 * 4500, 1);
+
+    const nb = nmap(p2);
+    const top = p2.walls.find(w => (w.openings || []).length === 2);
+    ok('hai cửa về chung một tường', !!top);
+    const L = dist(nb.get(top.a), nb.get(top.b));
+    eq('tường hàn lại dài đúng 4000', L, 4000);
+    const abs = top.openings
+        .map(o => (nb.get(top.a).x < nb.get(top.b).x ? o.t : 1 - o.t) * L)
+        .sort((x, y) => x - y);
+    eq('oL về đúng 400mm', abs[0], 400, 0.01);
+    eq('oR về đúng 3600mm', abs[1], 3600, 0.01);
+}
+
+lines.unshift(`${fail ? 'FAIL' : 'OK'} — ${pass} pass, ${fail} fail`);
+document.getElementById('out').textContent = lines.join('\n');
+</script>

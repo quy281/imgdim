@@ -488,6 +488,7 @@ input, textarea {
 .mode-banner.door { background: #fce7f3; color: #be185d; }
 .mode-banner.window { background: var(--ok-soft); color: var(--ok); }
 .mode-banner.note { background: var(--blue-soft); color: var(--blue); }
+.mode-banner.column { background: #f3e8ff; color: #7c3aed; }
 .mode-banner.measure { background: var(--warn-soft); color: var(--warn); }
 
 .mode-banner .spacer { flex: 1; }
