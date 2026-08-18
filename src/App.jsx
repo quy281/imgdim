@@ -343,6 +343,12 @@ export default function App() {
             } else if (!silent) {
                 toast('Dữ liệu đã mới nhất', 'ok');
             }
+            // Đẩy lên thành công mà đồng nghiệp vẫn không thấy là kiểu lỗi tệ nhất: không
+            // có thông báo nào sai, chỉ có người ngồi chờ dữ liệu không bao giờ tới.
+            if (res.orphanTeam?.length) {
+                toast(`${res.orphanTeam.length} dự án đã lên cloud nhưng CHƯA gắn team — `
+                    + 'đồng nghiệp chưa thấy được. Vào Quản lý team & người dùng để gắn tài khoản vào team.', 'err');
+            }
             if (skippedOpen && !silent) toast(`${skippedOpen} file đang sửa — giữ bản trên máy`, 'ok');
             if (res.legacy && !silent) toast('Đang chạy chế độ tương thích — dữ liệu vẫn đúng, chỉ chậm hơn', 'ok');
         } catch (err) {

@@ -82,7 +82,31 @@ try {
     eq('thiếu loginAt → không tự đá ra', pb.sessionExpiresAt(), null);
     ok('thiếu loginAt → chưa hết hạn', !pb.sessionExpired());
 
-    head('6. Danh sách cấp sẵn');
+    head('6. Chọn team để gán dự án');
+    const T = (name, slug, mine) => ({ id: 'id-' + slug, name, slug, mine });
+    const withTeams = (teams) => setAuth({ token: 't', model: { id: 'u1' }, loginAt: Date.now(), teams });
+
+    withTeams([T('Đội 1', 'oi-1-3qua', false), T('MKG', 'mkg', true)]);
+    eq('bỏ qua team mình KHÔNG ở trong, dù nó đứng trước', pb.myTeam()?.slug, 'mkg');
+
+    withTeams([T('Academy', 'academy', true), T('MKG', 'mkg', true)]);
+    eq('nhiều team đều của mình → ưu tiên team gốc mkg', pb.myTeam()?.slug, 'mkg');
+
+    withTeams([T('Academy', 'academy', true), T('Labs', 'labs', true)]);
+    eq('không có mkg → lấy team đầu của mình', pb.myTeam()?.slug, 'academy');
+
+    // Superuser thấy mọi team và có thể không là thành viên của team nào.
+    withTeams([T('Đội 1', 'oi-1', false), T('Đội 2', 'oi-2', false)]);
+    eq('không thuộc team nào → vẫn trả về một team, không phải null', pb.myTeam()?.slug, 'oi-1');
+
+    withTeams([]);
+    eq('chưa có team nào → null', pb.myTeam(), null);
+
+    // Dữ liệu cache từ bản trước chưa có cờ `mine`.
+    withTeams([{ id: 'a', name: 'MKG', slug: 'mkg' }, { id: 'b', name: 'Đội 1', slug: 'oi-1' }]);
+    eq('cache cũ thiếu cờ mine → vẫn ưu tiên mkg', pb.myTeam()?.slug, 'mkg');
+
+    head('7. Danh sách cấp sẵn');
     eq('5 tài khoản', pb.SEED_USERS.length, 5);
     eq('4 KTS dùng PIN giao chung', pb.SEED_USERS.filter(u => u.pin === pb.SEED_PIN_KTS).length, 4);
     eq('đúng 1 quản trị', pb.SEED_USERS.filter(u => u.role === 'admin').length, 1);

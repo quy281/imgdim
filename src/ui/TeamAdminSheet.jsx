@@ -141,6 +141,11 @@ export default function TeamAdminSheet({ open, onClose }) {
         }
     };
 
+    // Đếm lại thành viên tại chỗ thay vì gọi load() — load() tải lại TOÀN BỘ danh sách
+    // team chỉ để sửa một con số, và làm cả màn hình nháy.
+    const bumpCount = (delta) => setTeams(ts => (ts || []).map(t =>
+        t.id === selected?.id ? { ...t, memberCount: Math.max(0, (t.memberCount || 0) + delta) } : t));
+
     const doAddMember = async () => {
         const email = (addForm?.email || '').trim();
         if (!email.includes('@')) { toast('Nhập email hợp lệ', 'err'); return; }
@@ -150,7 +155,14 @@ export default function TeamAdminSheet({ open, onClose }) {
                 name: addForm.name, password: addForm.password,
             });
             setAddForm(null);
-            await Promise.all([openTeam(selected), load()]);
+            // Gắn thẳng vào danh sách đang hiện. Trước đây chỗ này gọi openTeam() + load()
+            // = 3 lượt mạng nữa, danh sách xoá trắng rồi vẽ lại — chờ lâu và giật.
+            setMembers(ms => {
+                const cur = ms || [];
+                if (cur.some(m => m.id === res.userId)) return cur;
+                return [...cur, { id: res.userId, email: res.email, name: (addForm.name || '').trim() || res.email }];
+            });
+            if (res.created) bumpCount(1);
             if (res.created && res.password) setRevealed({ email: res.email, password: res.password });
             else toast('Đã thêm vào team', 'ok');
         } catch (err) {
@@ -161,15 +173,18 @@ export default function TeamAdminSheet({ open, onClose }) {
     };
 
     const doRemove = async (m) => {
-        setBusy(true);
+        // Bỏ khỏi danh sách NGAY, gọi server sau. Xoá là thao tác người dùng đã quyết —
+        // bắt họ nhìn spinner vài giây rồi mới thấy dòng biến mất là vô nghĩa. Hỏng thì
+        // trả lại đúng chỗ cũ và báo.
+        const prev = members || [];
+        setMembers(prev.filter(x => x.id !== m.id));
+        bumpCount(-1);
         try {
             await pb.removeTeamMember(selected.id, m.id);
-            await Promise.all([openTeam(selected), load()]);
-            toast('Đã xóa khỏi team', 'ok');
         } catch (err) {
+            setMembers(prev);
+            bumpCount(1);
             toast('Không xóa được: ' + err.message, 'err');
-        } finally {
-            setBusy(false);
         }
     };
 
@@ -419,7 +434,7 @@ export default function TeamAdminSheet({ open, onClose }) {
                                     onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} />
                             </div>
                             <div className="field">
-                                <label>Mật khẩu (bỏ trống để tự sinh — tối thiểu {pb.PASSWORD_MIN} ký tự)</label>
+                                <label>Mã PIN {pb.PIN_MIN}–{pb.PIN_MAX} số (bỏ trống để tự sinh mật khẩu)</label>
                                 <input type="text" value={addForm.password} placeholder="Tự sinh ngẫu nhiên"
                                     onChange={e => setAddForm(f => ({ ...f, password: e.target.value }))}
                                     onKeyDown={e => { if (e.key === 'Enter') doAddMember(); }} />

@@ -58,7 +58,16 @@ export function ownerName() { return getAuth()?.identityName || myName(); }
 /** Tất cả team mà danh tính hiện tại thuộc về (superuser: toàn bộ team, vì bỏ qua rule). */
 export function myTeams() { return getAuth()?.teams || (getAuth()?.team ? [getAuth().team] : []); }
 /** Team "chính" — dùng làm mặc định khi dự án đổi sang phạm vi team mà chưa chọn team cụ thể. */
-export function myTeam() { return myTeams()[0] || null; }
+export function myTeam() {
+    const teams = myTeams();
+    if (!teams.length) return null;
+    // KHÔNG lấy bừa team đầu danh sách. Superuser thấy MỌI team, kể cả team họ không
+    // thuộc về — gán dự án vào team đó thì đồng nghiệp mở app lên thấy trống trơn mà
+    // không có lỗi nào báo. Ưu tiên team mình thật sự là thành viên, rồi tới team gốc.
+    const mine = teams.filter(t => t.mine);
+    const pool = mine.length ? mine : teams;
+    return pool.find(t => t.slug === TEAM_SLUG) || pool[0];
+}
 
 function saveAuth(patch) {
     const cur = getAuth() || {};
@@ -265,8 +274,14 @@ async function resolveIdentityAndTeams(email, superuser) {
     let teams = myTeams();
     try {
         const res = await api(`collections/${TEAMS}/records?perPage=200&sort=name`);
-        teams = (res.items || []).map(t => ({ id: t.id, name: t.name, slug: t.slug }));
-        saveAuth({ teams, team: teams[0] || null });
+        // `mine` là thứ myTeam() dựa vào để không gán dự án vào team mình không ở trong.
+        const uid = getAuth()?.identityId || getAuth()?.model?.id || null;
+        teams = (res.items || []).map(t => ({
+            id: t.id, name: t.name, slug: t.slug,
+            mine: !!uid && (t.members || []).includes(uid),
+        }));
+        saveAuth({ teams });
+        saveAuth({ team: myTeam() });   // sau khi teams đã lưu, myTeam() mới chọn đúng
     } catch { /* chưa dựng collection teams, hoặc lỗi mạng — giữ cache cũ */ }
     const identityId = getAuth()?.identityId;
     if (superuser && identityId) {
@@ -619,7 +634,17 @@ export async function fullSync(local, onProgress) {
         remoteByItem.get(r.item_id).push(r);
     }
 
+    // Chưa biết team thì nạp lại NGAY, trước khi tính payload. Đây là cái bẫy đã làm
+    // đồng nghiệp không thấy dữ liệu: máy đăng nhập lúc collection `teams` chưa tồn tại
+    // sẽ đẩy mọi dự án lên với team rỗng, rule đọc theo team không khớp, và không có
+    // lỗi nào hiện ra vì bản thân việc đẩy vẫn thành công.
+    if (!myTeam()) await refreshTeam().catch(() => {});
     const defaultTeamId = myTeam()?.id || null;
+    // Vẫn không có team sau khi nạp lại → những dự án này lên cloud nhưng KHÔNG ai
+    // ngoài chủ sở hữu đọc được. Phải báo, không được im lặng.
+    const orphanTeam = defaultTeamId ? [] : local.projects
+        .filter(pr => (pr.scope || SCOPE_DEFAULT) === 'team' && !pr.teamId)
+        .map(pr => pr.name || String(pr.id));
     const scopeOfProject = new Map(local.projects.map(pr => [String(pr.id), pr.scope || SCOPE_DEFAULT]));
     // Team CỤ THỂ của từng dự án — dự án cũ chưa từng chọn team thì dùng team chính làm
     // mặc định, giữ nguyên hành vi một-team hiện tại.
@@ -808,6 +833,7 @@ export async function fullSync(local, onProgress) {
         pulledProjects, pulledDocs, deletedProjects, deletedDocs,
         pushed, migrated, deleted, failedIds, pullFailed, clearedTombstones,
         scopeSynced: [...scopeSynced],
+        orphanTeam,
         legacy,
     };
 }
@@ -921,9 +947,12 @@ export async function addTeamMember(teamId, email, opts = {}) {
     requireAdmin();
     const clean = (email || '').trim().toLowerCase();
     if (!clean.includes('@')) throw new PbError('Email không hợp lệ', 400);
-    const password = (opts.password || '').trim() || randomPassword(12);
+    // Admin gõ 4 số thì phải hiểu là PIN, y như màn đăng nhập — nếu không, tài khoản tạo
+    // ra có mật khẩu thô "1111" mà PocketBase từ chối, hoặc "11111111" lệch cơ chế PIN.
+    const raw = (opts.password || '').trim();
+    const password = raw ? (isPin(raw) ? pinToPassword(raw) : raw) : randomPassword(12);
     if (password.length < PASSWORD_MIN) {
-        throw new PbError(`Mật khẩu phải từ ${PASSWORD_MIN} ký tự — PocketBase từ chối mật khẩu ngắn hơn`, 400);
+        throw new PbError(`PIN phải từ ${PIN_MIN} chữ số, hoặc mật khẩu từ ${PASSWORD_MIN} ký tự`, 400);
     }
     const found = await api(`collections/users/records?perPage=1&${q(`email='${esc(clean)}'`)}`);
     let user, created = false;
@@ -949,7 +978,8 @@ export async function addTeamMember(teamId, email, opts = {}) {
             body: JSON.stringify({ members: [...(team.members || []), user.id] }),
         });
     }
-    return { userId: user.id, email: user.email, created, password: created ? password : null };
+    // Trả về thứ admin sẽ ĐỌC CHO người dùng nghe: PIN gốc, không phải chuỗi đã nở.
+    return { userId: user.id, email: user.email, created, password: created ? (raw || password) : null };
 }
 
 export async function removeTeamMember(teamId, userId) {
