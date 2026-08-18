@@ -1047,7 +1047,15 @@ const F = {
         ({ name, type: 'relation', collectionId, maxSelect, minSelect: 0, cascadeDelete, required }),
 };
 
-const READ_RULE = 'owner = @request.auth.id || (scope = "team" && team.members.id ?= @request.auth.id)';
+// `team != ""` KHÔNG phải thừa — nó là chỗ bịt lỗ nghiêm trọng nhất.
+//
+// PocketBase dịch `team.members.id ?= X` thành LEFT JOIN. Bản ghi có `team` RỖNG thì
+// không có hàng nào để so, phép so ra NULL, và điều kiện lọt — nghĩa là MỌI tài khoản
+// đăng nhập đều đọc được nó. Đã chứng thực trên chính db.mkg.vn: team `Đội 1` lúc còn
+// 0 thành viên hiện ra với cả người CHƯA đăng nhập, và hết hiện ngay khi có thành viên.
+// Hệ quả trước khi sửa: dự án đẩy lên ở chế độ tương thích (team rỗng) là cả công ty
+// đọc được, thay vì "đội nào xem đội đó".
+const READ_RULE = 'owner = @request.auth.id || (scope = "team" && team != "" && team.members.id ?= @request.auth.id)';
 const OWNER_GUARD = '(@request.body.owner:isset = false || @request.body.owner = owner)';
 const WRITE_RULE = `(${READ_RULE}) && ${OWNER_GUARD}`;
 
@@ -1072,9 +1080,12 @@ const USERS_RULES = {
     updateRule: `${USERS_SELF} || ${IS_ADMIN}`,
     deleteRule: IS_ADMIN,
 };
+// `members:length > 0` cùng lý do như READ_RULE: team chưa có ai thì phép so ra NULL và
+// lọt, nên team vừa tạo hiện ra với cả người chưa đăng nhập.
+const TEAM_MEMBER = 'members:length > 0 && members.id ?= @request.auth.id';
 const TEAMS_RULES = {
-    listRule: `members.id ?= @request.auth.id || ${IS_ADMIN}`,
-    viewRule: `members.id ?= @request.auth.id || ${IS_ADMIN}`,
+    listRule: `${TEAM_MEMBER} || ${IS_ADMIN}`,
+    viewRule: `${TEAM_MEMBER} || ${IS_ADMIN}`,
     createRule: IS_ADMIN,
     updateRule: IS_ADMIN,
     deleteRule: IS_ADMIN,
@@ -1448,16 +1459,11 @@ export async function provisionBackend(onProgress, onBackup) {
     let team;
     if (found.items?.length) {
         team = found.items[0];
-        const missing = memberIds.filter(id => !(team.members || []).includes(id));
-        if (missing.length) {
-            await api(`collections/${TEAMS}/records/${team.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({ members: [...new Set([...(team.members || []), ...memberIds])] }),
-            });
-            say(`Team MKG: thêm ${missing.length} thành viên`);
-        } else {
-            say(`Team MKG: đã có, ${memberIds.length} thành viên`);
-        }
+        // KHÔNG nạp lại toàn bộ user vào MKG ở những lần chạy sau. Nạp tất cả chỉ đúng
+        // cho lần đầu di trú dữ liệu cũ; chạy lại khi công ty đã chia Đội 1/Đội 2 thì nó
+        // ném mọi người trở lại một team chung, và "đội nào xem đội đó" tan luôn. Sau lần
+        // đầu, việc gán người vào team là do quản trị quyết trong màn Quản lý team.
+        say(`Team MKG: đã có, ${(team.members || []).length} thành viên (giữ nguyên phân đội)`);
     } else {
         team = await api(`collections/${TEAMS}/records`, {
             method: 'POST',
@@ -1475,7 +1481,10 @@ export async function provisionBackend(onProgress, onBackup) {
         const patch = {};
         if (!r.updated_ms && ms) patch.updated_ms = ms;
         if (!r.scope) patch.scope = SCOPE_DEFAULT;
-        if (!r.team && SCOPE_DEFAULT === 'team') patch.team = team.id;
+        // KHÔNG gán bừa mọi bản ghi cũ vào MKG. Làm vậy là ném cả kho dự án của công ty
+        // vào một team chung — ngược hẳn với "đội nào xem đội đó". Để trống thì bản ghi
+        // tạm thời chỉ chủ sở hữu đọc được, và lượt sync kế tiếp trên máy CỦA HỌ tự gắn
+        // đúng team của họ (xem điều kiện scopeChanged trong fullSync).
         if (!r.rev) patch.rev = 1;
         if (!r.schema_v) patch.schema_v = 2;
         if (isDel && !r.deleted) patch.deleted = true;
