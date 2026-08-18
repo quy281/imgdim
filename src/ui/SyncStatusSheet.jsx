@@ -168,10 +168,19 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                             </div>
                         )}
                         {status.legacy && (
-                            <div style={{ color: 'var(--warn)', marginTop: 4 }}>
-                                Đang chạy chế độ tương thích: dữ liệu vẫn an toàn và đồng bộ đúng, nhưng
-                                mỗi lượt sync phải tải cả ảnh nên chậm, và chưa dùng được dữ liệu chung team.
-                                Chạy <b>scripts/pb-setup.mjs</b> một lần để bật đầy đủ — không cần cập nhật app.
+                            <div style={{
+                                marginTop: 8, padding: 10, borderRadius: 9,
+                                background: '#fee2e2', color: '#7f1d1d', fontSize: 12, lineHeight: 1.55,
+                            }}>
+                                <b>Chia sẻ theo team đang TẮT.</b> Bảng <code>survey_items</code> trên máy
+                                chủ chưa có cột <code>scope</code>/<code>team</code>, nên mỗi lượt đẩy lên
+                                không kèm được thông tin team — chỉ người tạo đọc được dữ liệu của mình.
+                                Đẩy lại bao nhiêu lần cũng không đổi.
+                                <div style={{ marginTop: 6 }}>
+                                    Cách sửa: đăng nhập tài khoản <b>superuser PocketBase</b> → Cài đặt →
+                                    Quản lý team &amp; người dùng → <b>Dựng ngay</b>. Sau đó mọi người
+                                    đồng bộ lại một lượt.
+                                </div>
                             </div>
                         )}
                     </div>
@@ -213,7 +222,10 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                         {/* Luôn hiện khi đã đăng nhập. Trước đây nút này chỉ hiện khi phát hiện
                             được bản ghi hỏng — mà ca tệ nhất là cloud TRỐNG RỖNG: không có gì
                             để phát hiện, và người dùng cũng không còn cần gạt nào để kéo. */}
-                        {status.loggedIn && onRepairTeam && (
+                        {/* Ở chế độ tương thích, đẩy lại KHÔNG kèm được scope/team — bấm bao
+                            nhiêu lần cũng vậy. Ẩn đi còn hơn để người dùng bấm hoài rồi tưởng
+                            app hỏng; banner đỏ phía trên đã chỉ đúng việc cần làm. */}
+                        {status.loggedIn && !status.legacy && onRepairTeam && (
                             <button className="btn btn-block" onClick={onRepairTeam}
                                 style={{
                                     background: (status.brokenShare > 0 || status.wrongTeam > 0 || !status.totalRemote)

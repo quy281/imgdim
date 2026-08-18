@@ -1394,25 +1394,46 @@ export async function provisionBackend(onProgress, onBackup) {
             }
         }
 
-        if (toAdd.length || newIndexes.length || surveyCol.listRule !== READ_RULE) {
+        // BƯỚC 1 — CHỈ thêm cột, tuyệt đối không kèm rule.
+        //
+        // Đây là chỗ đã làm hỏng cả việc chia sẻ theo team: SURVEY_RULES tham chiếu
+        // `scope` và `team.members.id`, mà PocketBase soi rule theo trạng thái HIỆN TẠI
+        // của collection. Gửi cột mới và rule dùng chính cột đó trong một lượt thì nó
+        // thấy `team` chưa tồn tại và từ chối TOÀN BỘ lượt — survey_items ở nguyên
+        // schema cũ, app rơi về chế độ tương thích, và chế độ đó đẩy lên KHÔNG kèm
+        // scope/team nên đồng nghiệp không bao giờ đọc được.
+        if (toAdd.length) {
+            try {
+                surveyCol = await pb.collections.update(surveyCol.id, {
+                    fields: [...surveyCol.fields, ...toAdd],
+                });
+                say(`survey_items: thêm ${toAdd.length} cột (${toAdd.map(f => f.name).join(', ')})`);
+            } catch (err) {
+                warn('survey_items — thêm cột', err);
+            }
+        }
+
+        // BƯỚC 2 — giờ cột đã có thật, mới đặt rule và index.
+        const nowHas = new Set(surveyCol.fields.map(f => f.name));
+        const canTeamRule = nowHas.has('scope') && nowHas.has('team');
+        if (!canTeamRule) {
+            warn('survey_items — quyền theo team', new Error(
+                'thiếu cột scope/team nên chưa đặt được quyền đọc chung team'));
+        } else if (newIndexes.length || surveyCol.listRule !== READ_RULE) {
             try {
                 await pb.collections.update(surveyCol.id, {
-                    fields: [...surveyCol.fields, ...toAdd],
                     indexes: [...(surveyCol.indexes || []), ...newIndexes],
                     ...SURVEY_RULES,
                 });
-                say(`survey_items: thêm ${toAdd.length} cột, ${newIndexes.length} index, cập nhật quyền`);
+                say(`survey_items: đặt quyền đọc chung team, ${newIndexes.length} index`);
             } catch (err) {
-                // Bỏ index ra thử lại: rule đọc/ghi mới là thứ đang để dữ liệu khách mở
-                // công khai, quan trọng hơn index tăng tốc.
+                // Bỏ index ra thử lại: index chỉ để chạy nhanh, còn rule mới là thứ quyết
+                // định đồng nghiệp có đọc được dữ liệu hay không.
                 try {
-                    await pb.collections.update(surveyCol.id, {
-                        fields: [...surveyCol.fields, ...toAdd],
-                        ...SURVEY_RULES,
-                    });
-                    say(`survey_items: thêm ${toAdd.length} cột + quyền (bỏ qua index)`);
+                    await pb.collections.update(surveyCol.id, SURVEY_RULES);
+                    say('survey_items: đặt quyền đọc chung team (bỏ qua index)');
                 } catch (err2) {
-                    warn('survey_items — thêm cột và quyền', err2);
+                    warn('survey_items — đặt quyền', err2);
                 }
             }
         } else {
