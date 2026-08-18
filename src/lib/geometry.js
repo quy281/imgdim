@@ -512,7 +512,14 @@ export function scaleAllWalls(plan, wallId, newLen) {
  * Closest point on any wall segment to pt. Returns { wallId, t, x, y } or null.
  * Only mid-segment hits (t in [0.12, 0.88]) — near-node taps snap to the node instead.
  */
-export function snapToWall(plan, pt, threshold) {
+/**
+ * Điểm trên tường gần `pt` nhất trong bán kính `threshold`.
+ *
+ * `margin` bỏ qua hai đầu tường: vẽ tường hay đặt cửa sát mép sẽ tách tường thành một
+ * mẩu vụn vô nghĩa. Nhưng CỘT thì ngược lại — cột nằm ở góc là chuyện thường nhất
+ * ngoài công trường, nên chỗ đặt cột gọi với margin 0 rồi tự hợp vào góc.
+ */
+export function snapToWall(plan, pt, threshold, margin = 0.12) {
     const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
     let best = null;
     let bestDist = threshold;
@@ -524,7 +531,7 @@ export function snapToWall(plan, pt, threshold) {
         const len2 = dx * dx + dy * dy;
         if (len2 < 1) continue;
         const t = ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / len2;
-        if (t < 0.12 || t > 0.88) continue;
+        if (t < margin || t > 1 - margin) continue;
         const px = a.x + t * dx;
         const py = a.y + t * dy;
         const d = Math.hypot(pt.x - px, pt.y - py);
@@ -621,34 +628,48 @@ const snapCol = (v) => Math.max(COLUMN_MIN, Math.round(v / COLUMN_SNAP) * COLUMN
  *   wall:   { kind:'wall', wallId, t, p, u, n, len }
  * u1/u2 chạy dọc hai tường kề, hướng RA XA góc. `n` đã lật để trỏ vào trong phòng.
  */
+/**
+ * Mô tả góc tại một node, hoặc null nếu node đó không phải góc đặt cột được.
+ * Tách riêng vì cả lúc CHỌN chỗ đặt lẫn lúc cột giữa tường trượt tới đầu tường
+ * đều cần đúng phép dựng này — hai bản chép tay sẽ lệch nhau theo thời gian.
+ */
+export function cornerTargetAtNode(plan, nodeId) {
+    const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+    const node = nodeById.get(nodeId);
+    if (!node) return null;
+    const around = plan.walls
+        .filter(w => w.a === node.id || w.b === node.id)
+        .map(w => {
+            const other = nodeById.get(w.a === node.id ? w.b : w.a);
+            const len = other ? dist(node, other) : 0;
+            if (!other || len < 1) return null;
+            return { wall: w, len, ux: (other.x - node.x) / len, uy: (other.y - node.y) / len };
+        })
+        .filter(Boolean);
+    // Đúng HAI tường: node chữ T/chữ thập mà xoá đi thì tường thứ ba mồ côi.
+    if (around.length !== 2) return null;
+    const [p, q] = around;
+    // Hai tường thẳng hàng không phải góc — đó là chỗ nối, đặt cột kiểu góc ở đó vô nghĩa.
+    if (Math.abs(p.ux * q.ux + p.uy * q.uy) >= 0.4) return null;
+    return {
+        kind: 'corner', nodeId: node.id, p: { x: node.x, y: node.y },
+        w1: p.wall, w2: q.wall, len1: p.len, len2: q.len,
+        u1: { x: p.ux, y: p.uy }, u2: { x: q.ux, y: q.uy },
+    };
+}
+
 export function columnTargetAt(plan, pt, tol) {
     const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
     const node = findNearbyNode(plan.nodes, pt, tol);
     if (node) {
-        const around = plan.walls
-            .filter(w => w.a === node.id || w.b === node.id)
-            .map(w => {
-                const other = nodeById.get(w.a === node.id ? w.b : w.a);
-                const len = other ? dist(node, other) : 0;
-                if (!other || len < 1) return null;
-                return { wall: w, len, ux: (other.x - node.x) / len, uy: (other.y - node.y) / len };
-            })
-            .filter(Boolean);
-        // Đúng HAI tường: node chữ T/chữ thập mà xoá đi thì tường thứ ba mồ côi.
-        if (around.length === 2) {
-            const [p, q] = around;
-            // Hai tường thẳng hàng không phải góc — đó là chỗ nối, đặt cột kiểu góc ở đó vô nghĩa.
-            if (Math.abs(p.ux * q.ux + p.uy * q.uy) < 0.4) {
-                return {
-                    kind: 'corner', nodeId: node.id, p: { x: node.x, y: node.y },
-                    w1: p.wall, w2: q.wall, len1: p.len, len2: q.len,
-                    u1: { x: p.ux, y: p.uy }, u2: { x: q.ux, y: q.uy },
-                };
-            }
-        }
+        const corner = cornerTargetAtNode(plan, node.id);
+        if (corner) return corner;
     }
 
-    const hit = snapToWall(plan, pt, tol);
+    // margin 0: cột đặt sát góc là ca thường nhất, chặn hai đầu tường ở đây thì chạm
+    // gần góc không ra gì cả — người đo tưởng app từ chối. resolveColumnTarget lo phần
+    // hợp vào góc sau.
+    const hit = snapToWall(plan, pt, tol, 0);
     if (!hit) return null;
     const wall = plan.walls.find(w => w.id === hit.wallId);
     const a = nodeById.get(wall.a), b = nodeById.get(wall.b);
@@ -664,6 +685,31 @@ export function columnTargetAt(plan, pt, tol) {
     });
     if (!inside) n = { x: -n.x, y: -n.y };
     return { kind: 'wall', wallId: wall.id, t: hit.t, p: { x: hit.x, y: hit.y }, u, n, len };
+}
+
+/**
+ * Chốt chỗ đặt cột cuối cùng theo kích thước đang kéo.
+ *
+ * Cột giữa tường kéo tới sát đầu tường THÌ CHÍNH LÀ cột góc — ngoài công trường không
+ * ai gọi đó là hai loại khác nhau. Đây là nơi DUY NHẤT ra quyết định đó, để preview
+ * lúc kéo và kết quả lúc thả tay luôn là một; hai bản chép tay sẽ lệch nhau và người
+ * đo nhìn một đằng ra một nẻo.
+ */
+export function resolveColumnTarget(plan, target, a, b) {
+    if (!target || target.kind !== 'wall' || !a || !b) return { target, a, b };
+    const { wallId, t, len } = target;
+    const s = t * len;
+    const s1 = s - a / 2, s2 = s + a / 2;
+    if (s1 >= COLUMN_MIN && s2 <= len - COLUMN_MIN) return { target, a, b };
+    const wall = plan.walls.find(w => w.id === wallId);
+    if (!wall) return { target, a, b };
+    const corner = cornerTargetAtNode(plan, s1 < COLUMN_MIN ? wall.a : wall.b);
+    if (!corner) return { target, a, b };
+    // a đo dọc TƯỜNG ĐANG ĐẶT, b là bề dày ăn vào phòng. Ở góc, chiều ăn vào phòng
+    // chạy dọc tường kia — phải soi tường đang đặt là w1 hay w2 rồi mới gán, đảo nhầm
+    // là cột quay 90° so với thứ người dùng vừa kéo.
+    const curIsW1 = corner.w1.id === wallId;
+    return { target: corner, a: curIsW1 ? a : b, b: curIsW1 ? b : a };
 }
 
 /** Kích thước cột suy từ điểm đang kéo tới — đã làm tròn về bước COLUMN_SNAP. */
@@ -750,9 +796,12 @@ export function insertWallColumn(plan, target, a, b) {
     if (!wall) return { plan, error: 'Không tìm thấy tường' };
     const nodeById = new Map(plan.nodes.map(x => [x.id, x]));
     const A = nodeById.get(wall.a);
+    // Kéo tới sát đầu tường thì đây LÀ cột góc — hợp vào góc thay vì từ chối.
+    const eff = resolveColumnTarget(plan, target, a, b);
+    if (eff.target.kind === 'corner') return insertCornerColumn(plan, eff.target, eff.a, eff.b);
     const s = t * len, s1 = s - a / 2, s2 = s + a / 2;
     if (s1 < COLUMN_MIN || s2 > len - COLUMN_MIN) {
-        return { plan, error: 'Cột chạm vào góc — kéo vào giữa tường hoặc thu bề rộng' };
+        return { plan, error: 'Cột chạm vào đầu tường mà chỗ đó không phải góc — thu bề rộng lại' };
     }
     const colId = genId('c');
     const at = (d) => ({ x: A.x + u.x * d, y: A.y + u.y * d });

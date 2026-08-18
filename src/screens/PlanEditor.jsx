@@ -25,7 +25,7 @@ import {
     applyWallLength, scaleAllWalls, snapToWall, splitWallAtPoint, bboxOfPlan,
     applySegmentLength, applyOpeningWidth, wallSegments, snapFurnitureToWall,
     roomFaces, ceilingHeight, openingV, applyOpeningVertical, applyCeilingHeight,
-    columnTargetAt, columnSizeFromDrag, insertCornerColumn, insertWallColumn,
+    columnTargetAt, columnSizeFromDrag, insertCornerColumn, insertWallColumn, resolveColumnTarget,
     columnParts, resizeColumn, removeColumn, COLUMN_DEFAULT,
 } from '../lib/geometry';
 import {
@@ -669,8 +669,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (g?.type === 'column') {
             if (e.evt?.cancelable) e.evt.preventDefault();
             const s = columnSizeFromDrag(g.target, toWorld(p));
+            // Kéo tới sát đầu tường thì mục tiêu tự đổi thành GÓC. Phải đổi ngay ở đây
+            // chứ không đợi lúc thả tay, nếu không preview vẽ bướu giữa tường mà kết quả
+            // lại ra cột góc — người đo nhìn một đằng ra một nẻo.
+            const eff = resolveColumnTarget(docRef.current.plan, g.target, s.a, s.b);
             g.size = s;
-            setColDrag({ target: g.target, ...s });
+            g.effective = eff;
+            setColDrag({ target: eff.target, a: eff.a, b: eff.b });
             return;
         }
         if (g && g.type === 'tap') {
@@ -693,7 +698,12 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             setColDrag(null);
             // Chạm mà không kéo = cột tiết diện mặc định; ai cũng đo lại số thật sau.
             const { a, b } = g.size || { a: COLUMN_DEFAULT, b: COLUMN_DEFAULT };
-            commitColumn(g.target, a || COLUMN_DEFAULT, b || COLUMN_DEFAULT);
+            const ea = a || COLUMN_DEFAULT, eb = b || COLUMN_DEFAULT;
+            // Chốt bằng ĐÚNG mục tiêu preview đang vẽ, không tính lại từ đầu.
+            const eff = g.effective && g.effective.a === ea && g.effective.b === eb
+                ? g.effective
+                : resolveColumnTarget(docRef.current.plan, g.target, ea, eb);
+            commitColumn(eff.target, eff.a, eff.b);
             return;
         }
         if (!g || g.type !== 'tap') return;

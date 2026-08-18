@@ -6,6 +6,7 @@
 import {
     columnTargetAt, columnSizeFromDrag, columnPolygon, insertCornerColumn,
     insertWallColumn, columnParts, resizeColumn, removeColumn, listColumns,
+    cornerTargetAtNode, resolveColumnTarget,
     dist, shoelaceArea, COLUMN_MIN,
 } from '/src/lib/geometry.js';
 import { recomputeRooms } from '/src/lib/planModel.js';
@@ -191,6 +192,69 @@ head('8. Chặn trường hợp vô lý');
     ok('chặn cột to hơn tường kề', !!insertCornerColumn(p, t, 5000, 220).error);
     const tw = columnTargetAt(p, { x: 2000, y: 30 }, 200);
     ok('chặn bướu chạm hai góc', !!insertWallColumn(p, tw, 3990, 300).error);
+}
+
+head('8b. Cột kéo tới đầu tường tự hợp vào góc');
+{
+    // Chạm ở x=250 trên tường AB rồi kéo rộng 400: nửa trái ăn quá đầu tường.
+    // Ngoài công trường đó chính là cột góc, không phải lỗi.
+    const p = mk();
+    const tw = columnTargetAt(p, { x: 250, y: 20 }, 200);
+    eq('bắt đúng thân tường trước khi kéo', tw.kind === 'wall', true);
+
+    const eff = resolveColumnTarget(p, tw, 400, 300);
+    eq('kéo quá đầu tường → mục tiêu tự đổi sang GÓC', eff.target.kind === 'corner', true);
+    ok('góc bắt đúng node A (' + eff.target.nodeId + ')', eff.target.nodeId === 'A');
+
+    const r = insertWallColumn(p, tw, 400, 300);
+    ok('không còn báo lỗi', !r.error);
+    const cw = r.plan.walls.filter(w => w.column);
+    eq('sinh đúng 2 cạnh cột', cw.length, 2);
+    eq('đỉnh góc cũ đã bỏ', r.plan.nodes.some(n => n.id === 'A'), false);
+
+    // Hình phải giữ ĐÚNG thứ người dùng vừa kéo: 400 dọc tường AB, 300 ăn vào phòng.
+    const at = (x, y) => r.plan.nodes.some(n => Math.abs(n.x - x) < 1 && Math.abs(n.y - y) < 1);
+    ok('có đỉnh (400,0) — 400 dọc tường đang đặt', at(400, 0));
+    ok('có đỉnh (0,300) — 300 ăn vào phòng', at(0, 300));
+    ok('có đỉnh (400,300) — góc trong ô cột', at(400, 300));
+
+    const parts = columnParts(r.plan, r.columnId);
+    ok('đọc lại được cột vừa tạo', !!parts);
+    ok('hai cạnh đúng 400 và 300',
+        Math.abs(parts.a - 400) < 1 && Math.abs(parts.b - 300) < 1 ||
+        Math.abs(parts.a - 300) < 1 && Math.abs(parts.b - 400) < 1);
+}
+{
+    // Đầu tường bên kia cũng phải hợp được, không chỉ đầu a.
+    const p = mk();
+    const tw = columnTargetAt(p, { x: 3750, y: 20 }, 200);
+    const eff = resolveColumnTarget(p, tw, 400, 300);
+    ok('kéo quá đầu B → hợp vào góc B (' + eff.target.nodeId + ')', eff.target.nodeId === 'B');
+    const r = insertWallColumn(p, tw, 400, 300);
+    ok('đầu bên kia cũng không báo lỗi', !r.error);
+    const at = (x, y) => r.plan.nodes.some(n => Math.abs(n.x - x) < 1 && Math.abs(n.y - y) < 1);
+    ok('có đỉnh (3600,0) — 400 dọc tường tính từ góc B', at(3600, 0));
+    ok('có đỉnh (4000,300) — 300 ăn vào phòng', at(4000, 300));
+}
+{
+    // Nằm gọn giữa tường thì KHÔNG được tự nhảy sang góc.
+    const p = mk();
+    const tw = columnTargetAt(p, { x: 2000, y: 20 }, 200);
+    const eff = resolveColumnTarget(p, tw, 400, 300);
+    ok('giữa tường vẫn là cột thân tường (' + eff.target.kind + ')', eff.target.kind === 'wall');
+    ok('giữ nguyên kích thước đã kéo', eff.a === 400 && eff.b === 300);
+}
+{
+    // Node cụt (một tường) không phải góc — vẫn phải báo lỗi, không dựng bừa.
+    const p = recomputeRooms({
+        nodes: [{ id: 'P', x: 0, y: 0 }, { id: 'Q', x: 3000, y: 0 }],
+        walls: [{ id: 'w1', a: 'P', b: 'Q', thickness: 220, openings: [] }],
+        rooms: [],
+    });
+    eq('đầu tường cụt không phải góc', cornerTargetAtNode(p, 'P'), null);
+    const tw = columnTargetAt(p, { x: 250, y: 20 }, 200);
+    const r = insertWallColumn(p, tw, 400, 300);
+    ok('tường cụt vẫn báo lỗi thay vì dựng sai', !!r.error);
 }
 
 head('9. Kéo → kích thước, làm tròn bước 50');
