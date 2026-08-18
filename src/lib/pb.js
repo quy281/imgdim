@@ -1019,6 +1019,29 @@ function makePbClient() {
     return pb;
 }
 
+/**
+ * Bóc lý do THẬT ra khỏi lỗi của SDK.
+ *
+ * SDK chỉ đặt `message` là câu chung chung kiểu "Failed to update collection." — lý do
+ * nằm trong `response.data`, lồng theo từng field: {fields:{"3":{name:{message:"..."}}}}.
+ * Không bóc ra thì người dùng chỉ thấy "thất bại" và không ai đoán nổi cột nào sai.
+ */
+function sdkMsg(err) {
+    const body = err?.response || err?.data || {};
+    const base = body.message || err?.message || 'Lỗi không rõ';
+    const parts = [];
+    const walk = (obj, prefix) => {
+        if (!obj || typeof obj !== 'object') return;
+        for (const [k, v] of Object.entries(obj)) {
+            const path = prefix ? `${prefix}.${k}` : k;
+            if (typeof v?.message === 'string') parts.push(`${path}: ${v.message}`);
+            else if (v && typeof v === 'object') walk(v, path);
+        }
+    };
+    walk(body.data, '');
+    return parts.length ? `${base} — ${parts.join('; ')}` : base;
+}
+
 async function listAllRecords(col, fields) {
     const out = [];
     for (let page = 1; ; page++) {
@@ -1065,7 +1088,16 @@ export async function inspectBackend() {
 export async function provisionBackend(onProgress, onBackup) {
     requireSuperuser();
     const log = [];
+    const warnings = [];
     const say = (s) => { log.push(s); onProgress?.(s); };
+    // Bước phụ hỏng thì GHI LẠI rồi đi tiếp. Bỏ dở cả lượt vì một cột không thêm được
+    // là mất luôn phần teams/shares — đúng thứ đang chặn việc tạo tài khoản.
+    const warn = (step, err) => {
+        const m = `⚠ ${step}: ${sdkMsg(err)}`;
+        warnings.push(m);
+        log.push(m);
+        onProgress?.(m);
+    };
 
     const pb = makePbClient();
 
@@ -1074,7 +1106,7 @@ export async function provisionBackend(onProgress, onBackup) {
     try {
         allCols = await pb.collections.getFullList({ batch: 200 });
     } catch (err) {
-        throw new PbError(`Không kết nối được PocketBase: ${err.message}`, err.status || 0);
+        throw new PbError(`Không đọc được cấu trúc PocketBase: ${sdkMsg(err)}`, err.status || 0);
     }
 
     // Tải bản sao TRƯỚC khi sửa — thao tác trên dữ liệu thật, file này để khôi phục.
@@ -1105,12 +1137,25 @@ export async function provisionBackend(onProgress, onBackup) {
         // BƯỚC 1 — thêm cột trước, RIÊNG một lượt. identityFields được PocketBase kiểm
         // theo cột đang có; gộp chung một lượt thì nó soi trạng thái cũ và từ chối vì
         // "username không tồn tại", làm hỏng cả lần dựng.
-        if (addU.length) {
-            usersCol = await pb.collections.update(usersCol.id, {
-                fields: [...usersCol.fields, ...addU],
-            });
-            say(`users: thêm cột ${addU.map(f => f.name).join(', ')}`);
+        //
+        // Thêm TỪNG cột một: gộp cả hai mà một cột sai thì PocketBase từ chối cả lượt và
+        // ta không biết cột nào có lỗi.
+        let addedU = 0;
+        for (const f of addU) {
+            try {
+                usersCol = await pb.collections.update(usersCol.id, {
+                    fields: [...usersCol.fields, f],
+                });
+                addedU++;
+                say(`users: thêm cột ${f.name}`);
+            } catch (err) {
+                warn(`users — thêm cột ${f.name}`, err);
+            }
         }
+        // Đọc lại từ collection VỪA trả về, không suy ra từ danh sách định thêm: cột nào
+        // thêm hụt thì bước sau phải biết, nếu không nó khai username làm identityField
+        // trong khi cột không tồn tại và PocketBase đổ cả lượt.
+        const hasUsername = usersCol.fields.some(f => f.name === 'username');
 
         // Unique index cho username: chỉ áp cho hàng CÓ username. Index unique thường sẽ
         // đổ ngay nếu backend đang có từ hai tài khoản username rỗng trở lên — SQLite coi
@@ -1121,21 +1166,38 @@ export async function provisionBackend(onProgress, onBackup) {
             : ["CREATE UNIQUE INDEX `idx_users_username` ON `users` (`username`) WHERE `username` != ''"];
 
         const ident = usersCol.passwordAuth?.identityFields || ['email'];
-        const wantIdent = [...new Set([...ident, 'username'])];
+        // Không có cột username thì tuyệt đối KHÔNG khai nó là identityField — PocketBase
+        // sẽ từ chối cả lượt, và người dùng mất luôn phần rule đi kèm.
+        const wantIdent = hasUsername ? [...new Set([...ident, 'username'])] : ident;
         const identChanged = wantIdent.length !== ident.length;
         const tokenChanged = usersCol.authToken?.duration !== SESSION_DAYS * 86400;
         const rulesChanged = usersCol.listRule !== USERS_RULES.listRule;
 
         // BƯỚC 2 — giờ cột đã có thật, mới bật đăng nhập bằng tên ngắn.
         if (newUIdx.length || identChanged || tokenChanged || rulesChanged) {
-            usersCol = await pb.collections.update(usersCol.id, {
-                indexes: [...(usersCol.indexes || []), ...newUIdx],
-                passwordAuth: { ...(usersCol.passwordAuth || {}), enabled: true, identityFields: wantIdent },
-                authToken: { ...(usersCol.authToken || {}), duration: SESSION_DAYS * 86400 },
-                ...USERS_RULES,
-            });
-            say(`users: đăng nhập bằng ${wantIdent.join('/')}, phiên ${SESSION_DAYS} ngày, quyền quản trị`);
-        } else if (!addU.length) {
+            try {
+                usersCol = await pb.collections.update(usersCol.id, {
+                    indexes: [...(usersCol.indexes || []), ...newUIdx],
+                    passwordAuth: { ...(usersCol.passwordAuth || {}), enabled: true, identityFields: wantIdent },
+                    authToken: { ...(usersCol.authToken || {}), duration: SESSION_DAYS * 86400 },
+                    ...USERS_RULES,
+                });
+                say(`users: đăng nhập bằng ${wantIdent.join('/')}, phiên ${SESSION_DAYS} ngày, quyền quản trị`);
+            } catch (err) {
+                // Thử lại KHÔNG kèm index — unique index là thứ hay đổ nhất khi dữ liệu
+                // sẵn có đã trùng, mà rule + hạn phiên thì quan trọng hơn nhiều.
+                try {
+                    usersCol = await pb.collections.update(usersCol.id, {
+                        passwordAuth: { ...(usersCol.passwordAuth || {}), enabled: true, identityFields: wantIdent },
+                        authToken: { ...(usersCol.authToken || {}), duration: SESSION_DAYS * 86400 },
+                        ...USERS_RULES,
+                    });
+                    say(`users: đặt quyền + phiên ${SESSION_DAYS} ngày (bỏ qua unique index username)`);
+                } catch (err2) {
+                    warn('users — đặt quyền và hạn phiên', err2);
+                }
+            }
+        } else if (!addedU) {
             say('users: đã đủ cột và quyền');
         }
     }
@@ -1144,8 +1206,12 @@ export async function provisionBackend(onProgress, onBackup) {
     let teamsCol = byName.get(TEAMS);
     if (teamsCol) {
         if (teamsCol.listRule !== TEAMS_RULES.listRule) {
-            teamsCol = await pb.collections.update(teamsCol.id, TEAMS_RULES);
-            say('Collection teams: cập nhật quyền cho tài khoản quản trị');
+            try {
+                teamsCol = await pb.collections.update(teamsCol.id, TEAMS_RULES);
+                say('Collection teams: cập nhật quyền cho tài khoản quản trị');
+            } catch (err) {
+                warn('teams — cập nhật quyền', err);
+            }
         } else {
             say('Collection teams: đã có');
         }
@@ -1261,12 +1327,26 @@ export async function provisionBackend(onProgress, onBackup) {
         }
 
         if (toAdd.length || newIndexes.length || surveyCol.listRule !== READ_RULE) {
-            await pb.collections.update(surveyCol.id, {
-                fields: [...surveyCol.fields, ...toAdd],
-                indexes: [...(surveyCol.indexes || []), ...newIndexes],
-                ...SURVEY_RULES,
-            });
-            say(`survey_items: thêm ${toAdd.length} cột, ${newIndexes.length} index, cập nhật quyền`);
+            try {
+                await pb.collections.update(surveyCol.id, {
+                    fields: [...surveyCol.fields, ...toAdd],
+                    indexes: [...(surveyCol.indexes || []), ...newIndexes],
+                    ...SURVEY_RULES,
+                });
+                say(`survey_items: thêm ${toAdd.length} cột, ${newIndexes.length} index, cập nhật quyền`);
+            } catch (err) {
+                // Bỏ index ra thử lại: rule đọc/ghi mới là thứ đang để dữ liệu khách mở
+                // công khai, quan trọng hơn index tăng tốc.
+                try {
+                    await pb.collections.update(surveyCol.id, {
+                        fields: [...surveyCol.fields, ...toAdd],
+                        ...SURVEY_RULES,
+                    });
+                    say(`survey_items: thêm ${toAdd.length} cột + quyền (bỏ qua index)`);
+                } catch (err2) {
+                    warn('survey_items — thêm cột và quyền', err2);
+                }
+            }
         } else {
             say('survey_items: đã đủ cột và quyền');
         }
@@ -1323,8 +1403,10 @@ export async function provisionBackend(onProgress, onBackup) {
 
     // Nạp lại team vào phiên hiện tại để app dùng được ngay, không cần đăng nhập lại.
     await refreshTeam().catch(() => {});
-    say('Xong — đã sẵn sàng tạo team và người dùng');
-    return log;
+    say(warnings.length
+        ? `Xong nhưng có ${warnings.length} bước chưa đạt — xem chi tiết bên dưới`
+        : 'Xong — đã sẵn sàng cấp tài khoản');
+    return { log, warnings };
 }
 
 // ===== Cấp sẵn tài khoản cho tổ khảo sát =====

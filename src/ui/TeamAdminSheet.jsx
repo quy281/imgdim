@@ -28,6 +28,7 @@ export default function TeamAdminSheet({ open, onClose }) {
     const [confirmSetup, setConfirmSetup] = useState(false);
     const [inspect, setInspect] = useState(null); // kết quả kiểm tra trước khi ghi
     const [seeded, setSeeded] = useState(null);    // { team, users } — bảng PIN hiện một lần
+    const [report, setReport] = useState(null);    // { log, warnings } sau khi dựng
 
     useEffect(() => {
         if (open) { load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false); }
@@ -74,7 +75,7 @@ export default function TeamAdminSheet({ open, onClose }) {
         setSetupLog('Đang kiểm tra backend...');
         try {
             const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-            const lines = await pb.provisionBackend(
+            const res = await pb.provisionBackend(
                 (msg) => setSetupLog(msg),
                 (json) => downloadText(json, `pb-schema-backup-${stamp}.json`, 'application/json'),
             );
@@ -82,8 +83,13 @@ export default function TeamAdminSheet({ open, onClose }) {
             setNeedsSetup(false);
             setConfirmSetup(false);
             await load();
-            toast('Đã dựng xong backend — tạo team được rồi', 'ok');
-            console.info('provisionBackend:\n' + lines.join('\n'));
+            // Nhật ký phải HIỆN LÊN màn hình, không chỉ nằm trong console: người dùng đang
+            // đứng ở điện thoại, không mở được DevTools để biết bước nào chưa đạt.
+            setReport(res);
+            toast(res.warnings.length
+                ? `Dựng xong nhưng ${res.warnings.length} bước chưa đạt`
+                : 'Đã dựng xong backend — cấp tài khoản được rồi',
+                res.warnings.length ? 'err' : 'ok');
         } catch (err) {
             setSetupLog(null);
             setError('Dựng backend thất bại: ' + err.message);
@@ -282,6 +288,19 @@ export default function TeamAdminSheet({ open, onClose }) {
                             <div style={{ flex: 1 }}>{t.name}<div className="sub">{t.memberCount} thành viên</div></div>
                         </button>
                     ))}
+
+                    {report && (
+                        <div style={{
+                            margin: '12px 16px', padding: 12, borderRadius: 12,
+                            background: report.warnings.length ? 'var(--warn-soft)' : 'var(--bg-2)',
+                            fontSize: 11.5, lineHeight: 1.65, whiteSpace: 'pre-wrap',
+                            fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word',
+                        }}>
+                            {report.log.join('\n')}
+                            <button className="btn btn-block" style={{ marginTop: 10 }}
+                                onClick={() => setReport(null)}>Đóng nhật ký</button>
+                        </div>
+                    )}
 
                     {/* Cấp sẵn tổ khảo sát — thao tác một lần, bấm lại không reset PIN ai */}
                     {seeded ? (
