@@ -319,7 +319,7 @@ export default function ProjectsScreen({
                                 onChange={e => setEmail(e.target.value)} autoComplete="username" />
                         </div>
                         <div className="field">
-                            <label>Mã PIN</label>
+                            <label>Mã PIN (hoặc mật khẩu quản trị)</label>
                             {/* inputMode numeric → điện thoại bật bàn số, không phải bàn chữ.
                                 Vẫn là type=password để PIN không hiện giữa công trường. */}
                             <input type="password" inputMode="numeric" value={password} placeholder="••••"
@@ -329,9 +329,13 @@ export default function ProjectsScreen({
                         <button className="btn btn-primary btn-block" disabled={loggingIn} onClick={doLogin}>
                             <LogIn size={18} /> {loggingIn ? 'Đang đăng nhập...' : 'Đăng nhập để đồng bộ'}
                         </button>
-                        <div style={{ fontSize: 12, color: 'var(--muted)', paddingTop: 12, lineHeight: 1.5 }}>
+                        <div style={{ fontSize: 12, color: 'var(--muted)', paddingTop: 12, lineHeight: 1.55 }}>
                             Phiên đăng nhập dùng được {pb.SESSION_DAYS} ngày rồi phải đăng nhập lại.
                             Nhận PIN từ quản trị, và đổi ngay sau lần đăng nhập đầu.
+                            <div style={{ marginTop: 8 }}>
+                                <b>Quản trị</b>: dán email và mật khẩu superuser PocketBase vào đúng hai ô
+                                trên — ô PIN nhận cả mật khẩu dài.
+                            </div>
                         </div>
                     </>
                 )}
