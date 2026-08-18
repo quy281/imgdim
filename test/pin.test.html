@@ -106,7 +106,41 @@ try {
     withTeams([{ id: 'a', name: 'MKG', slug: 'mkg' }, { id: 'b', name: 'Đội 1', slug: 'oi-1' }]);
     eq('cache cũ thiếu cờ mine → vẫn ưu tiên mkg', pb.myTeam()?.slug, 'mkg');
 
-    head('7. Danh sách cấp sẵn');
+    head('7. Chạy song song có giới hạn (mapLimit)');
+    {
+        const items = Array.from({ length: 25 }, (_, i) => i);
+        let live = 0, peak = 0;
+        const seen = [];
+        const out = await pb.mapLimit(items, 6, async (v) => {
+            live++; peak = Math.max(peak, live);
+            // Đảo thời gian chạy: xong trước xong sau không được ảnh hưởng thứ tự kết quả.
+            await new Promise(r => setTimeout(r, (25 - v) % 7));
+            seen.push(v);
+            live--;
+            return v * 2;
+        });
+        eq('kết quả giữ ĐÚNG thứ tự đầu vào', JSON.stringify(out), JSON.stringify(items.map(v => v * 2)));
+        eq('chạy đủ mọi phần tử, không sót không lặp', seen.length, 25);
+        eq('không phần tử nào bị bỏ', new Set(seen).size, 25);
+        ok(`không vượt giới hạn 6 (đỉnh ${peak})`, peak <= 6);
+        ok(`có chạy song song thật, không tuần tự (đỉnh ${peak})`, peak > 1);
+    }
+    {
+        const out = await pb.mapLimit([], 6, async () => 1);
+        eq('danh sách rỗng → mảng rỗng, không treo', out.length, 0);
+    }
+    {
+        // Ít việc hơn giới hạn: không được tạo worker thừa rồi chờ mãi.
+        let peak = 0, live = 0;
+        await pb.mapLimit([1, 2], 6, async () => {
+            live++; peak = Math.max(peak, live);
+            await new Promise(r => setTimeout(r, 3));
+            live--;
+        });
+        ok(`2 việc / giới hạn 6 → chỉ 2 chạy cùng lúc (đỉnh ${peak})`, peak === 2);
+    }
+
+    head('8. Danh sách cấp sẵn');
     eq('5 tài khoản', pb.SEED_USERS.length, 5);
     eq('4 KTS dùng PIN giao chung', pb.SEED_USERS.filter(u => u.pin === pb.SEED_PIN_KTS).length, 4);
     eq('đúng 1 quản trị', pb.SEED_USERS.filter(u => u.role === 'admin').length, 1);

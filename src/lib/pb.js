@@ -521,6 +521,33 @@ async function fetchMeta() {
 
 const keyOf = (owner, itemId) => `${owner || ''}/${itemId}`;
 
+/**
+ * Chạy song song có giới hạn.
+ *
+ * Sync trước đây gọi từng request MỘT, nối đuôi nhau: 100 doc × ~0.4s = gần một phút
+ * chỉ để chờ mạng, trong khi băng thông nằm không. Nó còn làm mọi màn hình khác (xem
+ * team, kiểm tra đồng bộ) phải xếp hàng phía sau nên cảm giác là "app treo".
+ *
+ * Giới hạn 6 vì trình duyệt cũng chỉ mở khoảng 6 kết nối cho mỗi host — đặt cao hơn
+ * không nhanh thêm, chỉ dồn thêm việc vào hàng đợi. `fn` phải TỰ bắt lỗi của nó; ném
+ * ra ngoài sẽ làm các worker còn lại chạy mồ côi.
+ */
+const SYNC_LIMIT = 6;
+
+export async function mapLimit(items, limit, fn) {
+    const out = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+        for (;;) {
+            const i = next++;
+            if (i >= items.length) return;
+            out[i] = await fn(items[i], i);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return out;
+}
+
 /** Trả về danh sách metadata để UI so sánh local ↔ cloud (rẻ, không tải data). */
 export async function fetchRemoteStatus() {
     if (!isLoggedIn()) return { items: [], account: null, team: null };
@@ -529,6 +556,8 @@ export async function fetchRemoteStatus() {
         account: me()?.email || me()?.username || '(unknown)',
         team: myTeam(),
         legacy,
+        totalRemote: items.length,
+        myTeamId: myTeam()?.id || null,
         items: items.map(r => ({
             item_id: r.item_id,
             kind: r.kind,
@@ -537,6 +566,11 @@ export async function fetchRemoteStatus() {
             owner: r.owner,
             ownerName: r.owner_name || '',
             scope: r.scope || SCOPE_DEFAULT,
+            // Giá trị THÔ, chưa áp mặc định. `scope` ở trên đã bị mặc định hoá thành
+            // 'team' nên nhìn vào nó thì record hỏng vẫn có vẻ đúng — đúng cái bẫy làm
+            // dự án hiện "Team MKG" trên máy chủ sở hữu mà đồng nghiệp không đọc được.
+            rawScope: r.scope || '',
+            team: r.team || '',
             deleted: !!r.deleted,
             updatedAt: r.updated_ms || 0,
         })),
@@ -673,16 +707,17 @@ export async function fullSync(local, onProgress) {
     // ===== 1. Đẩy các lệnh xóa (soft-delete) =====
     const clearedTombstones = [];
     let deleted = 0;
-    for (const t of local.tombstones) {
+    let delDone = 0;
+    await mapLimit(local.tombstones, SYNC_LIMIT, async (t) => {
         const rec = remoteByItem.get(t.item_id)?.find(r => r.owner === uid) || remoteByItem.get(t.item_id)?.[0];
         if (!rec) {
             // Chưa từng lên cloud. Giữ tombstone (db.js tự dọn sau 90 ngày) để nếu máy
             // khác đẩy item này lên thì lần sync sau ta vẫn xóa được.
-            continue;
+            return;
         }
-        if (rec.deleted) { clearedTombstones.push(t.item_id); continue; }
-        if ((rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); continue; } // cloud mới hơn → thắng
-        p('Đang xóa trên cloud...');
+        if (rec.deleted) { clearedTombstones.push(t.item_id); return; }
+        if ((rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); return; } // cloud mới hơn → thắng
+        p(`Đang xóa trên cloud ${++delDone}/${local.tombstones.length}...`);
         try {
             // `data._deleted` là dấu xóa mà CẢ HAI schema đều đọc được; các cột kia chỉ
             // gửi khi backend đã có, để không dựa vào việc PocketBase bỏ qua field lạ.
@@ -705,7 +740,7 @@ export async function fullSync(local, onProgress) {
             console.warn('soft-delete failed:', t.item_id, err.message);
             // Giữ tombstone để thử lại lần sync sau.
         }
-    }
+    });
 
     // ===== 2. Quyết định pull / push =====
     const toPull = [];
@@ -752,13 +787,12 @@ export async function fullSync(local, onProgress) {
     const pulledProjects = [];
     const pulledDocs = [];
     const pullFailed = [];
-    for (let i = 0; i < toPull.length; i++) {
-        const rec = toPull[i];
-        p(`Đang tải về ${i + 1}/${toPull.length}...`);
+    let pullDone = 0;
+    await mapLimit(toPull, SYNC_LIMIT, async (rec) => {
         try {
             const full = legacy && rec._data ? { data: rec._data, ...rec } : await api(`collections/${COL}/records/${rec.id}`);
             const data = full.data;
-            if (!data || typeof data !== 'object') continue;
+            if (!data || typeof data !== 'object') return;
             const item = { ...data, ownerId: rec.owner, ownerName: rec.owner_name || '' };
             if (rec.kind === 'project') {
                 item.scope = rec.scope || SCOPE_DEFAULT;
@@ -774,7 +808,6 @@ export async function fullSync(local, onProgress) {
                             item.img = localDoc.img;          // ảnh không đổi — dùng lại bản trên máy
                             item.photoHash = wantHash;
                         } else {
-                            p(`Đang tải ảnh ${i + 1}/${toPull.length}...`);
                             item.img = await downloadPhoto(rec.id, rec.photo);
                             item.photoHash = hashString(item.img);
                         }
@@ -787,17 +820,20 @@ export async function fullSync(local, onProgress) {
         } catch (err) {
             pullFailed.push(rec.item_id);
             console.warn('pull failed:', rec.name, err.message);
+        } finally {
+            // Đếm theo việc ĐÃ XONG, không theo chỉ số vòng lặp: chạy song song thì thứ
+            // tự hoàn thành không còn khớp thứ tự trong danh sách.
+            p(`Đang tải về ${++pullDone}/${toPull.length}...`);
         }
-    }
+    });
 
     // ===== 4. Push =====
     let pushed = 0;
     let migrated = 0;
     const failedIds = [];
     const scopeSynced = new Set();
-    for (let i = 0; i < toPush.length; i++) {
-        const { kind, item, scope, teamId, rec, reason } = toPush[i];
-        p(`Đang đẩy lên ${i + 1}/${toPush.length}...`);
+    let pushDone = 0;
+    await mapLimit(toPush, SYNC_LIMIT, async ({ kind, item, scope, teamId, rec, reason }) => {
         const { fields, photoDataUrl } = buildPayload({ kind, item, scope, teamId, legacy });
         // Migrate/đổi scope không phải người dùng sửa nội dung → giữ nguyên mốc thời gian
         // để máy khác không phải tải lại doc.
@@ -818,8 +854,10 @@ export async function fullSync(local, onProgress) {
         } catch (err) {
             failedIds.push(String(item.id));
             console.warn('push failed:', item.name, err.status, err.message);
+        } finally {
+            p(`Đang đẩy lên ${++pushDone}/${toPush.length}...`);
         }
-    }
+    });
     // Chỉ báo đã xong việc đổi scope khi TOÀN BỘ item của dự án đó đẩy được.
     for (const pid of scopeDirty) {
         const anyFailed = toPush.some(t =>
