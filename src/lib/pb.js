@@ -321,7 +321,34 @@ export async function loginSmart(identity, secret) {
             if (err.status !== 400) throw err;   // lỗi mạng/server thì đừng thử lại vô ích
         }
     }
-    return login(identity, s);
+    try {
+        return await login(identity, s);
+    } catch (err) {
+        if (err.status !== 400) throw err;
+        const hint = await emptyBackendHint();
+        throw hint ? new PbError(hint, 400) : err;
+    }
+}
+
+/**
+ * PocketBase cố tình trả cùng một lỗi "Failed to authenticate" cho cả sai mật khẩu lẫn
+ * tài khoản không tồn tại (chống dò tên tài khoản). Hệ quả: khi backend chưa cấp tài
+ * khoản nào, người dùng thấy "Sai tài khoản hoặc mật khẩu" và cứ thử lại PIN hàng chục
+ * lần — trong khi việc cần làm hoàn toàn khác. Chỉ chạy SAU khi đã thất bại nên luồng
+ * đăng nhập bình thường không tốn thêm request nào.
+ */
+async function emptyBackendHint() {
+    try {
+        const res = await api('collections/users/records?perPage=1&fields=id', {}, 1);
+        if (Array.isArray(res?.items) && (res.totalItems || 0) === 0) {
+            return 'Hệ thống chưa có tài khoản nào. Đăng nhập bằng tài khoản superuser của '
+                + 'PocketBase, rồi vào Cài đặt → Quản lý team & người dùng → Dựng ngay → '
+                + 'Cấp sẵn tổ khảo sát.';
+        }
+    } catch {
+        // Đọc bị chặn = backend đã dựng xong và rule đang chạy → không kết luận gì thêm.
+    }
+    return null;
 }
 
 /**
