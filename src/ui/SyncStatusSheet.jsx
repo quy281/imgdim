@@ -19,7 +19,7 @@ const STATUS_LABEL = {
     to_pull: 'Cần tải về',
 };
 
-export default function SyncStatusSheet({ open, onClose, onSync }) {
+export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam }) {
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState(null);
 
@@ -89,6 +89,16 @@ export default function SyncStatusSheet({ open, onClose, onSync }) {
                 team: remote.team,
                 legacy: remote.legacy,
                 loggedIn: pb.isLoggedIn(),
+                totalRemote: remote.totalRemote,
+                myTeamId: remote.myTeamId,
+                // Bản ghi mang phạm vi team nhưng THIẾU id team thì đồng nghiệp không đọc
+                // được, dù trên máy chủ sở hữu nó vẫn hiện "Team MKG". Đây là chỗ duy nhất
+                // nhìn ra được điều đó, nên phải đếm riêng.
+                brokenShare: remote.items.filter(r =>
+                    !r.deleted && (r.rawScope !== 'team' || !r.team)).length,
+                wrongTeam: remote.items.filter(r =>
+                    !r.deleted && r.rawScope === 'team' && r.team && remote.myTeamId
+                    && r.team !== remote.myTeamId).length,
                 rows: [...projectRows, ...remoteOnly],
                 pendingCount: pending.length,
                 lastSyncAt: meta.lastSyncAt,
@@ -130,6 +140,26 @@ export default function SyncStatusSheet({ open, onClose, onSync }) {
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
                                 <Users size={13} />
                                 {status.team ? `Team ${status.team.name}` : 'Chưa thuộc team'}
+                                <span style={{ opacity: .6 }}>· cloud: {status.totalRemote} bản ghi</span>
+                            </div>
+                        )}
+                        {status.loggedIn && status.brokenShare > 0 && (
+                            <div style={{
+                                marginTop: 8, padding: 9, borderRadius: 9, background: 'var(--warn-soft)',
+                                color: 'var(--ink)', fontSize: 12, lineHeight: 1.5,
+                            }}>
+                                <b>{status.brokenShare} bản ghi chưa gắn team.</b> Chúng đã lên cloud nhưng
+                                đồng nghiệp KHÔNG đọc được — trên máy này vẫn hiện “Team MKG” nên nhìn
+                                không ra. Bấm “Gắn team &amp; đẩy lại” bên dưới để sửa.
+                            </div>
+                        )}
+                        {status.loggedIn && status.wrongTeam > 0 && (
+                            <div style={{
+                                marginTop: 8, padding: 9, borderRadius: 9, background: 'var(--warn-soft)',
+                                fontSize: 12, lineHeight: 1.5,
+                            }}>
+                                <b>{status.wrongTeam} bản ghi đang gắn team KHÁC</b> với team của tài khoản
+                                này — người trong team đó mới đọc được.
                             </div>
                         )}
                         {Math.abs(status.skew || 0) > 60_000 && (
@@ -180,6 +210,12 @@ export default function SyncStatusSheet({ open, onClose, onSync }) {
                         <button className="btn btn-primary btn-block" onClick={onSync}>
                             <RefreshCw size={15} /> Đồng bộ lại ngay
                         </button>
+                        {(status.brokenShare > 0 || status.wrongTeam > 0) && onRepairTeam && (
+                            <button className="btn btn-block" onClick={onRepairTeam}
+                                style={{ background: 'var(--warn)', color: '#fff', border: 'none' }}>
+                                <Users size={15} /> Gắn team &amp; đẩy lại
+                            </button>
+                        )}
                         <button className="btn btn-block" onClick={loadStatus} style={{ background: 'none', border: '1.5px solid var(--line)', color: 'var(--ink-2)' }}>
                             Làm mới danh sách
                         </button>

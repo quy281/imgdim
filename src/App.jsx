@@ -154,6 +154,28 @@ export default function App() {
         if (pb.isLoggedIn()) syncAll(true);
     };
 
+    /**
+     * Gắn lại team cho TOÀN BỘ dự án rồi đẩy lại.
+     *
+     * Cần vì bản ghi đẩy lên lúc collection `teams` chưa tồn tại có `team` rỗng: chúng
+     * nằm trên cloud, chủ sở hữu vẫn thấy (khớp nhánh `owner`), nhưng rule đọc theo team
+     * không khớp nên đồng nghiệp không thấy gì — và không có lỗi nào hiện ra.
+     */
+    const repairTeamShare = async () => {
+        const team = pb.myTeam();
+        if (!team) { toast('Tài khoản này chưa thuộc team nào — vào Quản lý team để gắn vào team trước', 'err'); return; }
+        const list = await db.mutateProjects(cur => cur.map(p =>
+            (p.scope || pb.SCOPE_DEFAULT) === 'team'
+                ? { ...p, scope: 'team', teamId: team.id }
+                : p));
+        setProjects(list);
+        const ids = list.filter(p => p.scope === 'team').map(p => String(p.id));
+        const meta = await db.getMeta();
+        await db.setMeta({ scopeDirty: [...new Set([...(meta.scopeDirty || []), ...ids])] });
+        toast(`Đang gắn ${ids.length} dự án vào team ${team.name} và đẩy lại...`, 'ok');
+        await syncAll(false);
+    };
+
     const deleteProject = async (id) => {
         const docIds = await db.deleteProjectDocs(id);
         await persistProjects(l => l.filter(p => p.id !== id));
@@ -467,6 +489,7 @@ export default function App() {
                 open={showSyncStatus}
                 onClose={() => setShowSyncStatus(false)}
                 onSync={() => { setShowSyncStatus(false); syncAll(false); }}
+                onRepairTeam={async () => { setShowSyncStatus(false); await repairTeamShare(); }}
             />
             <ShareSheet project={shareFor} onClose={() => setShareFor(null)} />
             <TeamAdminSheet open={showTeamAdmin} onClose={() => setShowTeamAdmin(false)} />
