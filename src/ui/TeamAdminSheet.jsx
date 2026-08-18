@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-    Users, Plus, ArrowLeft, Trash2, Copy, RefreshCw, AlertCircle, UserPlus, Database,
+    Users, Plus, ArrowLeft, Trash2, Copy, RefreshCw, AlertCircle, UserPlus, Database, ShieldCheck,
 } from 'lucide-react';
 import Sheet from './Sheet';
 import { toast } from './Toast';
@@ -112,6 +112,24 @@ export default function TeamAdminSheet({ open, onClose }) {
         } catch (err) {
             setSetupLog(null);
             setError('Không cấp được tài khoản: ' + err.message);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const doAddAdmins = async () => {
+        setBusy(true);
+        setSetupLog('Đang nạp quản trị vào các đội...');
+        try {
+            const r = await pb.addAdminsToAllTeams((m) => setSetupLog(m));
+            setSetupLog(null);
+            await load();
+            toast(r.touched
+                ? `Đã thêm ${r.admins} quản trị vào ${r.touched}/${r.teams} đội`
+                : 'Mọi đội đã có đủ quản trị', 'ok');
+        } catch (err) {
+            setSetupLog(null);
+            toast('Không thêm được: ' + err.message, 'err');
         } finally {
             setBusy(false);
         }
@@ -336,6 +354,16 @@ export default function TeamAdminSheet({ open, onClose }) {
                             {report.log.join('\n')}
                             <button className="btn btn-block" style={{ marginTop: 10 }}
                                 onClick={() => setReport(null)}>Đóng nhật ký</button>
+                        </div>
+                    )}
+
+                    {pb.isAdmin() && teams?.length > 0 && (
+                        <div style={{ padding: '12px 16px 0' }}>
+                            <button className="btn btn-block" disabled={busy}
+                                style={{ border: '1.5px dashed var(--line)', background: 'none', color: 'var(--ink-2)' }}
+                                onClick={doAddAdmins}>
+                                <ShieldCheck size={17} /> Thêm quản trị vào mọi đội
+                            </button>
                         </div>
                     )}
 

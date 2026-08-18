@@ -62,12 +62,25 @@ export function ownerName() { return getAuth()?.identityName || myName(); }
 /** Tất cả team mà danh tính hiện tại thuộc về (superuser: toàn bộ team, vì bỏ qua rule). */
 export function myTeams() { return getAuth()?.teams || (getAuth()?.team ? [getAuth().team] : []); }
 /** Team "chính" — dùng làm mặc định khi dự án đổi sang phạm vi team mà chưa chọn team cụ thể. */
+const DEFAULT_TEAM_KEY = 'ks_default_team';
+
+/** Đội mặc định do người dùng CHỌN — rỗng nghĩa là để app suy. */
+export function defaultTeamId() { return localStorage.getItem(DEFAULT_TEAM_KEY) || ''; }
+export function setDefaultTeamId(id) {
+    if (id) localStorage.setItem(DEFAULT_TEAM_KEY, id);
+    else localStorage.removeItem(DEFAULT_TEAM_KEY);
+}
+
 export function myTeam() {
     const teams = myTeams();
     if (!teams.length) return null;
-    // KHÔNG lấy bừa team đầu danh sách. Superuser thấy MỌI team, kể cả team họ không
-    // thuộc về — gán dự án vào team đó thì đồng nghiệp mở app lên thấy trống trơn mà
-    // không có lỗi nào báo. Ưu tiên team mình thật sự là thành viên, rồi tới team gốc.
+    // Lựa chọn của người dùng thắng mọi suy đoán. Founder và quản trị nay ở TẤT CẢ đội,
+    // nên không có cách nào đoán đúng dự án mới thuộc đội nào — đoán sai là dự án rơi vào
+    // đội khác và người cần xem thì không thấy.
+    const picked = teams.find(t => t.id === defaultTeamId());
+    if (picked) return picked;
+    // Chưa chọn: ưu tiên đội mình thật sự là thành viên, rồi tới đội gốc. Superuser thấy
+    // MỌI đội kể cả đội họ không ở trong, lấy bừa đội đầu danh sách là gán nhầm.
     const mine = teams.filter(t => t.mine);
     const pool = mine.length ? mine : teams;
     return pool.find(t => t.slug === TEAM_SLUG) || pool[0];
@@ -1005,12 +1018,63 @@ export async function createTeam(name) {
     if (!clean) throw new PbError('Tên team không được để trống', 400);
     const base = clean.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
         .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'team';
+    // Đội mới KHÔNG được để rỗng thành viên. Hai lý do: (1) rule `members.id ?= auth.id`
+    // coi quan hệ rỗng là khớp, nên đội 0 thành viên hiện ra với cả người chưa đăng nhập;
+    // (2) người vừa tạo đội mà không ở trong đó thì không quản được nó.
     const rec = await api(`collections/${TEAMS}/records`, {
         method: 'POST',
         // Hậu tố ngẫu nhiên: slug có unique index, tránh phải kiểm trùng trước khi tạo.
-        body: JSON.stringify({ name: clean, slug: `${base}-${Math.random().toString(36).slice(2, 6)}`, members: [] }),
+        body: JSON.stringify({
+            name: clean,
+            slug: `${base}-${Math.random().toString(36).slice(2, 6)}`,
+            members: await adminMemberIds(),
+        }),
     });
+    await refreshTeam().catch(() => {});
     return { id: rec.id, name: rec.name, slug: rec.slug };
+}
+
+/** Danh tính Founder + mọi tài khoản role=admin — cấp quản lý phải ở trong MỌI đội. */
+async function adminMemberIds() {
+    const ids = new Set();
+    const me = ownerId();
+    if (me) ids.add(me);
+    try {
+        const res = await api(`collections/users/records?perPage=200&fields=id&${q('role="admin"')}`);
+        for (const u of res.items || []) ids.add(u.id);
+    } catch (err) {
+        console.warn('adminMemberIds:', err.message);
+    }
+    return [...ids];
+}
+
+/**
+ * Nạp Founder + toàn bộ quản trị vào MỌI đội. Chạy lại được nhiều lần.
+ * Cần vì đội tạo trước bản này còn rỗng, và vì cấp quản lý phải xem được mọi đội.
+ */
+export async function addAdminsToAllTeams(onProgress) {
+    requireAdmin();
+    const admins = await adminMemberIds();
+    if (!admins.length) throw new PbError('Chưa xác định được tài khoản quản trị', 400);
+    const res = await api(`collections/${TEAMS}/records?perPage=200`);
+    const teams = res.items || [];
+    let touched = 0;
+    for (const t of teams) {
+        const missing = admins.filter(id => !(t.members || []).includes(id));
+        if (!missing.length) continue;
+        onProgress?.(`Đang thêm quản trị vào đội ${t.name}...`);
+        try {
+            await api(`collections/${TEAMS}/records/${t.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ members: [...new Set([...(t.members || []), ...admins])] }),
+            });
+            touched++;
+        } catch (err) {
+            console.warn('addAdminsToAllTeams', t.name, err.message);
+        }
+    }
+    await refreshTeam().catch(() => {});
+    return { teams: teams.length, touched, admins: admins.length };
 }
 
 /**

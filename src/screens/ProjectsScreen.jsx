@@ -34,6 +34,8 @@ export default function ProjectsScreen({
     const [loggingIn, setLoggingIn] = useState(false);
     const [pinForm, setPinForm] = useState(null); // { old, next, again }
     const [pinBusy, setPinBusy] = useState(false);
+    // Đội mặc định nằm ở localStorage (không phải state) — cần cờ này để ô chọn vẽ lại.
+    const [, setDefaultTick] = useState(0);
 
     const logged = pb.isLoggedIn();
     // ownerId() chứ không myId(): với superuser, myId() là id trong _superusers, không
@@ -280,6 +282,18 @@ export default function ProjectsScreen({
                             <ListChecks size={19} style={{ color: 'var(--blue)' }} />
                             <div style={{ flex: 1 }}>Kiểm tra đồng bộ<div className="sub">So sánh local ↔ cloud từng dự án</div></div>
                         </button>
+                        {/* Founder và quản trị ở TẤT CẢ đội, nên app không thể đoán dự án mới
+                            thuộc đội nào — đoán sai là dự án rơi vào đội khác và người cần
+                            xem thì không thấy. Bắt chọn một lần, còn hơn đoán mỗi lần. */}
+                        {teams.length > 1 && (
+                            <div className="field" style={{ padding: '10px 0 4px' }}>
+                                <label>Đội mặc định cho dự án mới</label>
+                                <select value={pb.defaultTeamId() || (team?.id || '')}
+                                    onChange={e => { pb.setDefaultTeamId(e.target.value); setDefaultTick(t => t + 1); }}>
+                                    {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                </select>
+                            </div>
+                        )}
                         {!pb.isSuperuser() && (
                             <button className="sheet-row" onClick={() => setPinForm({ old: '', next: '', again: '' })}>
                                 <KeyRound size={19} style={{ color: 'var(--violet)' }} />

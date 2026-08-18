@@ -99,6 +99,22 @@ try {
     withTeams([T('Đội 1', 'oi-1', false), T('Đội 2', 'oi-2', false)]);
     eq('không thuộc team nào → vẫn trả về một team, không phải null', pb.myTeam()?.slug, 'oi-1');
 
+    // Đội mặc định do người dùng chọn phải THẮNG mọi suy đoán: Founder và quản trị ở
+    // TẤT CẢ đội nên không có cách nào đoán đúng dự án mới thuộc đội nào.
+    const SNAP_DEF = localStorage.getItem('ks_default_team');
+    withTeams([T('Academy', 'academy', true), T('MKG', 'mkg', true), T('Labs', 'labs', true)]);
+    pb.setDefaultTeamId('id-labs');
+    eq('đã chọn đội mặc định → dùng đúng đội đó, không rơi về mkg', pb.myTeam()?.slug, 'labs');
+    eq('đọc lại được lựa chọn', pb.defaultTeamId(), 'id-labs');
+
+    pb.setDefaultTeamId('id-khong-ton-tai');
+    eq('đội mặc định đã bị xoá → rơi về suy đoán, không trả rác', pb.myTeam()?.slug, 'mkg');
+
+    pb.setDefaultTeamId('');
+    eq('bỏ chọn → quay lại suy đoán', pb.myTeam()?.slug, 'mkg');
+    eq('bỏ chọn thì không còn lưu gì', pb.defaultTeamId(), '');
+    if (SNAP_DEF) localStorage.setItem('ks_default_team', SNAP_DEF);
+
     withTeams([]);
     eq('chưa có team nào → null', pb.myTeam(), null);
 
