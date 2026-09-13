@@ -59,22 +59,39 @@ export default function App() {
     useEffect(() => {
         if (share) return; // chế độ xem link chia sẻ: không chạm dữ liệu local
         (async () => {
-            // Mở store đúng tài khoản TRƯỚC khi đọc bất cứ gì (xem db.js — lớp user).
-            await db.setAccount(pb.myId() || db.lastStoreId());
-            setProjects(await db.loadProjects());
-            if (!pb.isLoggedIn()) return;
-            // Xác thực token thật với server trước khi tin là đang đăng nhập — xem
-            // pb.ensureSession(): PocketBase trả 200 rỗng cho token hết hạn, nên nếu chỉ
-            // tin localStorage thì app báo "đã sync" trong khi thực tế là khách.
-            // Phân biệt "đủ 30 ngày" với "token bị thu hồi" — ensureSession đã xoá auth
-            // nên phải đọc cờ TRƯỚC, không thì chỉ báo được thông điệp chung chung.
-            const expired = pb.sessionExpired();
-            if (await pb.ensureSession(true)) syncAll(true);
-            else {
+            try {
+                // Mở store đúng tài khoản TRƯỚC khi đọc bất cứ gì (xem db.js — lớp user).
+                // setAccount tự cứu kho anon còn sót từ những lần login lỗi của bản cũ.
+                const sw = await db.setAccount(pb.myId() || db.lastStoreId());
+                setProjects(await db.loadProjects());
+                if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
+                if (!pb.isLoggedIn()) return;
+                // Xác thực token thật với server trước khi tin là đang đăng nhập — xem
+                // pb.ensureSession(): PocketBase trả 200 rỗng cho token hết hạn, nên nếu chỉ
+                // tin localStorage thì app báo "đã sync" trong khi thực tế là khách.
+                // Phân biệt "đủ 30 ngày" với "token bị thu hồi" — ensureSession đã xoá auth
+                // nên phải đọc cờ TRƯỚC, không thì chỉ báo được thông điệp chung chung.
+                const expired = pb.sessionExpired();
+                if (await pb.ensureSession(true)) syncAll(true);
+                else {
+                    setAccount(null);
+                    toast(expired
+                        ? `Phiên đã dùng đủ ${pb.SESSION_DAYS} ngày — đăng nhập lại bằng PIN`
+                        : 'Phiên đăng nhập hết hạn — đăng nhập lại để đồng bộ', 'err');
+                }
+            } catch (err) {
+                // Fail closed: không sync một kho đang chuyển dở. Dữ liệu anon chưa bị xóa
+                // vì db.js chỉ cleanup sau verify; mở lại kho đó để người dùng vẫn thấy data.
+                pb.logout();
                 setAccount(null);
-                toast(expired
-                    ? `Phiên đã dùng đủ ${pb.SESSION_DAYS} ngày — đăng nhập lại bằng PIN`
-                    : 'Phiên đăng nhập hết hạn — đăng nhập lại để đồng bộ', 'err');
+                try {
+                    await db.setAccount(null);
+                    setProjects(await db.loadProjects());
+                } catch {
+                    setProjects([]);
+                }
+                toast('Chưa gắn được dữ liệu vào tài khoản — bản trên máy vẫn được giữ nguyên. Hãy đăng nhập lại.', 'err');
+                console.warn('boot data recovery:', err);
             }
         })();
         history.replaceState({ screen: 'projects' }, '');
@@ -102,7 +119,10 @@ export default function App() {
 
     // ===== Dirty flag + sync có debounce =====
     const markDirty = (kind, item) => {
-        db.markPending(item.id, kind);
+        db.markPending(item.id, kind).catch(err => {
+            console.warn('mark pending:', err);
+            toast('Không ghi được hàng đợi đồng bộ trên máy — hãy thử lại trước khi đóng app.', 'err');
+        });
         if (!pb.isLoggedIn()) return;
         if (syncTimer.current) clearTimeout(syncTimer.current);
         syncTimer.current = setTimeout(() => {
@@ -203,7 +223,7 @@ export default function App() {
         setDocs(prev => prev.map(d => d.id === doc.id ? doc : d));
         const timers = saveTimers.current;
         if (timers.has(doc.id)) clearTimeout(timers.get(doc.id));
-        timers.set(doc.id, setTimeout(() => {
+        timers.set(doc.id, setTimeout(async () => {
             timers.delete(doc.id);
             // Stamp updatedAt tại ĐÚNG MỘT CHỖ. Trước đây các nhánh đổi settings/view gọi
             // onChange mà không bump updatedAt → thay đổi không bao giờ push, rồi bị pull
@@ -213,10 +233,18 @@ export default function App() {
                 updatedAt: pb.now(),
                 ...(doc.type === 'plan' ? { thumb: makePlanThumb(doc.plan) } : null),
             };
-            db.putDoc(toSave);
-            setDocs(prev => prev.map(d => d.id === toSave.id ? toSave : d));
-            markDirty('doc', toSave);
-            if (syncBusyRef.current) syncAgain.current = true;
+            try {
+                // Phải chờ IndexedDB xác nhận trước khi đánh dấu pending/sync. Nếu bỏ
+                // await, login có thể chuyển store trong lúc save còn treo và lỗi ghi bị
+                // nuốt, khiến UI có dữ liệu nhưng lần mở sau không còn.
+                await db.putDoc(toSave);
+                setDocs(prev => prev.map(d => d.id === toSave.id ? toSave : d));
+                markDirty('doc', toSave);
+                if (syncBusyRef.current) syncAgain.current = true;
+            } catch (err) {
+                console.warn('save doc:', err);
+                toast('Không lưu được thay đổi trên máy — dữ liệu vẫn đang mở, hãy thử lại trước khi thoát.', 'err');
+            }
         }, 400));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -392,20 +420,28 @@ export default function App() {
     };
 
     const login = async (identity, secret) => {
+        let authenticated = false;
         try {
             // loginSmart: PIN 4–8 số thì nở thành mật khẩu thật, còn lại coi là mật khẩu
             // thô — nhờ vậy Founder vẫn vào được bằng mật khẩu superuser cũ.
             const user = await pb.loginSmart(identity, secret);
+            authenticated = true;
             const sw = await db.setAccount(user.id);
             setAccount(user);
             setProjects(await db.loadProjects());
             const r = routeRef.current;
             setDocs(r.projectId ? await db.listDocs(r.projectId) : []);
-            if (sw.adopted) toast('Đã gắn dữ liệu trên máy vào tài khoản này', 'ok');
+            if (sw.adopted) toast(`Đã khôi phục và gắn ${sw.adopted} mục trên máy vào tài khoản`, 'ok');
             else toast('Đăng nhập thành công', 'ok');
             syncAll(true);
         } catch (err) {
-            toast(err.message, 'err');
+            // Nếu xác thực đã xong nhưng bước chuyển dữ liệu lỗi, trả về trạng thái chưa
+            // đăng nhập. Kho anon vẫn là kho đang mở và chưa bị dọn, nên không tạo ảo giác
+            // "login xong mất dữ liệu" cũng không sync nhầm một kho chuyển dở.
+            if (authenticated) pb.logout();
+            toast(authenticated
+                ? 'Không thể gắn dữ liệu vào tài khoản. Dữ liệu trên máy vẫn an toàn — hãy thử đăng nhập lại.'
+                : err.message, 'err');
             throw err;
         }
     };

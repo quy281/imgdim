@@ -27,6 +27,7 @@
     });
 
     const UID = 'mrepro_uid_1';
+    const OTHER_UID = 'mrepro_uid_2';
     const V2_PROJECTS = [
         { id: 'pOld1', name: 'Biệt thự anh Minh — Q2', createdAt: 1, updatedAt: 111 },
         { id: 'pOld2', name: 'Dinh thự Thảo Điền', createdAt: 2, updatedAt: 222 },
@@ -38,6 +39,7 @@
         await nuke('mkg-khaosat');
         await nuke('mkg-khaosat-anon');
         await nuke(`mkg-khaosat-${UID}`);
+        await nuke(`mkg-khaosat-${OTHER_UID}`);
     }
 
     // Ghi store v2 y như src/lib/db.js của v2 đã làm.
@@ -73,6 +75,38 @@
         const ps = await db.loadProjects();
         ok('di trú vào store anon', r.migratedV2 > 0, `migratedV2=${r.migratedV2}`);
         ok('THẤY LẠI dự án cũ', ps.length === 2, `chỉ có ${ps.length}`);
+    }
+
+    group('A2. Kho tài khoản đã có dữ liệu vẫn nhận đủ dữ liệu v2');
+    {
+        await reset();
+        // Mở và ghi kho v3 trước, sau đó dữ liệu v2 mới xuất hiện. Bản cũ từng chỉ
+        // di trú khi kho đích rỗng nên trường hợp này làm dữ liệu cũ bị mồ côi.
+        await db.setAccount(UID);
+        await db.saveProjects([{ id: 'pNew', name: 'Đã có ở v3', createdAt: 9, updatedAt: 999 }]);
+        await db.putDoc({ id: 'dNew', projectId: 'pNew', type: 'photo', name: 'Doc v3', createdAt: 9, updatedAt: 999 });
+        await seedV2();
+
+        const r = await db.setAccount(UID);
+        const ps = await db.loadProjects();
+        const docs = await db.listAllDocs();
+        ok('vẫn chạy di trú dù target không rỗng', r.migratedV2 > 0, `migratedV2=${r.migratedV2}`);
+        ok('giữ project v3 và nhận cả project v2', ['pNew', 'pOld1', 'pOld2'].every(id => ps.some(p => p.id === id)), JSON.stringify(ps.map(p => p.id)));
+        ok('giữ doc v3 và nhận cả doc v2', ['dNew', 'dOld1'].every(id => docs.some(d => d.id === id)), JSON.stringify(docs.map(d => d.id)));
+    }
+
+    group('A3. Backup v2 không được rò sang tài khoản thứ hai');
+    {
+        await reset();
+        await seedV2();
+        await db.setAccount(UID);
+        ok('tài khoản đầu tiên nhận được backup', (await db.loadProjects()).length === 2);
+
+        const r = await db.setAccount(OTHER_UID);
+        ok('tài khoản thứ hai không nhận nhầm backup', (await db.loadProjects()).length === 0, `migratedV2=${r.migratedV2}`);
+
+        await db.setAccount(UID);
+        ok('quay lại chủ backup vẫn còn đủ dữ liệu', (await db.loadProjects()).length === 2);
     }
 
     group('C. Đăng nhập SAU khi đã mở app ở chế độ khách');
