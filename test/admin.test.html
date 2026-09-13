@@ -207,7 +207,7 @@
         ok('không tạo được identity → lỗi RÕ RÀNG, không âm thầm bỏ qua', caught?.status === 500 && /quản trị/.test(caught.message || ''), caught?.message);
     }
 
-    // ===== 7. Quản lý team — chỉ superuser =====
+    // ===== 7. Quản lý team — tài khoản quản trị =====
     group('Quản lý team & thành viên');
     {
         localStorage.removeItem('ks_auth');
@@ -240,12 +240,23 @@
         ok('xóa khỏi team thành công', !db.teams.find(t => t.id === team.id).members.includes(addAgain.userId));
     }
     {
-        // Mật khẩu quá ngắn — CHÍNH XÁC lỗi "1111" mà Sếp định dùng: chặn TRƯỚC khi gọi mạng.
+        // 4 số nay là PIN hợp lệ: client nở thành mật khẩu thật đủ dài cho PocketBase,
+        // nhưng vẫn trả PIN gốc để admin đọc/gửi cho nhân viên.
+        const before = calls.length;
+        const made = await pb.addTeamMember(db.teams[0].id, 'pin@mkg.vn', { password: '1111' });
+        const createCall = calls.slice(before).find(c => c.method === 'POST' && c.path === 'collections/users/records');
+        const sent = bodyOf(createCall || {});
+        ok('PIN "1111" được nhận', made.created === true && made.password === '1111');
+        ok('server nhận mật khẩu đã nở, không phải 1111 thô', sent.password === pb.pinToPassword('1111') && sent.password !== '1111',
+            JSON.stringify(sent));
+    }
+    {
+        // Mật khẩu thô quá ngắn và không phải PIN thì vẫn chặn TRƯỚC khi gọi mạng.
         const before = calls.length;
         let caught = null;
-        try { await pb.addTeamMember('team_x', 'a@mkg.vn', { password: '1111' }); }
+        try { await pb.addTeamMember(db.teams[0].id, 'short@mkg.vn', { password: 'abc' }); }
         catch (e) { caught = e; }
-        ok('mật khẩu "1111" bị từ chối', /ký tự/.test(caught?.message || ''), caught?.message);
+        ok('mật khẩu thô quá ngắn bị từ chối', /ký tự/.test(caught?.message || ''), caught?.message);
         ok('chặn phía client, KHÔNG gọi mạng phí công', calls.length === before);
     }
     {
@@ -255,7 +266,7 @@
         ok('email sai định dạng bị từ chối', /Email không hợp lệ/.test(caught?.message || ''));
     }
     {
-        // Tài khoản KHÔNG phải superuser — mọi thao tác quản trị bị chặn ngay từ client.
+        // Tài khoản thường không có role admin — mọi thao tác quản trị bị chặn ngay từ client.
         localStorage.removeItem('ks_auth');
         resetDb();
         db.loginEmail = 'thanhvien@mkg.vn'; db.usersAuthOk = true;

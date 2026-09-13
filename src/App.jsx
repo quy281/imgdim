@@ -3,15 +3,19 @@ import ProjectsScreen from './screens/ProjectsScreen';
 import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
+import CustomerLoginScreen from './screens/CustomerLoginScreen';
+import CustomerHomeScreen from './screens/CustomerHomeScreen';
 import SyncStatusSheet from './ui/SyncStatusSheet';
 import ShareSheet from './ui/ShareSheet';
 import TeamAdminSheet from './ui/TeamAdminSheet';
+import CustomerInboxSheet from './ui/CustomerInboxSheet';
 import ShareViewer from './screens/ShareViewer';
 import { ToastHost, toast } from './ui/Toast';
 import * as db from './lib/db';
 import * as pb from './lib/pb';
 import { newProject, newPlanDoc, newPhotoDoc } from './lib/planModel';
 import { fileToPhoto, makePlanThumb } from './lib/image';
+import { genId } from './lib/geometry';
 
 /** Đọc tham số share từ URL: ?s=<code> (mới) hoặc ?view=<base64> (link cũ đã gửi ra). */
 function readShareParam() {
@@ -30,6 +34,8 @@ function readShareParam() {
     }
 }
 
+const customerPortalRequested = () => new URLSearchParams(window.location.search).get('customer') === '1';
+
 export default function App() {
     const [projects, setProjects] = useState(null); // null = đang tải
     const [route, setRoute] = useState({ screen: 'projects' });
@@ -39,9 +45,13 @@ export default function App() {
     const [lastSyncAt, setLastSyncAt] = useState(null);
     const [showSyncStatus, setShowSyncStatus] = useState(false);
     const [showTeamAdmin, setShowTeamAdmin] = useState(false);
+    const [showCustomerInbox, setShowCustomerInbox] = useState(false);
+    const [customerInboxCount, setCustomerInboxCount] = useState(0);
+    const [submittingId, setSubmittingId] = useState(null);
     const [shareFor, setShareFor] = useState(null); // project object
     const [account, setAccount] = useState(() => pb.me());
     const share = useRef(readShareParam()).current;
+    const customerPortal = useRef(customerPortalRequested()).current;
 
     const projectsRef = useRef([]);
     useEffect(() => { projectsRef.current = projects || []; }, [projects]);
@@ -55,6 +65,14 @@ export default function App() {
     const syncBusyRef = useRef(false);    // chặn sync chạy trùng (tránh stale closure)
     const syncAgain = useRef(false);      // có thay đổi mới trong lúc đang sync
 
+    const refreshCustomerInboxCount = async () => {
+        if (!pb.isLoggedIn() || pb.isCustomer()) { setCustomerInboxCount(0); return; }
+        try {
+            const items = await pb.listCustomerSubmissions();
+            setCustomerInboxCount(items.filter(x => x.status === 'submitted').length);
+        } catch (err) { console.warn('customer inbox:', err.message); }
+    };
+
     // ===== Boot =====
     useEffect(() => {
         if (share) return; // chế độ xem link chia sẻ: không chạm dữ liệu local
@@ -62,7 +80,9 @@ export default function App() {
             try {
                 // Mở store đúng tài khoản TRƯỚC khi đọc bất cứ gì (xem db.js — lớp user).
                 // setAccount tự cứu kho anon còn sót từ những lần login lỗi của bản cũ.
-                const sw = await db.setAccount(pb.myId() || db.lastStoreId());
+                const sw = await db.setAccount(pb.myId() || db.lastStoreId(), {
+                    adoptAnon: !customerPortal && !pb.isCustomer(),
+                });
                 setProjects(await db.loadProjects());
                 if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
                 if (!pb.isLoggedIn()) return;
@@ -72,7 +92,13 @@ export default function App() {
                 // Phân biệt "đủ 30 ngày" với "token bị thu hồi" — ensureSession đã xoá auth
                 // nên phải đọc cờ TRƯỚC, không thì chỉ báo được thông điệp chung chung.
                 const expired = pb.sessionExpired();
-                if (await pb.ensureSession(true)) syncAll(true);
+                if (await pb.ensureSession(true)) {
+                    if (pb.isCustomer()) await pb.refreshCustomerProfile().catch(() => {});
+                    else if (!customerPortal) {
+                        syncAll(true);
+                        refreshCustomerInboxCount();
+                    }
+                }
                 else {
                     setAccount(null);
                     toast(expired
@@ -98,9 +124,17 @@ export default function App() {
         const onPop = (e) => setRoute(e.state || { screen: 'projects' });
         window.addEventListener('popstate', onPop);
         const onVisible = () => {
-            if (document.visibilityState === 'visible' && pb.isLoggedIn()) syncAll(true);
+            if (document.visibilityState === 'visible' && pb.isLoggedIn() && !pb.isCustomer() && !customerPortal) {
+                syncAll(true);
+                refreshCustomerInboxCount();
+            }
         };
-        const onOnline = () => { if (pb.isLoggedIn()) syncAll(true); };
+        const onOnline = () => {
+            if (pb.isLoggedIn() && !pb.isCustomer() && !customerPortal) {
+                syncAll(true);
+                refreshCustomerInboxCount();
+            }
+        };
         document.addEventListener('visibilitychange', onVisible);
         window.addEventListener('online', onOnline);
         return () => {
@@ -119,6 +153,9 @@ export default function App() {
 
     // ===== Dirty flag + sync có debounce =====
     const markDirty = (kind, item) => {
+        // Bản nháp của khách chỉ rời điện thoại khi họ chủ động bấm Gửi. Không đưa nó
+        // vào outbox survey_items nội bộ và không auto-sync trong lúc đang đo.
+        if (pb.isCustomer()) return;
         db.markPending(item.id, kind).catch(err => {
             console.warn('mark pending:', err);
             toast('Không ghi được hàng đợi đồng bộ trên máy — hãy thử lại trước khi đóng app.', 'err');
@@ -143,7 +180,12 @@ export default function App() {
     const createProject = async (name) => {
         // ownerId() chứ không phải myId(): với tài khoản superuser, myId() là id trong
         // bảng _superusers — không khớp với owner thật sự sẽ ghi lên cloud (xem pb.js).
-        const p = { ...newProject(name), ownerId: pb.ownerId() || null, updatedAt: pb.now(), createdAt: pb.now() };
+        const p = {
+            ...newProject(name), ownerId: pb.ownerId() || null,
+            teamId: pb.isCustomer() ? pb.customerTeamId() : null,
+            customerDraft: pb.isCustomer() || undefined,
+            updatedAt: pb.now(), createdAt: pb.now(),
+        };
         await persistProjects(list => [p, ...list]);
         markDirty('project', p);
         setDocs([]);
@@ -171,7 +213,7 @@ export default function App() {
         await db.setMeta({ scopeDirty: [...dirty] });
         markDirty('project', p);
         toast(scope === 'team' ? `Đã chia sẻ cho team ${team?.name || pb.myTeam()?.name || 'MKG'}` : 'Đã chuyển về riêng tư', 'ok');
-        if (pb.isLoggedIn()) syncAll(true);
+        if (pb.isLoggedIn() && !pb.isCustomer()) syncAll(true);
     };
 
     /**
@@ -205,7 +247,7 @@ export default function App() {
         await db.addTombstone(String(id), 'project', at);
         for (const docId of docIds) await db.addTombstone(String(docId), 'doc', at);
         toast('Đã xóa dự án', 'ok');
-        if (pb.isLoggedIn()) syncAll(true);
+        if (pb.isLoggedIn() && !pb.isCustomer()) syncAll(true);
     };
 
     // ===== Mở dự án / doc =====
@@ -296,12 +338,79 @@ export default function App() {
         await db.deleteDoc(id);
         await db.addTombstone(String(id), 'doc', pb.now());
         toast('Đã xóa', 'ok');
-        if (pb.isLoggedIn()) syncAll(true);
+        if (pb.isLoggedIn() && !pb.isCustomer()) syncAll(true);
+    };
+
+    // ===== Khách gửi → nhân viên duyệt =====
+    const submitCustomerProject = async (project) => {
+        if (!pb.isCustomer() || submittingId) return;
+        setSubmittingId(project.id);
+        try {
+            // Editor lưu debounce 400 ms. Chờ lượt đó vào hàng đợi rồi đọc qua db queue
+            // để snapshot gửi đi chắc chắn chứa nét đo cuối cùng.
+            if (saveTimers.current.size) {
+                await new Promise(resolve => setTimeout(resolve, 450));
+                await db.loadProjects();
+            }
+            const projectDocs = await db.listDocs(project.id);
+            const sent = await pb.submitCustomerSurvey({ project, docs: projectDocs });
+            const next = await db.mutateProjects(list => list.map(p => p.id === project.id
+                ? { ...p, customerSubmittedAt: sent.submittedAt || pb.now(), customerSubmissionId: sent.id,
+                    customerSubmissionKey: sent.submissionKey }
+                : p));
+            setProjects(next);
+            toast('Đã gửi dữ liệu cho nhân viên phụ trách', 'ok');
+        } catch (err) {
+            toast('Chưa gửi được: ' + err.message + '. Bản trên điện thoại vẫn được giữ nguyên.', 'err');
+        } finally { setSubmittingId(null); }
+    };
+
+    const importCustomerSubmission = async (submission) => {
+        if (!submission?.payload?.project || !Array.isArray(submission.payload.docs)) {
+            throw new Error('Gói dữ liệu khách gửi không hợp lệ');
+        }
+        const existed = projectsRef.current.find(p => p.customerSubmissionId === submission.id);
+        if (existed) {
+            await pb.reviewCustomerSubmission(submission.id, 'imported');
+            toast('Submission này đã có trong dự án', 'ok');
+            return existed;
+        }
+
+        const at = pb.now();
+        const source = submission.payload.project;
+        const projectId = genId('p');
+        const project = {
+            ...source,
+            id: projectId,
+            name: source.name || submission.title,
+            ownerId: pb.ownerId(), ownerName: pb.ownerName(),
+            scope: 'team', teamId: submission.team,
+            customerSubmissionId: submission.id,
+            customerSourceProjectId: submission.sourceProjectId,
+            customerName: submission.customerName,
+            createdAt: at, updatedAt: at,
+        };
+        const importedDocs = submission.payload.docs.map(d => ({
+            ...d, id: genId('d'), projectId, createdAt: at, updatedAt: at,
+        }));
+
+        // Ghi local + outbox trước, rồi mới đánh dấu submission đã nhập. Nếu mạng rớt
+        // sau đó, dữ liệu vẫn nằm trên máy nhân viên và sync tiếp ở lần sau.
+        const next = await db.mutateProjects(list => [project, ...list]);
+        for (const doc of importedDocs) await db.putDoc(doc);
+        await db.markPending(project.id, 'project');
+        for (const doc of importedDocs) await db.markPending(doc.id, 'doc');
+        setProjects(next);
+        await pb.reviewCustomerSubmission(submission.id, 'imported');
+        setCustomerInboxCount(n => Math.max(0, n - 1));
+        toast(`Đã nhập khảo sát của ${submission.customerName || 'khách hàng'}`, 'ok');
+        syncAll(true);
+        return project;
     };
 
     // ===== Sync =====
     const syncAll = async (silent) => {
-        if (!pb.isLoggedIn()) return;
+        if (!pb.isLoggedIn() || pb.isCustomer()) return;
         if (syncBusyRef.current) { syncAgain.current = true; return; }
         if (navigator.onLine === false) {
             if (!silent) toast('Không có mạng — sẽ tự đồng bộ khi có lại', 'err');
@@ -400,12 +509,13 @@ export default function App() {
                     + 'đồng nghiệp chưa thấy được. Vào Quản lý team & người dùng để gắn tài khoản vào team.', 'err');
             }
             if (skippedOpen && !silent) toast(`${skippedOpen} file đang sửa — giữ bản trên máy`, 'ok');
-            if (res.legacy && !silent) toast('Đang chạy chế độ tương thích — dữ liệu vẫn đúng, chỉ chậm hơn', 'ok');
         } catch (err) {
             if (err.status === 401) {
                 setAccount(null); // pb đã xóa phiên — cho chip cloud phản ánh đúng
                 toast(err.message, 'err');
-            } else if (!silent) toast('Lỗi đồng bộ: ' + err.message, 'err');
+            // Lỗi schema phải luôn hiện, kể cả sync nền sau login. Nếu im lặng, người
+            // dùng sẽ tưởng đã đẩy xong trong khi dữ liệu vẫn đang chờ an toàn trên máy.
+            } else if (!silent || err.status === 503) toast('Lỗi đồng bộ: ' + err.message, 'err');
             console.warn('sync:', err);
         } finally {
             syncBusyRef.current = false;
@@ -419,27 +529,36 @@ export default function App() {
         }
     };
 
-    const login = async (identity, secret) => {
+    const login = async (identity, secret, opts = {}) => {
         let authenticated = false;
+        let storeSwitched = false;
         try {
             // loginSmart: PIN 4–8 số thì nở thành mật khẩu thật, còn lại coi là mật khẩu
             // thô — nhờ vậy Founder vẫn vào được bằng mật khẩu superuser cũ.
             const user = await pb.loginSmart(identity, secret);
             authenticated = true;
-            const sw = await db.setAccount(user.id);
+            if (opts.customerOnly && !pb.isCustomer()) {
+                throw new pb.PbError('Đây là tài khoản nhân viên, không phải tài khoản khách hàng', 403);
+            }
+            const sw = await db.setAccount(user.id, { adoptAnon: !pb.isCustomer() });
+            storeSwitched = true;
             setAccount(user);
             setProjects(await db.loadProjects());
             const r = routeRef.current;
             setDocs(r.projectId ? await db.listDocs(r.projectId) : []);
             if (sw.adopted) toast(`Đã khôi phục và gắn ${sw.adopted} mục trên máy vào tài khoản`, 'ok');
             else toast('Đăng nhập thành công', 'ok');
-            syncAll(true);
+            if (!pb.isCustomer()) {
+                syncAll(true);
+                refreshCustomerInboxCount();
+            }
+            return user;
         } catch (err) {
             // Nếu xác thực đã xong nhưng bước chuyển dữ liệu lỗi, trả về trạng thái chưa
             // đăng nhập. Kho anon vẫn là kho đang mở và chưa bị dọn, nên không tạo ảo giác
             // "login xong mất dữ liệu" cũng không sync nhầm một kho chuyển dở.
             if (authenticated) pb.logout();
-            toast(authenticated
+            toast(storeSwitched
                 ? 'Không thể gắn dữ liệu vào tài khoản. Dữ liệu trên máy vẫn an toàn — hãy thử đăng nhập lại.'
                 : err.message, 'err');
             throw err;
@@ -449,6 +568,7 @@ export default function App() {
     const logout = () => {
         pb.logout();
         setAccount(null);
+        setCustomerInboxCount(0);
         // Giữ nguyên store đang mở — dữ liệu vẫn thấy được trên máy. Chỉ khi một tài
         // khoản KHÁC đăng nhập thì db.setAccount mới đổi sang store riêng của họ.
         toast('Đã đăng xuất — dữ liệu vẫn lưu trên máy');
@@ -459,6 +579,19 @@ export default function App() {
         return (
             <div className="app">
                 <ShareViewer code={share.code} data={share.data} decodeError={share.error} />
+                <ToastHost />
+            </div>
+        );
+    }
+
+    if (customerPortal && !pb.isCustomer()) {
+        return (
+            <div className="app">
+                <CustomerLoginScreen
+                    wrongAccount={pb.isLoggedIn()}
+                    onLogout={logout}
+                    onLogin={(identity, pin) => login(identity, pin, { customerOnly: true })}
+                />
                 <ToastHost />
             </div>
         );
@@ -495,6 +628,18 @@ export default function App() {
                 onDeleteDoc={deleteDoc}
             />
         );
+    } else if (pb.isCustomer()) {
+        screen = (
+            <CustomerHomeScreen
+                projects={projects}
+                account={account}
+                onOpen={openProject}
+                onCreate={createProject}
+                onSubmit={submitCustomerProject}
+                onLogout={logout}
+                submittingId={submittingId}
+            />
+        );
     } else {
         screen = (
             <ProjectsScreen
@@ -512,6 +657,8 @@ export default function App() {
                 onSync={() => syncAll(false)}
                 onOpenSyncStatus={() => setShowSyncStatus(true)}
                 onOpenTeamAdmin={() => setShowTeamAdmin(true)}
+                onOpenCustomerInbox={() => setShowCustomerInbox(true)}
+                customerInboxCount={customerInboxCount}
                 onLogin={login}
                 onLogout={logout}
             />
@@ -529,6 +676,11 @@ export default function App() {
             />
             <ShareSheet project={shareFor} onClose={() => setShareFor(null)} />
             <TeamAdminSheet open={showTeamAdmin} onClose={() => setShowTeamAdmin(false)} />
+            <CustomerInboxSheet
+                open={showCustomerInbox}
+                onClose={() => setShowCustomerInbox(false)}
+                onImport={importCustomerSubmission}
+            />
             <ToastHost />
         </div>
     );

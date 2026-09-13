@@ -58,8 +58,18 @@ window.fetch = async (url, opts = {}) => {
     if (u.includes('/api/collections') && (opts.method === 'POST' || opts.method === 'PATCH')) {
         // Sau khi collection `teams` được tạo, các truy vấn teams tiếp theo phải thành công
         // — giống hệt server thật, nếu không bước tạo team MKG sẽ thấy 404 giả.
+        const body = (() => { try { return JSON.parse(opts.body || '{}'); } catch { return {}; } })();
         if ((opts.body || '').includes('"name":"teams"')) window.__provisioned = true;
-        return json({ id: 'colTeams', fields: [{ name: 'id', max: 10 }] });
+        if (u.includes('/api/collections/colSurvey')) {
+            return json({
+                id: 'colSurvey', name: 'survey_items',
+                fields: body.fields || [], indexes: body.indexes || [],
+                listRule: body.listRule || '', viewRule: body.viewRule || '',
+                createRule: body.createRule || '', updateRule: body.updateRule || '',
+                deleteRule: body.deleteRule || '',
+            });
+        }
+        return json({ id: body.name === 'teams' ? 'colTeams' : `col_${body.name || 'x'}`, name: body.name, fields: body.fields || [{ name: 'id', max: 10 }] });
     }
     return json({ items: [], totalPages: 1 });
 };
@@ -141,7 +151,7 @@ ok('đặt quyền đọc theo team',
     patched.some(c => (c.body || '').includes('scope = \\"team\\"') && (c.body || '').includes('team.members.id')));
 ok('cấm đổi chủ sở hữu record', patched.some(c => (c.body || '').includes('@request.body.owner = owner')));
 ok('tạo team MKG', window.__calls.some(c => c.method === 'POST' && (c.body || '').includes('"slug":"mkg"')));
-ok('backfill gắn dữ liệu cũ vào team',
+ok('backfill chuẩn hóa dữ liệu cũ',
     window.__calls.some(c => c.method === 'PATCH' && c.url.includes('survey_items/records/')));
 
 document.getElementById('log').textContent =

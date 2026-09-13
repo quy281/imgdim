@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
-    Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound,
+    Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -22,7 +22,8 @@ const fmtSince = (ts) => {
 export default function ProjectsScreen({
     projects, account, syncBusy, syncMsg, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
-    onSync, onOpenSyncStatus, onOpenTeamAdmin, onLogin, onLogout,
+    onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
+    onLogin, onLogout,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
@@ -281,6 +282,18 @@ export default function ProjectsScreen({
                         <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenSyncStatus?.(); }}>
                             <ListChecks size={19} style={{ color: 'var(--blue)' }} />
                             <div style={{ flex: 1 }}>Kiểm tra đồng bộ<div className="sub">So sánh local ↔ cloud từng dự án</div></div>
+                        </button>
+                        <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenCustomerInbox?.(); }}>
+                            <Inbox size={19} style={{ color: 'var(--blue)' }} />
+                            <div style={{ flex: 1 }}>
+                                Dữ liệu khách gửi
+                                <div className="sub">{customerInboxCount ? `${customerInboxCount} bản đang chờ duyệt` : 'Hộp thư khảo sát từ khách hàng'}</div>
+                            </div>
+                            {!!customerInboxCount && (
+                                <span style={{ minWidth: 24, height: 24, borderRadius: 12, background: 'var(--warn)', color: '#fff', display: 'grid', placeItems: 'center', fontSize: 12 }}>
+                                    {customerInboxCount}
+                                </span>
+                            )}
                         </button>
                         {/* Founder và quản trị ở TẤT CẢ đội, nên app không thể đoán dự án mới
                             thuộc đội nào — đoán sai là dự án rơi vào đội khác và người cần

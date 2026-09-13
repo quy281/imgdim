@@ -15,12 +15,14 @@
 // Xung đột: last-write-wins trên updated_ms, nhưng mốc thời gian lấy theo ĐỒNG HỒ SERVER
 // (bù lệch qua header Date) nên máy sai giờ không ăn mất dữ liệu của máy khác.
 
-import { hashString } from './hash';
+import { hashString } from './hash.js';
 
-const BASE = 'https://db.mkg.vn';
+const BASE = (globalThis.__MKG_PB_URL__ || 'https://db.mkg.vn').replace(/\/+$/, '');
 const COL = 'survey_items';
 const TEAMS = 'teams';
 const SHARES = 'shares';
+const CUSTOMER_PROFILES = 'customer_profiles';
+const CUSTOMER_SUBMISSIONS = 'customer_submissions';
 // Bảng dấu xoá. Bản ghi khảo sát bị XOÁ THẬT khỏi survey_items (kèm ảnh); ở đây chỉ còn
 // item_id + thời điểm. Không có dấu này thì máy đang offline lúc xoá sẽ đẩy bản cũ lên
 // lại ở lần sync sau — xoá rồi tự sống lại.
@@ -45,6 +47,9 @@ export function isLoggedIn() { return !!getAuth()?.token; }
 export function me() { return getAuth()?.model || null; }
 export function myId() { return getAuth()?.model?.id || null; }
 export function isSuperuser() { return !!getAuth()?.superuser; }
+export function isCustomer() { return !isSuperuser() && getAuth()?.role === 'customer'; }
+export function customerProfile() { return getAuth()?.customerProfile || null; }
+export function customerTeamId() { return customerProfile()?.team || null; }
 export function myName() {
     const m = me();
     return m?.name || m?.username || m?.email || '';
@@ -308,6 +313,16 @@ async function resolveIdentityAndTeams(email, superuser) {
     return teams;
 }
 
+/** Nạp tuyến nhận dữ liệu của khách. Khách KHÔNG là thành viên team và không thể đọc
+ * dữ liệu nội bộ; profile chỉ cho biết submission của họ phải gửi tới team nào. */
+export async function refreshCustomerProfile() {
+    if (!isLoggedIn() || !isCustomer()) return null;
+    const res = await api(`collections/${CUSTOMER_PROFILES}/records?perPage=1&${q(`user='${esc(myId())}'`)}`);
+    const profile = res.items?.[0] || null;
+    saveAuth({ customerProfile: profile });
+    return profile;
+}
+
 export async function login(identity, password) {
     // Bảng `users` cho đăng nhập bằng email HOẶC username (identityFields của server).
     let data, superuser = false;
@@ -335,7 +350,12 @@ export async function login(identity, password) {
         loginAt: Date.now(),
         team: null, teams: [], identityId: null, identityName: null,
     });
-    await resolveIdentityAndTeams(data.record.email, superuser);
+    if (!superuser && data.record.role === 'customer') {
+        try { await refreshCustomerProfile(); }
+        catch (err) { console.warn('customer profile:', err.message); }
+    } else {
+        await resolveIdentityAndTeams(data.record.email, superuser);
+    }
     return data.record;
 }
 
@@ -510,8 +530,8 @@ async function fetchMeta() {
     for (let page = 1; ; page++) {
         const res = await api(`collections/${COL}/records?page=${page}&perPage=500&sort=-updated&fields=${META_FIELDS}`);
         const batch = res.items || [];
-        // Backend chưa chạy pb-setup.mjs → chưa có cột updated_ms. Rơi về chế độ cũ
-        // (phải tải cả `data` để so sánh) thay vì hỏng.
+        // Backend chưa provision schema mới → chưa có cột updated_ms. Vẫn tải full data
+        // để màn kiểm tra biết backend đang legacy; fullSync sẽ fail-closed, không ghi.
         if (page === 1 && batch.length && !('updated_ms' in batch[0])) { legacy = true; break; }
         items.push(...batch);
         if (page >= (res.totalPages || 1)) break;
@@ -634,9 +654,8 @@ function buildPayload({ kind, item, scope, teamId, legacy }) {
         name: item.name || '',
     };
 
-    // Backend CHƯA chạy pb-setup.mjs: field `photo` không tồn tại. Nếu vẫn bóc `img` ra
-    // khỏi `data` rồi gửi vào field đó thì ảnh biến mất khỏi cloud — máy khác kéo về
-    // được doc ảnh rỗng. Ở chế độ này giữ nguyên hình dạng payload của v2.
+    // Guard cũ cho payload v2. fullSync hiện fail-closed trước khi ghi legacy, nhưng giữ
+    // nhánh này để các công cụ đọc/so sánh schema cũ không vô tình bóc mất ảnh.
     if (legacy) {
         return { fields: { ...base, data: item }, photoDataUrl: null, legacy: true };
     }
@@ -706,6 +725,13 @@ export async function fullSync(local, onProgress) {
 
     p('Đang so sánh với cloud...');
     const { items: remote, legacy } = await fetchMeta();
+    // Fail closed khi backend chưa đủ schema. Tiếp tục đẩy kiểu tương thích từng tạo ra
+    // hàng chục record không có scope/team: chủ sở hữu thấy "đã sync" nhưng đồng nghiệp
+    // không bao giờ đọc được. Bản local + pending vẫn giữ nguyên để thử lại sau khi nâng.
+    if (legacy) {
+        throw new PbError('Máy chủ chưa nâng schema mới — dữ liệu vẫn an toàn trên máy và chưa được đẩy. '
+            + 'Founder cần vào Quản lý team & người dùng → Dựng ngay.', 503);
+    }
     const remoteByKey = new Map();
     const remoteByItem = new Map();
     for (const r of remote) {
@@ -988,10 +1014,151 @@ export async function fetchShare(code) {
     return { code: rec.id, title: rec.title, payload: rec.payload, created: rec.created };
 }
 
-// ===== Quản lý team & thành viên (chỉ superuser — xem createRule/updateRule của `teams`) =====
-// Hai thao tác PATCH-team (thêm/xoá thành viên) và tạo `users` record đều cần bỏ qua API
-// rule, nên chỉ chạy được khi phiên hiện tại là superuser. Rule phía server đã khoá việc
-// này (teams.createRule/updateRule = null); check ở đây chỉ để báo lỗi sớm, gọn hơn.
+// ===== Cổng khách hàng =====
+// Khách chỉ gửi một snapshot vào hộp thư chờ duyệt. Họ không bao giờ ghi trực tiếp vào
+// survey_items, nên dữ liệu chưa kiểm tra không thể đè lên dự án nội bộ của nhân viên.
+const submissionOf = (r) => ({
+    id: r.id,
+    owner: r.owner,
+    customerName: r.customer_name || '',
+    team: r.team,
+    sourceProjectId: r.source_project_id,
+    submissionKey: r.submission_key,
+    title: r.title,
+    payload: r.payload,
+    status: r.status || 'submitted',
+    submittedAt: Number(r.submitted_ms || 0),
+    reviewedBy: r.reviewed_by || '',
+    reviewedAt: Number(r.reviewed_ms || 0),
+    created: r.created,
+});
+
+/** Gửi bản đo của khách, idempotent theo project + phiên bản nội dung. */
+export async function submitCustomerSurvey({ project, docs }) {
+    if (!isLoggedIn() || !isCustomer()) throw new PbError('Cần đăng nhập tài khoản khách hàng', 401);
+    let profile = customerProfile();
+    if (!profile?.team) profile = await refreshCustomerProfile();
+    if (!profile?.team || profile.active === false) {
+        throw new PbError('Tài khoản chưa được gắn đội tiếp nhận hoặc đã bị khóa', 403);
+    }
+    const items = Array.isArray(docs) ? docs : [];
+    if (!project?.id || !items.length) throw new PbError('Cần có ít nhất một mặt bằng hoặc ảnh trước khi gửi', 400);
+    const version = Math.max(Number(project.updatedAt || 0), ...items.map(d => Number(d.updatedAt || 0)));
+    const submissionKey = `${project.id}:${version}`;
+    const encoded = JSON.stringify({ project, docs: items });
+    // Chặn sớm trước khi PocketBase trả một lỗi khó hiểu hoặc trình duyệt hết bộ nhớ.
+    if (encoded.length > 18_000_000) {
+        throw new PbError('Gói dữ liệu lớn hơn 18 MB — giảm số ảnh hoặc gửi thành nhiều dự án', 413);
+    }
+
+    try {
+        const found = await api(`collections/${CUSTOMER_SUBMISSIONS}/records?perPage=1&${q(
+            `owner='${esc(myId())}' && submission_key='${esc(submissionKey)}'`
+        )}`);
+        if (found.items?.length) return submissionOf(found.items[0]);
+    } catch (err) {
+        if (err.status === 404) throw new PbError('Cổng khách hàng chưa được khởi tạo trên máy chủ', 503);
+        throw err;
+    }
+
+    const rec = await api(`collections/${CUSTOMER_SUBMISSIONS}/records`, {
+        method: 'POST',
+        body: JSON.stringify({
+            owner: myId(),
+            customer_name: profile.name || myName(),
+            team: profile.team,
+            source_project_id: String(project.id),
+            submission_key: submissionKey,
+            title: project.name || 'Khảo sát khách hàng',
+            payload: JSON.parse(encoded),
+            status: 'submitted',
+            submitted_ms: now(),
+        }),
+    });
+    return submissionOf(rec);
+}
+
+/** Hộp thư của nhân viên. API rule tự giới hạn về các team họ là thành viên. */
+export async function listCustomerSubmissions() {
+    if (!isLoggedIn() || isCustomer()) return [];
+    try {
+        const res = await api(`collections/${CUSTOMER_SUBMISSIONS}/records?perPage=200&sort=-submitted_ms`);
+        return (res.items || []).map(submissionOf);
+    } catch (err) {
+        if (err.status === 404) return [];
+        throw err;
+    }
+}
+
+/** Nhân viên xác nhận đã nhập hoặc từ chối một submission; payload không được sửa. */
+export async function reviewCustomerSubmission(id, status) {
+    if (!['imported', 'rejected'].includes(status)) throw new PbError('Trạng thái không hợp lệ', 400);
+    if (!isLoggedIn() || isCustomer()) throw new PbError('Tài khoản không có quyền duyệt', 403);
+    const rec = await api(`collections/${CUSTOMER_SUBMISSIONS}/records/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, reviewed_by: ownerId(), reviewed_ms: now() }),
+    });
+    return submissionOf(rec);
+}
+
+/** Danh sách khách thuộc một tuyến tiếp nhận (chỉ quản trị). */
+export async function listCustomers(teamId) {
+    requireAdmin();
+    const res = await api(`collections/${CUSTOMER_PROFILES}/records?perPage=200&sort=name&expand=user&${q(`team='${esc(teamId)}'`)}`);
+    return (res.items || []).map(r => ({
+        id: r.id, userId: r.user, teamId: r.team, name: r.name || '', phone: r.phone || '',
+        active: r.active !== false,
+        login: r.expand?.user?.username || r.expand?.user?.email || r.user,
+    }));
+}
+
+/** Tạo tài khoản khách + tuyến nhận. Khách không được thêm vào members của team. */
+export async function createCustomer(teamId, { login: rawLogin, name, pin }) {
+    requireAdmin();
+    const login = String(rawLogin || '').trim().toLowerCase().replace(/\s+/g, '');
+    if (!/^[a-z0-9_.@+-]{4,80}$/.test(login)) {
+        throw new PbError('Tên đăng nhập cần ít nhất 4 ký tự, chỉ gồm chữ, số, dấu chấm hoặc số điện thoại', 400);
+    }
+    if (!isPin(pin)) throw new PbError(`PIN phải là ${PIN_MIN}–${PIN_MAX} chữ số`, 400);
+    const username = (login.includes('@') ? login.split('@')[0] : login)
+        .replace(/[^a-z0-9_]/g, '').slice(0, 50);
+    if (username.length < 3) throw new PbError('Tên đăng nhập quá ngắn', 400);
+    const email = login.includes('@') ? login : `${username}@khach.mkg.vn`;
+    const filter = `username='${esc(username)}' || email='${esc(email)}'`;
+    const found = await api(`collections/users/records?perPage=1&${q(filter)}`);
+    let user = found.items?.[0];
+    let created = false;
+    if (!user) {
+        const password = pinToPassword(pin);
+        user = await api('collections/users/records', {
+            method: 'POST',
+            body: JSON.stringify({
+                email, username, name: String(name || '').trim(), role: 'customer',
+                password, passwordConfirm: password, emailVisibility: false, verified: true,
+            }),
+        });
+        created = true;
+    } else if (user.role !== 'customer') {
+        throw new PbError('Tên đăng nhập đã thuộc tài khoản nhân viên', 409);
+    }
+
+    const profiles = await api(`collections/${CUSTOMER_PROFILES}/records?perPage=1&${q(`user='${esc(user.id)}'`)}`);
+    let profile = profiles.items?.[0];
+    if (profile) {
+        profile = await api(`collections/${CUSTOMER_PROFILES}/records/${profile.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ team: teamId, name: String(name || '').trim(), phone: login, active: true }),
+        });
+    } else {
+        profile = await api(`collections/${CUSTOMER_PROFILES}/records`, {
+            method: 'POST',
+            body: JSON.stringify({ user: user.id, team: teamId, name: String(name || '').trim(), phone: login, active: true }),
+        });
+    }
+    return { id: profile.id, userId: user.id, login: username, pin: created ? String(pin) : null, created };
+}
+
+// ===== Dựng schema backend (chỉ superuser PocketBase) =====
 function requireSuperuser() {
     if (!isSuperuser()) throw new PbError('Thao tác này cần tài khoản superuser của PocketBase', 403);
 }
@@ -1170,9 +1337,13 @@ const F = {
 // 0 thành viên hiện ra với cả người CHƯA đăng nhập, và hết hiện ngay khi có thành viên.
 // Hệ quả trước khi sửa: dự án đẩy lên ở chế độ tương thích (team rỗng) là cả công ty
 // đọc được, thay vì "đội nào xem đội đó".
-const READ_RULE = 'owner = @request.auth.id || (scope = "team" && team != "" && team.members.id ?= @request.auth.id)';
+// Tài khoản khách chỉ được ghi snapshot vào customer_submissions. Chặn ở API rule,
+// không chỉ dựa vào giao diện, để khách không thể tự gọi endpoint dữ liệu nội bộ.
+const IS_STAFF = '@request.auth.id != "" && @request.auth.role != "customer"';
+const READ_RULE = `(${IS_STAFF}) && (owner = @request.auth.id || (scope = "team" && team != "" && team.members.id ?= @request.auth.id))`;
 const OWNER_GUARD = '(@request.body.owner:isset = false || @request.body.owner = owner)';
 const WRITE_RULE = `(${READ_RULE}) && ${OWNER_GUARD}`;
+const SURVEY_CREATE_RULE = `${IS_STAFF} && @request.body.owner = @request.auth.id`;
 
 const WANT_INDEXES = [
     'CREATE UNIQUE INDEX `idx_si_owner_item` ON `survey_items` (`owner`, `item_id`)',
@@ -1186,6 +1357,7 @@ const idxName = (sql) => sql.match(/INDEX\s+`?(\w+)`?/i)?.[1];
 // không đọc thẳng cơ sở dữ liệu — việc đó vẫn phải là superuser. Nhờ vậy tài khoản
 // quản trị dùng PIN 4 số không kéo theo toàn quyền cơ sở dữ liệu.
 const IS_ADMIN = '@request.auth.role = "admin"';
+const SURVEY_DELETE_RULE = `(${IS_STAFF} && owner = @request.auth.id) || ${IS_ADMIN}`;
 // Người dùng tự sửa record của mình, nhưng KHÔNG tự nâng mình lên admin.
 const USERS_SELF = `(id = @request.auth.id && (@request.body.role:isset = false || @request.body.role = role))`;
 const USERS_RULES = {
@@ -1205,6 +1377,47 @@ const TEAMS_RULES = {
     updateRule: IS_ADMIN,
     deleteRule: IS_ADMIN,
 };
+
+const STAFF_TEAM_MEMBER = `(${IS_STAFF}) && team != "" && team.members.id ?= @request.auth.id`;
+const CUSTOMER_ACCESS_RULE = `user = @request.auth.id || (${STAFF_TEAM_MEMBER})`;
+const CUSTOMER_PROFILE_RULES = {
+    listRule: CUSTOMER_ACCESS_RULE,
+    viewRule: CUSTOMER_ACCESS_RULE,
+    createRule: IS_ADMIN,
+    updateRule: IS_ADMIN,
+    deleteRule: IS_ADMIN,
+};
+const CUSTOMER_SUBMISSION_READ = `owner = @request.auth.id || (${STAFF_TEAM_MEMBER})`;
+const CUSTOMER_SUBMISSION_RULES = {
+    listRule: CUSTOMER_SUBMISSION_READ,
+    viewRule: CUSTOMER_SUBMISSION_READ,
+    createRule: '@request.auth.role = "customer" && @request.body.owner = @request.auth.id '
+        + '&& @request.body.team != "" && @request.body.status = "submitted"',
+    // Nhân viên chỉ được đổi trạng thái duyệt. Khóa payload, chủ sở hữu, team và khóa
+    // idempotency để kết quả khách gửi trở thành một snapshot bất biến.
+    updateRule: `${STAFF_TEAM_MEMBER} `
+        + '&& @request.body.owner:isset = false && @request.body.team:isset = false '
+        + '&& @request.body.payload:isset = false && @request.body.submission_key:isset = false '
+        + '&& @request.body.source_project_id:isset = false',
+    deleteRule: IS_ADMIN,
+};
+const DELETION_RULES = {
+    listRule: IS_STAFF,
+    viewRule: IS_STAFF,
+    createRule: IS_STAFF,
+    updateRule: IS_STAFF,
+    deleteRule: IS_ADMIN,
+};
+const SHARE_RULES = {
+    listRule: `owner = @request.auth.id && @request.auth.role != "customer"`,
+    viewRule: 'revoked = false && (expires = "" || expires > @now)',
+    createRule: `${IS_STAFF} && @request.body.owner = @request.auth.id`,
+    updateRule: `owner = @request.auth.id && @request.auth.role != "customer"`,
+    deleteRule: `owner = @request.auth.id && @request.auth.role != "customer"`,
+};
+
+const rulesEqual = (collection, wanted) => !!collection
+    && Object.entries(wanted).every(([key, value]) => collection[key] === value);
 
 function makePbClient() {
     const pb = new PocketBase(BASE);
@@ -1260,18 +1473,50 @@ export async function inspectBackend() {
     }
     const have = new Set((survey?.fields || []).map(f => f.name));
     const haveIdx = new Set((survey?.indexes || []).map(idxName));
-    return {
+    const roleField = users.fields?.find(f => f.name === 'role');
+    const profileCol = byName.get(CUSTOMER_PROFILES);
+    const submissionCol = byName.get(CUSTOMER_SUBMISSIONS);
+    const profileFields = new Set((profileCol?.fields || []).map(f => f.name));
+    const submissionFields = new Set((submissionCol?.fields || []).map(f => f.name));
+    const profileIndexes = new Set((profileCol?.indexes || []).map(idxName));
+    const submissionIndexes = new Set((submissionCol?.indexes || []).map(idxName));
+    const profileReady = !!profileCol && ['user', 'team', 'name', 'active'].every(f => profileFields.has(f))
+        && profileIndexes.has('idx_customer_profile_user')
+        && rulesEqual(profileCol, CUSTOMER_PROFILE_RULES);
+    const submissionReady = !!submissionCol
+        && ['owner', 'team', 'source_project_id', 'submission_key', 'payload', 'status', 'submitted_ms']
+            .every(f => submissionFields.has(f))
+        && submissionIndexes.has('idx_customer_submission_key')
+        && rulesEqual(submissionCol, CUSTOMER_SUBMISSION_RULES);
+    const shares = byName.get(SHARES);
+    const deletions = byName.get(DELETIONS);
+    const result = {
         surveyExists: !!survey,
         teams: !!byName.get(TEAMS),
-        shares: !!byName.get(SHARES),
+        shares: !!shares,
+        deletions: !!deletions,
+        customerProfiles: !!byName.get(CUSTOMER_PROFILES),
+        customerSubmissions: !!byName.get(CUSTOMER_SUBMISSIONS),
+        customerProfilesReady: profileReady,
+        customerSubmissionsReady: submissionReady,
+        customerRole: !!roleField && (roleField.values || []).includes('customer'),
         missingFields: survey
             ? ['scope', 'team', 'updated_ms', 'deleted', 'rev', 'schema_v', 'photo', 'photo_hash', 'owner_name']
                 .filter(n => !have.has(n))
             : [],
         missingIndexes: WANT_INDEXES.map(idxName).filter(n => !haveIdx.has(n)),
-        rulesOk: !!survey && survey.listRule === READ_RULE && survey.updateRule === WRITE_RULE,
+        rulesOk: !!survey
+            && survey.listRule === READ_RULE && survey.viewRule === READ_RULE
+            && survey.createRule === SURVEY_CREATE_RULE && survey.updateRule === WRITE_RULE
+            && survey.deleteRule === SURVEY_DELETE_RULE,
+        auxiliaryRulesOk: rulesEqual(shares, SHARE_RULES) && rulesEqual(deletions, DELETION_RULES),
         userCount: null,
     };
+    result.ready = result.surveyExists && result.teams && result.shares && result.deletions
+        && result.customerProfilesReady && result.customerSubmissionsReady && result.customerRole
+        && !result.missingFields.length && !result.missingIndexes.length
+        && result.rulesOk && result.auxiliaryRulesOk;
+    return result;
 }
 
 /**
@@ -1346,6 +1591,23 @@ export async function provisionBackend(onProgress, onBackup) {
                 warn(`users — thêm cột ${f.name}`, err);
             }
         }
+        // Nâng enum role riêng một lượt để tài khoản khách không bao giờ bị hiểu nhầm
+        // thành nhân viên thường. Giữ nguyên mọi giá trị role tương lai đã có.
+        const roleField = usersCol.fields.find(f => f.name === 'role');
+        let roleChanged = false;
+        if (roleField && !(roleField.values || []).includes('customer')) {
+            try {
+                usersCol = await pb.collections.update(usersCol.id, {
+                    fields: usersCol.fields.map(f => f.name === 'role'
+                        ? { ...f, values: [...new Set([...(f.values || []), 'admin', 'customer'])] }
+                        : f),
+                });
+                roleChanged = true;
+                say('users: thêm vai trò customer');
+            } catch (err) {
+                warn('users — thêm vai trò customer', err);
+            }
+        }
         // Đọc lại từ collection VỪA trả về, không suy ra từ danh sách định thêm: cột nào
         // thêm hụt thì bước sau phải biết, nếu không nó khai username làm identityField
         // trong khi cột không tồn tại và PocketBase đổ cả lượt.
@@ -1391,7 +1653,7 @@ export async function provisionBackend(onProgress, onBackup) {
                     warn('users — đặt quyền và hạn phiên', err2);
                 }
             }
-        } else if (!addedU) {
+        } else if (!addedU && !roleChanged) {
             say('users: đã đủ cột và quyền');
         }
     }
@@ -1423,9 +1685,117 @@ export async function provisionBackend(onProgress, onBackup) {
         say('Collection teams: đã tạo');
     }
 
+    // ===== 1b. customer_profiles — tuyến nhận của khách, KHÔNG thêm khách vào team =====
+    let customerProfilesCol = byName.get(CUSTOMER_PROFILES);
+    if (!customerProfilesCol) {
+        try {
+            customerProfilesCol = await pb.collections.create({
+                name: CUSTOMER_PROFILES, type: 'base',
+                fields: [
+                    F.id(), F.rel('user', usersCol.id, 1, true, true),
+                    F.rel('team', teamsCol.id, 1, false, true),
+                    F.text('name', 160), F.text('phone', 100), F.bool('active'),
+                    F.date('created', false), F.date('updated', true),
+                ],
+                indexes: [
+                    `CREATE UNIQUE INDEX \`idx_customer_profile_user\` ON \`${CUSTOMER_PROFILES}\` (\`user\`)`,
+                    `CREATE INDEX \`idx_customer_profile_team\` ON \`${CUSTOMER_PROFILES}\` (\`team\`)`,
+                ],
+                ...CUSTOMER_PROFILE_RULES,
+            });
+            say('Collection customer_profiles: đã tạo');
+        } catch (err) {
+            warn('customer_profiles — tạo collection', err);
+        }
+    } else {
+        try {
+            const have = new Set(customerProfilesCol.fields.map(f => f.name));
+            const missing = [
+                F.rel('user', usersCol.id, 1, true, true),
+                F.rel('team', teamsCol.id, 1, false, true),
+                F.text('name', 160), F.text('phone', 100), F.bool('active'),
+            ].filter(f => !have.has(f.name));
+            if (missing.length) {
+                customerProfilesCol = await pb.collections.update(customerProfilesCol.id, {
+                    fields: [...customerProfilesCol.fields, ...missing],
+                });
+                say(`customer_profiles: thêm ${missing.length} cột`);
+            }
+            const profileIndexes = [
+                `CREATE UNIQUE INDEX \`idx_customer_profile_user\` ON \`${CUSTOMER_PROFILES}\` (\`user\`)`,
+                `CREATE INDEX \`idx_customer_profile_team\` ON \`${CUSTOMER_PROFILES}\` (\`team\`)`,
+            ];
+            const haveIdx = new Set((customerProfilesCol.indexes || []).map(idxName));
+            customerProfilesCol = await pb.collections.update(customerProfilesCol.id, {
+                indexes: [...(customerProfilesCol.indexes || []), ...profileIndexes.filter(x => !haveIdx.has(idxName(x)))],
+                ...CUSTOMER_PROFILE_RULES,
+            });
+            say('Collection customer_profiles: đã có');
+        } catch (err) { warn('customer_profiles — cập nhật quyền', err); }
+    }
+
+    // ===== 1c. customer_submissions — hộp thư snapshot bất biến chờ nhân viên duyệt =====
+    let customerSubmissionsCol = byName.get(CUSTOMER_SUBMISSIONS);
+    if (!customerSubmissionsCol) {
+        try {
+            customerSubmissionsCol = await pb.collections.create({
+                name: CUSTOMER_SUBMISSIONS, type: 'base',
+                fields: [
+                    F.id(), F.rel('owner', usersCol.id, 1, true, true),
+                    F.text('customer_name', 160), F.rel('team', teamsCol.id, 1, false, true),
+                    F.text('source_project_id', 80, true), F.text('submission_key', 180, true),
+                    F.text('title', 255, true), { name: 'payload', type: 'json', maxSize: 20_000_000 },
+                    { name: 'status', type: 'select', values: ['submitted', 'imported', 'rejected'], maxSelect: 1, required: true },
+                    F.num('submitted_ms'), F.rel('reviewed_by', usersCol.id, 1), F.num('reviewed_ms'),
+                    F.date('created', false), F.date('updated', true),
+                ],
+                indexes: [
+                    `CREATE UNIQUE INDEX \`idx_customer_submission_key\` ON \`${CUSTOMER_SUBMISSIONS}\` (\`owner\`, \`submission_key\`)`,
+                    `CREATE INDEX \`idx_customer_submission_team_status\` ON \`${CUSTOMER_SUBMISSIONS}\` (\`team\`, \`status\`)`,
+                ],
+                ...CUSTOMER_SUBMISSION_RULES,
+            });
+            say('Collection customer_submissions: đã tạo');
+        } catch (err) {
+            warn('customer_submissions — tạo collection', err);
+        }
+    } else {
+        try {
+            const have = new Set(customerSubmissionsCol.fields.map(f => f.name));
+            const missing = [
+                F.rel('owner', usersCol.id, 1, true, true), F.text('customer_name', 160),
+                F.rel('team', teamsCol.id, 1, false, true), F.text('source_project_id', 80, true),
+                F.text('submission_key', 180, true), F.text('title', 255, true),
+                { name: 'payload', type: 'json', maxSize: 20_000_000 },
+                { name: 'status', type: 'select', values: ['submitted', 'imported', 'rejected'], maxSelect: 1, required: true },
+                F.num('submitted_ms'), F.rel('reviewed_by', usersCol.id, 1), F.num('reviewed_ms'),
+            ].filter(f => !have.has(f.name));
+            if (missing.length) {
+                customerSubmissionsCol = await pb.collections.update(customerSubmissionsCol.id, {
+                    fields: [...customerSubmissionsCol.fields, ...missing],
+                });
+                say(`customer_submissions: thêm ${missing.length} cột`);
+            }
+            const submissionIndexes = [
+                `CREATE UNIQUE INDEX \`idx_customer_submission_key\` ON \`${CUSTOMER_SUBMISSIONS}\` (\`owner\`, \`submission_key\`)`,
+                `CREATE INDEX \`idx_customer_submission_team_status\` ON \`${CUSTOMER_SUBMISSIONS}\` (\`team\`, \`status\`)`,
+            ];
+            const haveIdx = new Set((customerSubmissionsCol.indexes || []).map(idxName));
+            customerSubmissionsCol = await pb.collections.update(customerSubmissionsCol.id, {
+                indexes: [...(customerSubmissionsCol.indexes || []), ...submissionIndexes.filter(x => !haveIdx.has(idxName(x)))],
+                ...CUSTOMER_SUBMISSION_RULES,
+            });
+            say('Collection customer_submissions: đã có');
+        } catch (err) { warn('customer_submissions — cập nhật quyền', err); }
+    }
+
     // ===== 2b. deletions — dấu xoá, để xoá THẬT mà máy offline vẫn xoá theo =====
-    if (byName.get(DELETIONS)) {
-        say('Collection deletions: đã có');
+    const deletionsCol = byName.get(DELETIONS);
+    if (deletionsCol) {
+        try {
+            await pb.collections.update(deletionsCol.id, DELETION_RULES);
+            say('Collection deletions: đã có, đã khóa khỏi tài khoản khách');
+        } catch (err) { warn('deletions — cập nhật quyền', err); }
     } else {
         try {
             await pb.collections.create({
@@ -1436,13 +1806,9 @@ export async function provisionBackend(onProgress, onBackup) {
                     F.date('created', false), F.date('updated', true),
                 ],
                 indexes: [`CREATE UNIQUE INDEX \`idx_del_item\` ON \`${DELETIONS}\` (\`item_id\`)`],
-                // Ai đăng nhập cũng phải ĐỌC được dấu xoá, không thì máy họ không biết mà
-                // xoá theo. Bản ghi chỉ có id nội bộ, không mang nội dung khảo sát.
-                listRule: '@request.auth.id != ""',
-                viewRule: '@request.auth.id != ""',
-                createRule: '@request.auth.id != ""',
-                updateRule: '@request.auth.id != ""',
-                deleteRule: IS_ADMIN,
+                // Mọi NHÂN VIÊN phải đọc được dấu xoá để máy họ xoá theo. Khách hàng
+                // không tham gia sync nội bộ nên không có lý do đọc/ghi bảng này.
+                ...DELETION_RULES,
             });
             say('Collection deletions: đã tạo (xoá thật + dấu xoá)');
         } catch (err) {
@@ -1451,8 +1817,12 @@ export async function provisionBackend(onProgress, onBackup) {
     }
 
     // ===== 2. shares =====
-    if (byName.get(SHARES)) {
-        say('Collection shares: đã có');
+    const sharesCol = byName.get(SHARES);
+    if (sharesCol) {
+        try {
+            await pb.collections.update(sharesCol.id, SHARE_RULES);
+            say('Collection shares: đã có, đã khóa thao tác của tài khoản khách');
+        } catch (err) { warn('shares — cập nhật quyền', err); }
     } else {
         const sharesBody = {
             name: SHARES, type: 'base',
@@ -1465,11 +1835,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 F.date('created', false), F.date('updated', true),
             ],
             indexes: ['CREATE INDEX `idx_shares_owner` ON `shares` (`owner`)'],
-            listRule: 'owner = @request.auth.id',
-            viewRule: 'revoked = false && (expires = "" || expires > @now)',
-            createRule: '@request.auth.id != "" && @request.body.owner = @request.auth.id',
-            updateRule: 'owner = @request.auth.id',
-            deleteRule: 'owner = @request.auth.id',
+            ...SHARE_RULES,
         };
         try {
             await pb.collections.create(sharesBody);
@@ -1501,11 +1867,11 @@ export async function provisionBackend(onProgress, onBackup) {
 
     const SURVEY_RULES = {
         listRule: READ_RULE, viewRule: READ_RULE,
-        createRule: '@request.auth.id != "" && @request.body.owner = @request.auth.id',
+        createRule: SURVEY_CREATE_RULE,
         updateRule: WRITE_RULE,
         // Quản trị xoá được cả bản ghi của người khác. Nếu chỉ chủ sở hữu xoá được thì
         // dữ liệu của người đã nghỉ việc thành rác vĩnh viễn, không ai dọn nổi.
-        deleteRule: `owner = @request.auth.id || ${IS_ADMIN}`,
+        deleteRule: SURVEY_DELETE_RULE,
     };
 
     if (!surveyCol) {

@@ -1,0 +1,137 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>customer portal selftest</title>
+<style>
+    body { font: 13px/1.6 ui-monospace, monospace; padding: 16px; }
+    .FAIL { color: #dc2626; font-weight: 700; }
+    .PASS { color: #16a34a; }
+    h3 { margin: 18px 0 4px; font-family: system-ui; }
+</style>
+<pre id="out">running...</pre>
+<script type="module">
+    import * as pb from '/src/lib/pb.js';
+
+    const lines = [];
+    let pass = 0, fail = 0;
+    const ok = (name, cond, extra = '') => {
+        cond ? pass++ : fail++;
+        lines.push(`<span class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</span>  ${name}${extra && !cond ? ` — ${extra}` : ''}`);
+    };
+    const group = (t) => lines.push(`<h3>${t}</h3>`);
+
+    try {
+        for (const k of Object.keys(localStorage)) if (k.startsWith('ks_')) localStorage.removeItem(k);
+
+        const SERVER_NOW = Date.parse('2026-08-13T10:00:00Z');
+        const CUSTOMER = {
+            id: 'cust_1', email: 'khach@khach.mkg.vn', username: 'khach1',
+            name: 'Anh Khach', role: 'customer',
+        };
+        const PROFILE = {
+            id: 'profile_1', user: CUSTOMER.id, team: 'team_mkg',
+            name: 'Anh Khach', phone: '0901234567', active: true,
+        };
+        const STAFF = { id: 'staff_1', email: 'staff@mkg.vn', username: 'staff1', role: '' };
+        const project = { id: 'p_cust', name: 'Nha Anh Khach', createdAt: 1, updatedAt: 2000 };
+        const docs = [{ id: 'd_cust', projectId: 'p_cust', type: 'plan', name: 'Mat bang', plan: { nodes: [] }, updatedAt: 3000 }];
+
+        let calls = [];
+        const submissions = [];
+        const res = (body, status = 200) => ({
+            ok: status >= 200 && status < 300,
+            status,
+            statusText: String(status),
+            headers: { get: (h) => (h.toLowerCase() === 'date' ? new Date(SERVER_NOW).toUTCString() : null) },
+            json: async () => body,
+            text: async () => JSON.stringify(body),
+        });
+        const bodyOf = (opts) => {
+            try { return JSON.parse(opts.body || '{}'); } catch { return {}; }
+        };
+        const routes = {
+            'collections/users/auth-with-password': (path, opts) => {
+                const body = bodyOf(opts);
+                return body.identity === 'khach1' && body.password === 'mkgks-2580-v1'
+                    ? res({ token: 'tok_customer', record: CUSTOMER })
+                    : res({ message: 'Failed to authenticate.' }, 400);
+            },
+            'collections/customer_profiles/records?': () => res({ items: [PROFILE], page: 1, totalPages: 1, totalItems: 1 }),
+            'collections/customer_submissions/records?': (path) => {
+                if (path.includes('sort=')) return res({ items: submissions, page: 1, totalPages: 1, totalItems: submissions.length });
+                const key = decodeURIComponent(path).match(/submission_key='([^']+)'/)?.[1];
+                const owner = decodeURIComponent(path).match(/owner='([^']+)'/)?.[1];
+                const found = submissions.find(s => s.owner === owner && s.submission_key === key);
+                return res({ items: found ? [found] : [], page: 1, totalPages: 1, totalItems: found ? 1 : 0 });
+            },
+            'collections/customer_submissions/records/': (path, opts) => {
+                const id = path.split('/').pop().split('?')[0];
+                const rec = submissions.find(s => s.id === id);
+                if ((opts.method || 'GET') === 'PATCH') {
+                    const body = bodyOf(opts);
+                    Object.assign(rec, body);
+                    return res(rec);
+                }
+                return res(rec || { message: 'Not found' }, rec ? 200 : 404);
+            },
+            'collections/customer_submissions/records': (path, opts) => {
+                if ((opts.method || 'GET') !== 'POST') return res({ items: submissions, page: 1, totalPages: 1 });
+                const body = bodyOf(opts);
+                const rec = { id: 'sub_' + (submissions.length + 1), created: '2026-08-13 10:00:00.000Z', ...body };
+                submissions.push(rec);
+                return res(rec);
+            },
+        };
+
+        window.fetch = async (url, opts = {}) => {
+            const path = String(url).replace('https://db.mkg.vn/api/', '');
+            calls.push({ path, method: opts.method || 'GET', body: bodyOf(opts) });
+            for (const [pat, fn] of Object.entries(routes)) {
+                if (path.startsWith(pat)) return fn(path, opts);
+            }
+            return res({ items: [], page: 1, totalPages: 1 });
+        };
+
+        group('1. Khách đăng nhập và gửi snapshot');
+        await pb.loginSmart('khach1', '2580');
+        ok('đăng nhập đúng role customer', pb.isCustomer());
+        ok('profile gắn đúng team tiếp nhận', pb.customerTeamId() === PROFILE.team, pb.customerTeamId());
+
+        const sent = await pb.submitCustomerSurvey({ project, docs });
+        ok('tạo submission mới', sent.id === 'sub_1', sent.id);
+        ok('submission đi vào đúng team', sent.team === PROFILE.team, sent.team);
+        ok('payload giữ đủ project/docs', sent.payload.project.id === project.id && sent.payload.docs[0].id === docs[0].id);
+        ok('khách không ghi vào survey_items', !calls.some(c => c.path.startsWith('collections/survey_items')),
+            calls.map(c => c.path).join('|'));
+
+        const postCount = calls.filter(c => c.method === 'POST' && c.path === 'collections/customer_submissions/records').length;
+        const again = await pb.submitCustomerSurvey({ project, docs });
+        const postCount2 = calls.filter(c => c.method === 'POST' && c.path === 'collections/customer_submissions/records').length;
+        ok('gửi lại cùng phiên bản không tạo trùng', again.id === sent.id && postCount2 === postCount,
+            `post ${postCount}->${postCount2}, id ${again.id}`);
+
+        group('2. Nhân viên duyệt hộp thư');
+        localStorage.setItem('ks_auth', JSON.stringify({
+            token: 'tok_staff', model: STAFF, role: '', identityId: STAFF.id, identityName: 'Nhan vien',
+        }));
+        const inbox = await pb.listCustomerSubmissions();
+        ok('nhân viên thấy submission chờ duyệt', inbox.length === 1 && inbox[0].id === sent.id);
+        await pb.reviewCustomerSubmission(sent.id, 'imported');
+        const patch = calls.find(c => c.method === 'PATCH' && c.path.endsWith('/' + sent.id));
+        ok('duyệt chỉ PATCH trạng thái', patch?.body?.status === 'imported' && !('payload' in patch.body),
+            JSON.stringify(patch?.body || {}));
+        ok('ghi người duyệt', patch?.body?.reviewed_by === STAFF.id, JSON.stringify(patch?.body || {}));
+
+        localStorage.removeItem('ks_auth');
+        render();
+    } catch (e) {
+        localStorage.removeItem('ks_auth');
+        render(e);
+    }
+
+    function render(err) {
+        document.getElementById('out').innerHTML = lines.join('\n')
+            + (err ? `\n\n<span class="FAIL">TEST CRASH: ${err.message}\n${err.stack}</span>` : '')
+            + `\n\n<b>${pass} pass, ${fail} fail${err ? ', CRASH' : ''}</b>`;
+        document.title = (fail || err) ? `${fail || ''}${err ? ' CRASH' : ' FAIL'}` : `${pass} pass`;
+    }
+</script>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     Users, Plus, ArrowLeft, Trash2, Copy, RefreshCw, AlertCircle, UserPlus, Database, ShieldCheck,
+    Send, UserRoundCheck,
 } from 'lucide-react';
 import Sheet from './Sheet';
 import { toast } from './Toast';
@@ -8,16 +9,15 @@ import { downloadText } from '../lib/export';
 import * as pb from '../lib/pb';
 
 /**
- * Quản lý team & thành viên — chỉ superuser mở được (ProjectsScreen gate ở nút mở).
- * Server cũng khoá cứng: teams.createRule/updateRule = null (xem pb-setup.mjs), nên kể cả
- * gọi thẳng API cũng bị từ chối nếu không phải superuser — đây là lớp UI, không phải lớp
- * bảo mật duy nhất.
+ * Quản lý team, nhân viên và khách hàng. `role=admin` được cấp/sửa người dùng; riêng
+ * thao tác dựng schema vẫn bắt buộc superuser PocketBase và server rule là lớp bảo vệ thật.
  */
 export default function TeamAdminSheet({ open, onClose }) {
     const [teams, setTeams] = useState(null);
     const [error, setError] = useState(null);
     const [selected, setSelected] = useState(null); // team object đang xem thành viên
     const [members, setMembers] = useState(null);
+    const [customers, setCustomers] = useState(null);
     const [creatingTeam, setCreatingTeam] = useState(false);
     const [newTeamName, setNewTeamName] = useState('');
     const [addForm, setAddForm] = useState(null); // { email, name, password } | null
@@ -30,9 +30,14 @@ export default function TeamAdminSheet({ open, onClose }) {
     const [seeded, setSeeded] = useState(null);    // { team, users } — bảng PIN hiện một lần
     const [report, setReport] = useState(null);    // { log, warnings } sau khi dựng
     const [confirmReassign, setConfirmReassign] = useState(null); // team object
+    const [customerForm, setCustomerForm] = useState(null); // { login, name, pin }
+    const [customerRevealed, setCustomerRevealed] = useState(null);
 
     useEffect(() => {
-        if (open) { load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false); }
+        if (open) {
+            load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false);
+            setCustomers(null); setCustomerForm(null); setCustomerRevealed(null);
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
@@ -41,6 +46,14 @@ export default function TeamAdminSheet({ open, onClose }) {
         setNeedsSetup(false);
         try {
             setTeams(await pb.listTeams());
+            // Superuser luôn kiểm tra version schema khi mở màn này. Trước đây chỉ kiểm
+            // khi bảng teams chưa tồn tại, nên backend có teams nhưng thiếu scope/team
+            // hoặc cổng khách hàng không bao giờ hiện nút nâng cấp.
+            if (pb.isSuperuser()) {
+                const state = await pb.inspectBackend();
+                setInspect(state);
+                setNeedsSetup(!state.ready);
+            }
         } catch (err) {
             // 404 = collection `teams` chưa tồn tại. Trước đây chỗ này chỉ bảo người dùng đi
             // chạy script CLI — không làm được từ điện thoại. Giờ dựng thẳng trong app.
@@ -62,6 +75,7 @@ export default function TeamAdminSheet({ open, onClose }) {
         try {
             const r = await pb.inspectBackend();
             setInspect(r);
+            setNeedsSetup(!r.ready);
             setSetupLog(null);
         } catch (err) {
             setSetupLog(null);
@@ -159,9 +173,41 @@ export default function TeamAdminSheet({ open, onClose }) {
     const openTeam = async (t) => {
         setSelected(t);
         setMembers(null);
+        setCustomers(null);
         setAddForm(null);
-        try { setMembers(await pb.getTeamMembers(t.id)); }
-        catch (err) { toast('Không tải được thành viên: ' + err.message, 'err'); setMembers([]); }
+        setCustomerForm(null);
+        setCustomerRevealed(null);
+        try {
+            const [teamMembers, teamCustomers] = await Promise.all([
+                pb.getTeamMembers(t.id), pb.isAdmin() ? pb.listCustomers(t.id) : Promise.resolve([]),
+            ]);
+            setMembers(teamMembers);
+            setCustomers(teamCustomers);
+        } catch (err) {
+            toast('Không tải được thành viên/khách: ' + err.message, 'err');
+            setMembers([]); setCustomers([]);
+        }
+    };
+
+    const doCreateCustomer = async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+            const made = await pb.createCustomer(selected.id, customerForm || {});
+            const row = {
+                id: made.id, userId: made.userId, teamId: selected.id,
+                name: customerForm?.name || made.login, phone: customerForm?.login || '',
+                login: made.login, active: true,
+            };
+            setCustomers(list => [...(list || []).filter(c => c.id !== row.id), row]);
+            setCustomerForm(null);
+            setCustomerRevealed({ login: made.login, pin: made.pin, created: made.created });
+            toast(made.created ? 'Đã tạo tài khoản khách hàng' : 'Đã cập nhật tuyến nhận của khách', 'ok');
+        } catch (err) {
+            toast('Không tạo được tài khoản khách: ' + err.message, 'err');
+        } finally {
+            setBusy(false);
+        }
     };
 
     const doCreateTeam = async () => {
@@ -261,8 +307,8 @@ export default function TeamAdminSheet({ open, onClose }) {
                         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                             <Database size={17} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />
                             <div style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--ink)' }}>
-                                <b>Backend chưa dựng xong.</b> Máy chủ chưa có bảng team và bảng
-                                chia sẻ, nên chưa tạo được người dùng.
+                                <b>Backend chưa dựng xong.</b> Máy chủ còn thiếu bảng/quyền cho
+                                team, đồng bộ nội bộ hoặc cổng khách hàng.
                             </div>
                         </div>
 
@@ -272,11 +318,15 @@ export default function TeamAdminSheet({ open, onClose }) {
                                 <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
                                     {!inspect.teams && <li>bảng <code>teams</code></li>}
                                     {!inspect.shares && <li>bảng <code>shares</code></li>}
+                                    {!inspect.deletions && <li>bảng <code>deletions</code></li>}
+                                    {!inspect.customerProfilesReady && <li>bảng <code>customer_profiles</code></li>}
+                                    {!inspect.customerSubmissionsReady && <li>bảng <code>customer_submissions</code></li>}
+                                    {!inspect.customerRole && <li>vai trò <code>customer</code></li>}
                                     {inspect.missingFields.length > 0 && <li>cột: {inspect.missingFields.join(', ')}</li>}
                                     {inspect.missingIndexes.length > 0 && <li>{inspect.missingIndexes.length} index</li>}
                                     {!inspect.rulesOk && <li>quyền truy cập theo team</li>}
-                                    {inspect.teams && inspect.shares && !inspect.missingFields.length
-                                        && !inspect.missingIndexes.length && inspect.rulesOk && <li>(không thiếu gì)</li>}
+                                    {!inspect.auxiliaryRulesOk && <li>quyền bảng <code>shares/deletions</code></li>}
+                                    {inspect.ready && <li>(không thiếu gì)</li>}
                                 </ul>
                             </div>
                         )}
@@ -300,10 +350,12 @@ export default function TeamAdminSheet({ open, onClose }) {
                                     Thao tác này sẽ đổi cấu trúc dữ liệu trên máy chủ <b>db.mkg.vn</b>:
                                     <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                                         <li>Tạo bảng <code>teams</code> và <code>shares</code></li>
+                                        <li>Tạo hộp thư <code>customer_submissions</code> tách khỏi dữ liệu nội bộ</li>
+                                        <li>Bật vai trò và hồ sơ tuyến nhận cho khách hàng</li>
                                         <li>Thêm cột vào <code>survey_items</code> (không xoá cột nào)</li>
                                         <li>Đặt lại quyền truy cập theo team</li>
-                                        <li>Tạo team MKG, nạp toàn bộ tài khoản hiện có vào</li>
-                                        <li>Gắn dữ liệu cũ vào team MKG</li>
+                                        <li>Tạo team MKG ban đầu, các lần sau giữ nguyên phân đội</li>
+                                        <li>Chuẩn hóa dữ liệu cũ để máy chủ nhận đúng schema mới</li>
                                     </ul>
                                     <div style={{ marginTop: 8 }}>
                                         Bản sao cấu trúc cũ sẽ tự tải về máy trước khi sửa. Chạy lại nhiều
@@ -502,6 +554,81 @@ export default function TeamAdminSheet({ open, onClose }) {
                                 onClick={() => copy(`${revealed.email} / ${revealed.password}`)}>
                                 <Copy size={15} /> Copy
                             </button>
+                        </div>
+                    )}
+
+                    {pb.isAdmin() && (
+                        <div style={{ borderTop: '1px solid var(--line)', marginTop: 8, paddingTop: 8 }}>
+                            <div style={{ padding: '8px 16px 4px', fontSize: 12, color: 'var(--muted)', fontWeight: 700 }}>
+                                KHÁCH HÀNG GỬI KHẢO SÁT VỀ TEAM NÀY
+                            </div>
+                            {customers === null && (
+                                <div style={{ padding: '10px 16px', color: 'var(--muted)', fontSize: 13 }}>
+                                    <RefreshCw size={14} className="spin" /> Đang tải khách hàng...
+                                </div>
+                            )}
+                            {customers?.map(c => (
+                                <div key={c.id} className="sheet-row">
+                                    <UserRoundCheck size={17} style={{ color: 'var(--blue)' }} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div>{c.name || c.login}</div>
+                                        <div className="sub">Đăng nhập: {c.login}{c.active ? '' : ' · đã khóa'}</div>
+                                    </div>
+                                </div>
+                            ))}
+
+                            {customerRevealed && (
+                                <div style={{ margin: '10px 16px', padding: 12, borderRadius: 10, background: 'var(--warn-soft)' }}>
+                                    <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--warn)', marginBottom: 6 }}>
+                                        Gửi thông tin này cho khách
+                                    </div>
+                                    <div style={{ fontSize: 13 }}>Trang khách: {window.location.origin}/?customer=1</div>
+                                    <div style={{ fontSize: 13 }}>Đăng nhập: <b>{customerRevealed.login}</b></div>
+                                    <div style={{ fontSize: 13 }}>
+                                        {customerRevealed.pin ? <>PIN: <b>{customerRevealed.pin}</b></> : 'Tài khoản đã có — PIN không thay đổi'}
+                                    </div>
+                                    <button className="btn" style={{ marginTop: 8 }} onClick={() => copy(
+                                        `MKG Khảo Sát cho khách\n${window.location.origin}/?customer=1\nTài khoản: ${customerRevealed.login}`
+                                        + (customerRevealed.pin ? `\nPIN: ${customerRevealed.pin}` : '')
+                                    )}>
+                                        <Copy size={15} /> Copy thông tin gửi khách
+                                    </button>
+                                </div>
+                            )}
+
+                            {customerForm ? (
+                                <div style={{ padding: '12px 16px' }}>
+                                    <div className="field">
+                                        <label>Số điện thoại hoặc tên đăng nhập</label>
+                                        <input autoFocus type="text" value={customerForm.login} placeholder="0901234567"
+                                            onChange={e => setCustomerForm(f => ({ ...f, login: e.target.value }))} />
+                                    </div>
+                                    <div className="field">
+                                        <label>Tên khách hàng</label>
+                                        <input type="text" value={customerForm.name} placeholder="Anh Minh"
+                                            onChange={e => setCustomerForm(f => ({ ...f, name: e.target.value }))} />
+                                    </div>
+                                    <div className="field">
+                                        <label>PIN {pb.PIN_MIN}–{pb.PIN_MAX} số</label>
+                                        <input type="text" inputMode="numeric" value={customerForm.pin} placeholder="Ví dụ: 2580"
+                                            onChange={e => setCustomerForm(f => ({ ...f, pin: e.target.value }))}
+                                            onKeyDown={e => { if (e.key === 'Enter') doCreateCustomer(); }} />
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <button className="btn" style={{ flex: 1 }} onClick={() => setCustomerForm(null)}>Hủy</button>
+                                        <button className="btn btn-primary" style={{ flex: 1 }} disabled={busy} onClick={doCreateCustomer}>
+                                            {busy ? <RefreshCw size={15} className="spin" /> : <Send size={15} />} Tạo cho khách
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{ padding: '12px 16px' }}>
+                                    <button className="btn btn-block" style={{ border: '1.5px dashed var(--line)', background: 'none', color: 'var(--ink-2)' }}
+                                        onClick={() => { setCustomerForm({ login: '', name: '', pin: '' }); setCustomerRevealed(null); }}>
+                                        <UserRoundCheck size={17} /> Tạo tài khoản khách hàng
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
 

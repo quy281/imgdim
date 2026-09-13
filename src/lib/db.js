@@ -205,9 +205,11 @@ async function mergeStores(from, to, cleanupSource) {
 
 /**
  * Mở store cho tài khoản `uid` (null = chưa đăng nhập → store 'anon').
+ * options.adoptAnon=false dùng cho cổng khách: không để tài khoản khách vô tình nhận
+ * dữ liệu nội bộ từng được tạo ẩn danh trên cùng điện thoại.
  * Trả về { storeId, adopted, migratedV2 } để App có thể báo cho người dùng.
  */
-export function setAccount(uid) {
+export function setAccount(uid, options = {}) {
     return queued(async () => {
         const target = uid ? String(uid) : 'anon';
         const inst = instanceFor(target);
@@ -254,7 +256,7 @@ export function setAccount(uid) {
         // 2. Luôn thử cứu kho anon khi đã đăng nhập, kể cả khi kho đích đã
         // có dữ liệu hoặc lần login hỏng trước đã đổi ACTIVE_STORE_KEY. Phép merge
         // idempotent và hàng đợi phía trên ngăn save chen vào giữa merge/verify/cleanup.
-        if (uid && target !== 'anon') {
+        if (uid && target !== 'anon' && options.adoptAnon !== false) {
             const anon = instanceFor('anon');
             if ((await allKeys(anon)).length) adopted = await mergeStores(anon, inst, true);
         }

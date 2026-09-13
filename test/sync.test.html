@@ -153,9 +153,13 @@
     {
         setup({ remote: [rec({ item_id: 'd1', updated_ms: 1000 })] });
         const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd1', kind: 'doc', deletedAt: 7000 }] });
-        const w = writes().find(c => c.path.includes('rec_d1'));
-        ok('tombstone → soft-delete lên cloud', r.deleted === 1 && w?.body?.deleted === true, JSON.stringify(w?.body));
-        ok('mốc xóa ghi vào updated_ms', w?.body?.updated_ms === 7000);
+        const mark = calls.find(c => c.method === 'POST' && c.path === 'collections/deletions/records');
+        const del = calls.find(c => c.method === 'DELETE' && c.path.includes('rec_d1'));
+        const markAt = calls.findIndex(c => c === mark);
+        const delAt = calls.findIndex(c => c === del);
+        ok('tombstone → ghi dấu rồi xóa thật trên cloud', r.deleted === 1 && !!mark && !!del, JSON.stringify(calls));
+        ok('mốc xóa ghi vào bảng deletions', mark?.body?.at === 7000, JSON.stringify(mark?.body));
+        ok('ghi dấu xóa trước khi DELETE record', markAt >= 0 && delAt > markAt, `mark=${markAt}, delete=${delAt}`);
         ok('tombstone được dọn sau khi xóa xong', r.clearedTombstones.includes('d1'));
     }
     {
@@ -178,10 +182,12 @@
         ok('tombstone bị bỏ, item kéo về', r.clearedTombstones.includes('d1') && r.pulledDocs.length === 1);
     }
     {
-        // Xóa lúc offline, item chưa từng lên cloud → giữ tombstone để lần sau vẫn xóa được.
+        // Xóa lúc offline, item chưa từng lên cloud → ghi một dấu xóa tối thiểu rồi dọn
+        // tombstone local. Nếu máy khác còn item cũ, nó sẽ đọc bảng deletions và xoá theo.
         setup({ remote: [] });
         const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'dX', kind: 'doc', deletedAt: 3000 }] });
-        ok('item chưa lên cloud → GIỮ tombstone', !r.clearedTombstones.includes('dX'));
+        ok('item chưa lên cloud → ghi dấu xóa', calls.some(c => c.method === 'POST' && c.path === 'collections/deletions/records' && c.body.item_id === 'dX'));
+        ok('item chưa lên cloud → dọn tombstone local', r.clearedTombstones.includes('dX'));
     }
 
     // ===== 4. Ảnh: tách khỏi JSON, không upload lại khi hash không đổi =====
@@ -458,8 +464,8 @@
         ok('không lưu phiên khi đăng nhập thất bại', !pb.isLoggedIn());
     }
 
-    // ===== 6. Đồng hồ + chế độ tương thích backend cũ =====
-    group('Đồng hồ & tương thích');
+    // ===== 6. Đồng hồ + backend cũ fail-closed =====
+    group('Đồng hồ & backend cũ fail-closed');
     {
         setup({ remote: [] });
         await pb.fullSync({ ...empty });
@@ -467,21 +473,23 @@
         ok('bù lệch giờ theo header Date của server', Math.abs(pb.now() - SERVER_NOW) < 5000, `skew ${skew}ms, now ${new Date(pb.now()).toISOString()}`);
     }
     {
-        // Backend chưa chạy pb-setup.mjs: metadata không có updated_ms → phải rơi về chế độ cũ.
+        // Backend chưa chạy provision: metadata không có updated_ms. Client mới phải
+        // dừng an toàn, không ghi kiểu v2 vì kiểu đó tạo record thiếu scope/team.
         setup({
             remote: [rec({ item_id: 'd1', updated_ms: 8000, data: doc('d1', 8000) })],
             legacy: true,
         });
-        routes['collections/survey_items/records?'] = (path) => path.includes('fields=')
-            ? res({ items: [{ id: 'rec_d1', item_id: 'd1', kind: 'doc', project_id: 'p1', name: 'x', owner: UID }], page: 1, totalPages: 1 })
-            : res({ items: [{ id: 'rec_d1', item_id: 'd1', kind: 'doc', project_id: 'p1', name: 'x', owner: UID, data: doc('d1', 8000) }], page: 1, totalPages: 1 });
-        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 2000)] });
-        ok('nhận ra backend chưa nâng schema', r.legacy === true);
-        ok('chế độ cũ vẫn kéo được dữ liệu về', r.pulledDocs.length === 1 && r.pulledDocs[0].updatedAt === 8000);
+        let caught = null;
+        try { await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 2000)] }); }
+        catch (e) { caught = e; }
+        ok('backend chưa nâng schema → báo lỗi 503', caught?.status === 503, caught?.message);
+        ok('thông báo hướng người dùng dựng schema', /Dựng ngay/.test(caught?.message || ''), caught?.message);
+        ok('không ghi gì lên survey_items khi schema cũ', writes().length === 0,
+            `writes=${writes().map(c => c.path).join('|')}`);
     }
 
-    // ===== 6b. Client MỚI trên backend CHƯA nâng schema (đúng cửa sổ giữa deploy và pb-setup) =====
-    group('Tương thích backend cũ — không được làm mất ảnh');
+    // ===== 6b. Client MỚI trên backend CHƯA nâng schema =====
+    group('Backend cũ — giữ dữ liệu trên máy, không đẩy v2');
     const legacyRoutes = (recs) => {
         routes['collections/survey_items/records?'] = (path) => res({
             // Metadata thiếu updated_ms → client phải nhận ra là backend cũ.
@@ -499,18 +507,13 @@
         setup({ remote: [photoRec] });
         legacyRoutes([photoRec]);
         const localPhoto = { id: 'ph9', projectId: 'p1', type: 'photo', name: 'Ảnh 9 sửa', img: IMG, photoHash: hashString(IMG), thumb: 't', createdAt: 1, updatedAt: 9000 };
-        const r = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [localPhoto] });
-        ok('nhận ra backend cũ', r.legacy === true);
-        const w = writes().find(c => c.path.includes('rec_ph9'));
-        ok('KHÔNG upload multipart lên field photo chưa tồn tại', w && !w.isForm, 'vẫn gửi FormData');
-        const sent = typeof w?.body?.data === 'string' ? JSON.parse(w.body.data) : w?.body?.data;
-        ok('ẢNH VẪN NẰM TRONG data (không mất)', sent?.img === IMG, sent?.img ? 'ảnh khác' : 'img đã bị xóa khỏi data');
-        ok('không gửi cột chưa tồn tại: updated_ms', !('updated_ms' in (w?.body || {})));
-        ok('không gửi cột chưa tồn tại: scope', !('scope' in (w?.body || {})));
-        ok('không gửi cột chưa tồn tại: rev', !('rev' in (w?.body || {})));
-        ok('không gửi cột chưa tồn tại: photo_hash', !('photo_hash' in (w?.body || {})));
-        ok('vẫn gửi đủ field của v2', ['owner', 'item_id', 'kind', 'project_id', 'name', 'data']
-            .every(k => k in (w?.body || {})), JSON.stringify(Object.keys(w?.body || {})));
+        let caught = null;
+        try { await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [localPhoto] }); }
+        catch (e) { caught = e; }
+        ok('nhận ra backend cũ và dừng', caught?.status === 503, caught?.message);
+        ok('KHÔNG upload multipart lên field photo chưa tồn tại', !writes().some(c => c.isForm), 'vẫn gửi FormData');
+        ok('không PATCH bản ảnh kiểu v2', !writes().some(c => c.path.includes('rec_ph9')),
+            `writes=${writes().map(c => c.path).join('|')}`);
     }
     {
         // Không được đẩy lại toàn bộ dự án mỗi lượt sync chỉ vì thiếu cột scope/schema_v.
@@ -521,25 +524,28 @@
         const projRec = { id: 'rec_p1', item_id: 'p1', kind: 'project', project_id: 'p1', name: 'P p1', owner: UID, data: proj('p1', 5000) };
         setup({ remote: [projRec, photoRec] });
         legacyRoutes([projRec, photoRec]);
-        const r = await pb.fullSync({
+        let caught = null;
+        try { await pb.fullSync({
             projects: [proj('p1', 5000, { scope: 'team' })],
             docs: [{ id: 'ph8', projectId: 'p1', type: 'photo', img: IMG, photoHash: hashString(IMG), updatedAt: 5000 }],
             tombstones: [], scopeDirty: ['p1'],
-        });
-        ok('đã khớp thì không ghi gì, dù scope lệch và schema cũ', r.pushed === 0 && writes().length === 0,
-            `pushed=${r.pushed}, writes=${writes().map(c => c.path).join('|')}`);
-        ok('không báo migrate khống', r.migrated === 0);
+        }); } catch (e) { caught = e; }
+        ok('schema cũ không nhận đổi scope/team', caught?.status === 503, caught?.message);
+        ok('giữ nguyên trên máy, không ghi scope v2', writes().length === 0,
+            `writes=${writes().map(c => c.path).join('|')}`);
     }
     {
-        // Xóa vẫn phải lan sang máy khác trên backend cũ, qua data._deleted như v2.
+        // Xóa cũng không ghi data._deleted kiểu v2 nữa; tombstone local ở lại để thử lại
+        // sau khi backend có bảng deletions.
         const docRec = { id: 'rec_d7', item_id: 'd7', kind: 'doc', project_id: 'p1', name: 'D d7', owner: UID, data: doc('d7', 1000) };
         setup({ remote: [docRec] });
         legacyRoutes([docRec]);
-        const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd7', kind: 'doc', deletedAt: 7000 }] });
-        const w = writes().find(c => c.path.includes('rec_d7'));
-        ok('soft-delete chạy được trên backend cũ', r.deleted === 1 && !!w);
-        ok('dấu xóa ghi vào data._deleted (v2 đọc được)', w?.body?.data?._deleted === true, JSON.stringify(w?.body));
-        ok('không gửi cột deleted chưa tồn tại', !('deleted' in (w?.body || {})));
+        let caught = null;
+        try { await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd7', kind: 'doc', deletedAt: 7000 }] }); }
+        catch (e) { caught = e; }
+        ok('schema cũ không nhận lệnh xoá v2', caught?.status === 503, caught?.message);
+        ok('không gửi soft-delete lên data._deleted', writes().length === 0,
+            `writes=${writes().map(c => c.path).join('|')}`);
     }
 
     // ===== 7. Id sinh ra phải duy nhất giữa các thiết bị =====

@@ -24,9 +24,9 @@
     const group = (t) => lines.push(`<h3>${t}</h3>`);
 
     // Dọn sạch trước khi chạy để test tái lập được.
-    const U1 = 'utest_user_1', U2 = 'utest_user_2', U3 = 'utest_user_3';
+    const U1 = 'utest_user_1', U2 = 'utest_user_2', U3 = 'utest_user_3', CUSTOMER = 'utest_customer';
     for (const k of Object.keys(localStorage)) if (k.startsWith('ks_')) localStorage.removeItem(k);
-    for (const name of ['mkg-khaosat-anon', `mkg-khaosat-${U1}`, `mkg-khaosat-${U2}`, `mkg-khaosat-${U3}`]) {
+    for (const name of ['mkg-khaosat-anon', `mkg-khaosat-${U1}`, `mkg-khaosat-${U2}`, `mkg-khaosat-${U3}`, `mkg-khaosat-${CUSTOMER}`]) {
         await new Promise(r => { const q = indexedDB.deleteDatabase(name); q.onsuccess = q.onerror = q.onblocked = r; });
     }
 
@@ -95,6 +95,25 @@
 
         await db.setAccount('anon');
         ok('chỉ dọn anon sau khi merge đã kiểm chứng', (await db.loadProjects()).length === 0 && (await db.listAllDocs()).length === 0);
+    }
+
+    group('2c. Cổng khách không được nhận dữ liệu nội bộ ẩn danh');
+    {
+        await db.setAccount(null);
+        await db.saveProjects([mkProj('pInternal', 'Dữ liệu nhân viên chưa đăng nhập')]);
+        await db.putDoc({ id: 'dInternal', projectId: 'pInternal', type: 'plan', name: 'Nội bộ', createdAt: 4, updatedAt: 4 });
+
+        const r = await db.setAccount(CUSTOMER, { adoptAnon: false });
+        ok('mở đúng kho riêng của khách', r.storeId === CUSTOMER, r.storeId);
+        ok('khách không nhận project ẩn danh', (await db.loadProjects()).length === 0);
+        ok('khách không nhận doc ẩn danh', (await db.listAllDocs()).length === 0);
+        ok('không báo đã nhận nhầm dữ liệu', r.adopted === 0, `adopted=${r.adopted}`);
+
+        await db.setAccount('anon');
+        ok('dữ liệu nội bộ vẫn nguyên trong kho anon', (await db.loadProjects()).some(p => p.id === 'pInternal'));
+        ok('doc nội bộ vẫn nguyên trong kho anon', (await db.listAllDocs()).some(d => d.id === 'dInternal'));
+        await db.saveProjects([]);
+        await db.deleteDoc('dInternal');
     }
 
     group('3. Tài khoản khác trên cùng máy — không được thấy dữ liệu người trước');

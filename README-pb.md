@@ -1,143 +1,143 @@
-# Backend PocketBase — MKG Khảo Sát v3
+# Backend PocketBase - MKG Khao Sat
 
-Server: `https://db.mkg.vn` (PocketBase v0.23+, sau Cloudflare).
+Server mac dinh: `https://db.mkg.vn`.
 
-## Áp schema
+Tai lieu nay mo ta schema dang dung cho app noi bo va cong khach hang.
 
-Script `scripts/pb-setup.mjs` làm toàn bộ việc, chạy lại nhiều lần vẫn an toàn (idempotent).
-Nó cần credential superuser — truyền qua biến môi trường để không nằm lại trên đĩa và
-không đi vào git.
+## Ap Schema
 
-Xem trước kế hoạch, chưa ghi gì:
+Duong khuyen dung: dang nhap bang superuser PocketBase trong app, vao **Cai dat -> Quan ly team & nguoi dung -> Dung ngay**.
+
+CLI van dung duoc, nhung chi la wrapper goi cung logic `provisionBackend()` cua app:
 
 ```bash
 PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs --dry-run
-```
-
-Áp thật:
-
-```bash
 PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs
 ```
 
-Trước khi sửa, script tự ghi bản sao schema hiện tại ra `scripts/.pb-backup-<timestamp>.json`.
+Truoc khi sua schema, app/script tao backup schema vao may. Chay lai nhieu lan van an toan.
 
-### Script làm gì
+Neu backend chua du schema moi, client se **dung sync va giu pending tren may**. Day la chu y thiet ke: khong day kieu tuong thich cu nua vi kieu do tao record thieu `scope/team`, lam dong nghiep khong doc duoc.
 
-| Bước | Nội dung |
-|---|---|
-| 1 | Backup schema hiện tại ra file |
-| 2 | Tạo collection `teams` + team **MKG**, nạp toàn bộ user hiện có làm thành viên |
-| 3 | Tạo collection `shares` (link chia sẻ, id 10 ký tự) |
-| 4 | Thêm field vào `survey_items`: `scope`, `team`, `updated_ms`, `deleted`, `rev`, `schema_v`, `photo`, `photo_hash`, `owner_name` + index + API rules |
-| 5 | Backfill record cũ: `updated_ms = data.updatedAt`, `scope = private`, `rev = 1`, `schema_v = 2` |
+## Schema Chinh
 
-Bước 5 **bắt buộc** — không có `updated_ms`, client sẽ rơi về chế độ tương thích (tải cả
-ảnh mỗi lượt sync, đúng cái đang chậm). App vẫn chạy được nếu chưa áp schema, chỉ là chậm;
-màn "Kiểm tra đồng bộ" sẽ báo đỏ *"Backend chưa nâng schema v3"*.
+`survey_items`: du lieu noi bo cua nhan vien, mot record cho moi project/doc.
 
-## Phân quyền
+- `owner`, `owner_name`: nguoi tao/chu record.
+- `scope`: `private` hoac `team`.
+- `team`: doi duoc doc khi `scope = team`.
+- `updated_ms`, `rev`, `schema_v`: dong bo hai pha va migrate anh.
+- `photo`, `photo_hash`: anh tach khoi JSON de sync nhanh.
+- `deleted`: dau cu con sot, du lieu xoa that se vao `deletions`.
 
-`survey_items` — đọc và sửa:
+`teams`: doi lam viec noi bo, gom `members`.
 
+`shares`: link chia se cong khai bang ma khong doan duoc; link het han/thu hoi tra 404.
+
+`deletions`: dau xoa toi thieu de may offline biet xoa theo sau khi record goc da bi DELETE that.
+
+`customer_profiles`: anh xa tai khoan khach -> team tiep nhan. Khach khong la thanh vien team.
+
+`customer_submissions`: hop thu snapshot khach gui, cho nhan vien duyet/nhap vao du lieu noi bo.
+
+## So Do Phan Quyen
+
+```mermaid
+flowchart TD
+    Superuser[Superuser PocketBase]
+    Admin[Quan tri app<br/>role=admin]
+    Staff[Nhan vien]
+    Customer[Khach hang<br/>role=customer]
+    Public[Nguoi co link share]
+
+    Users[(users)]
+    Teams[(teams)]
+    Survey[(survey_items<br/>du lieu noi bo)]
+    Shares[(shares)]
+    Deletes[(deletions)]
+    Profiles[(customer_profiles)]
+    Submissions[(customer_submissions<br/>hop cho)]
+
+    Superuser -->|dung schema / backup / sua moi bang| Users
+    Superuser --> Teams
+    Superuser --> Survey
+
+    Admin -->|tao nhan vien, khach, gan team| Users
+    Admin -->|quan ly thanh vien| Teams
+    Admin -->|tao profile khach| Profiles
+
+    Staff -->|doc/sua cua minh| Survey
+    Staff -->|doc/sua khi scope=team va la member| Survey
+    Staff -->|doc team minh| Teams
+    Staff -->|xem hop thu team| Submissions
+    Staff -->|import thanh du an noi bo| Survey
+    Staff -->|ghi dau xoa| Deletes
+    Staff -->|tao/thu hoi link cua minh| Shares
+
+    Customer -->|doc profile cua minh| Profiles
+    Customer -->|gui snapshot status=submitted| Submissions
+    Customer -. khong doc/ghi .-> Survey
+    Customer -. khong la member .-> Teams
+
+    Public -->|view code hop le, chua het han| Shares
 ```
-owner = @request.auth.id || (scope = "team" && team.members.id ?= @request.auth.id)
+
+## Rule Cot Loi
+
+`survey_items` list/view:
+
+```text
+(@request.auth.id != "" && @request.auth.role != "customer") &&
+(owner = @request.auth.id || (scope = "team" && team != "" && team.members.id ?= @request.auth.id))
 ```
 
-**Mặc định là `team`.** Mọi dự án — kể cả dữ liệu tạo trước khi có lớp user — đều thuộc
-team MKG; muốn giữ riêng thì đổi phạm vi trong menu dự án trên app. Đổi mặc định ở
-`SCOPE_DEFAULT` trong `src/lib/pb.js` **và** biến cùng tên trong `scripts/pb-setup.mjs`
-(hai chỗ phải khớp nhau).
+`survey_items` create:
 
-- Dự án `scope = "team"`: cả thành viên team MKG xem **và sửa** được.
-- Dự án `private`: chỉ chủ sở hữu thấy, trên mọi máy của mình. Backfill tôn trọng lựa
-  chọn này, không kéo ngược về team.
-- Xóa cứng record: chỉ chủ sở hữu. Thành viên team xóa dự án chung sẽ tạo soft-delete
-  (`deleted = true`) — vẫn lan sang máy người khác, nên nút xóa dự án team có cảnh báo riêng.
-- Không ai đổi được `owner` của record người khác (`OWNER_GUARD` trong rule).
+```text
+@request.auth.id != "" && @request.auth.role != "customer" && @request.body.owner = @request.auth.id
+```
 
-`teams` — thành viên đọc được team của mình; **tạo/sửa/xóa team chỉ superuser**. Từ bản này
-làm được ngay trong app (xem "Quản lý team & người dùng" bên dưới), không bắt buộc vào PB
-Admin UI nữa. Client tự dò lại team ở mỗi lần sync nên thành viên mới không phải đăng nhập lại.
+Khach hang bi chan o API rule, khong chi o giao dien. Neu khach co token va tu goi endpoint `survey_items`, server van tu choi.
 
-`shares` — chủ sở hữu liệt kê được link của mình để thu hồi. Người ngoài **xem được bằng id**
-(10 ký tự, không đoán được); link đã thu hồi hoặc hết hạn trả 404.
+## Luong Khach Hang
 
-## Tài khoản superuser (Founder) cũng sync được
+1. Quan tri mo **Quan ly team & nguoi dung**, chon team tiep nhan, tao tai khoan khach.
+2. Gui cho khach link `/?customer=1`, ten dang nhap va PIN.
+3. Khach tu do tren dien thoai, bam **Gui cho nhan vien**.
+4. App tao record trong `customer_submissions`, idempotent theo `project.id + version`.
+5. Nhan vien mo **Du lieu khach gui**, kiem tra, bam **Nhap vao du an noi bo**.
+6. Du lieu sau khi nhap moi vao `survey_items` va di theo sync noi bo binh thuong.
 
-`owner` trên `survey_items` là quan hệ tới collection `users`. Superuser xác thực qua bảng
-riêng `_superusers` — id của nó **không tồn tại** trong `users`, nên ghi thẳng id đó vào
-`owner` bị PocketBase từ chối (lỗi validate quan hệ). Đây là nguyên nhân tài khoản dùng để
-chạy `pb-setup.mjs` (thường cũng là tài khoản Founder dùng hàng ngày) không sync được nếu
-đăng nhập thẳng vào app bằng creds đó.
+## Du Lieu Truoc Khi Login
 
-Client tự xử lý: lần đầu đăng nhập bằng superuser, `resolveIdentity()` tìm hoặc tạo một
-record `users` cùng email, dùng id của record đó làm `owner`/`team.members` (gọi là
-"ownerId" trong code, khác với "myId" — id đăng nhập thô, chỉ dùng để hiển thị). Tự động,
-không cần làm gì thêm — chỉ cần đăng nhập lại một lần sau khi cập nhật app.
+Lop local data tach rieng theo tai khoan IndexedDB.
 
-## Quản lý team & người dùng (trong app, chỉ superuser thấy)
+- Nhan vien lam khi chua login: lan login dau se nhan du lieu anon vao tai khoan va giu hang doi sync.
+- Tai khoan khach: **khong** nhan du lieu noi bo an danh tren may, de tranh dien thoai dung chung bi day nham du lieu cong ty sang khach.
+- Dang xuat khong xoa local data; app van mo store gan nhat tren may.
 
-Settings → **Quản lý team & người dùng** (mục này ẩn với tài khoản thường). Làm được:
+Voi Android Chrome, khong xoa site data/clear storage/uninstall Chrome neu con ban chua sync. Mo dung domain app, dang nhap lai, bam sync hoac gui khach.
 
-- Tạo team mới (vd tách riêng Academy / Labs sau này).
-- Xem thành viên từng team, thêm người mới bằng email + tên + mật khẩu (bỏ trống mật khẩu
-  để tự sinh ngẫu nhiên — **hiện đúng một lần**, phải copy ngay lúc đó vì PocketBase không
-  cho đọc lại). Email đã có tài khoản thì chỉ gắn thêm vào team, không tạo trùng.
-- Xóa người khỏi team.
+## Tao User Bang CLI
 
-Mật khẩu tối thiểu 8 ký tự (`PASSWORD_MIN` trong `pb.js`) — PocketBase từ chối thẳng mật khẩu
-ngắn hơn, kể cả khi gõ tay. Muốn tạo hàng loạt qua CLI thay vì tap trong app:
+Sau khi provision, co the tao hang loat nhan vien bang script:
 
 ```bash
-PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs --skip-backfill \
-  --add-users "an@mkg.vn:Anh An,binh@mkg.vn:Chị Bình" --password "mkg-2026-tam"
+PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs \
+  --add-users "an@mkg.vn:Anh An,binh@mkg.vn:Chi Binh" --password "2580"
 ```
 
-Bỏ `--password` để mỗi người có một mật khẩu ngẫu nhiên riêng, in ra cuối log — an toàn hơn
-nhưng phải copy-paste gửi từng người. `--team <slug>` đổi team đích (mặc định `mkg`).
-
-## Nhiều team — chọn team cho từng dự án
-
-Field `team` trên `survey_items` vốn đã là quan hệ chung (không khoá cứng vào MKG), nên
-thêm team thứ hai không cần đổi schema. Trên app: dự án chỉ hiện nút bật/tắt "Chia sẻ cho
-team X" khi tài khoản chỉ thuộc 1 team (giữ nguyên trải nghiệm hiện tại); thuộc ≥2 team thì
-đổi thành picker liệt kê tất cả để chọn đúng team. Superuser luôn thấy **toàn bộ** team (bỏ
-qua rule `members.id ?= auth.id`), phù hợp vai trò quản lý chung.
-
-## Optimistic concurrency (`rev`) — mặc định TẮT
-
-Trường `rev` đã có và client vẫn tăng mỗi lần ghi, nhưng rule chưa chặn ghi đè. Bật bằng:
-
-```bash
-PB_EMAIL=... PB_PASSWORD='***' node scripts/pb-setup.mjs --enable-rev-cas
-```
-
-Rule khi bật thêm điều kiện `@request.body.rev > rev`, biến mọi lần ghi thành compare-and-swap:
-máy nào đọc bản cũ rồi ghi sẽ bị 403 thay vì âm thầm đè mất việc của người khác.
-
-**Chỉ bật sau khi test bằng một tài khoản thành viên thật** (không phải superuser — superuser
-bỏ qua mọi rule nên không kiểm được gì). Nếu rule sai, mọi lệnh sửa sẽ 403. Tắt lại bằng
-cách chạy script không có cờ đó.
-
-## Ảnh khảo sát
-
-Từ schema v3, ảnh nằm ở file field `photo` (`protected: true` → phải có file token mới đọc
-được, không lộ qua URL), **không** còn nhúng base64 trong `data`. Client tự chuyển dần:
-record `schema_v = 2` được đẩy lại thành v3 ở lần sync sau, giữ nguyên `updated_ms` nên máy
-khác không phải tải lại doc.
-
-Trước: mỗi lần sync tải toàn bộ `data` gồm ảnh → ~20MB với 40 ảnh.
-Sau: pha 1 chỉ tải metadata (~250 byte/record); ảnh chỉ tải khi `photo_hash` đổi.
+`--password` nhan PIN 4-8 so hoac mat khau that tu 8 ky tu. Neu bo trong, app tu sinh mat khau va in ra mot lan.
 
 ## Test
 
-Chạy `npm run dev` rồi mở:
+Chay `npm run dev` roi mo:
 
-- `/test/sync.test.html` — tầng sync (chặn fetch, không chạm server thật)
-- `/test/user.test.html` — lớp user, cách ly dữ liệu giữa tài khoản
-- `/test/admin.test.html` — superuser tự có danh tính sync, quản lý team/user, đa team
-- `/test/migrate.test.html` — di trú dữ liệu v2 → v3
-- `/test/geometry.test.html` — hình học mặt bằng
+- `/test/sync.test.html` - sync hai pha, fail-closed khi backend cu.
+- `/test/user.test.html` - tach du lieu theo tai khoan, cuu du lieu anon, khach khong nhan nham anon.
+- `/test/customer.test.html` - login khach, gui snapshot, nhan vien duyet hop thu.
+- `/test/admin.test.html` - superuser, quan ly team/user, da team.
+- `/test/migrate.test.html` - di tru du lieu v2 -> v3.
+- `/test/geometry.test.html`, `/test/elevation.test.html`, `/test/column.test.html`, `/test/pin.test.html` - cac lop tinh toan/UI phu.
 
-Tiêu đề tab hiện `N pass` hoặc `N FAIL`.
+Tieu de tab hien `N pass` hoac `N FAIL`.
