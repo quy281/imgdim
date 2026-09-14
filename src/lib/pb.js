@@ -1112,6 +1112,51 @@ export async function listCustomers(teamId) {
     }));
 }
 
+function memberOf(u) {
+    return { id: u.id, email: u.email || '', name: u.name || u.username || u.email || u.id, role: u.role || '' };
+}
+
+function customerOf(r) {
+    return {
+        id: r.id, userId: r.user, teamId: r.team, name: r.name || '', phone: r.phone || '',
+        active: r.active !== false,
+        login: r.expand?.user?.username || r.expand?.user?.email || r.user,
+    };
+}
+
+/** Dashboard quản trị: gom đội + nhân viên + tuyến khách trong một ảnh chụp. */
+export async function getTeamDashboard() {
+    requireAdmin();
+    const teamsRes = await api(`collections/${TEAMS}/records?perPage=200&sort=name&expand=members`);
+    let customerRows = [];
+    try {
+        const customersRes = await api(`collections/${CUSTOMER_PROFILES}/records?perPage=500&sort=name&expand=user`);
+        customerRows = customersRes.items || [];
+    } catch (err) {
+        if (err.status !== 404) throw err;
+    }
+    const customersByTeam = new Map();
+    for (const row of customerRows.map(customerOf)) {
+        const arr = customersByTeam.get(row.teamId) || [];
+        arr.push(row);
+        customersByTeam.set(row.teamId, arr);
+    }
+    return {
+        teams: (teamsRes.items || []).map(t => {
+            const expanded = Array.isArray(t.expand?.members) ? t.expand.members : [];
+            const members = expanded.length
+                ? expanded.map(memberOf)
+                : (t.members || []).map(id => ({ id, email: '', name: '(ẩn — cần quyền quản trị để xem)', role: '' }));
+            return {
+                id: t.id, name: t.name, slug: t.slug,
+                memberCount: (t.members || []).length,
+                members,
+                customers: customersByTeam.get(t.id) || [],
+            };
+        }),
+    };
+}
+
 /** Tạo tài khoản khách + tuyến nhận. Khách không được thêm vào members của team. */
 export async function createCustomer(teamId, { login: rawLogin, name, pin }) {
     requireAdmin();
@@ -1292,14 +1337,16 @@ export async function addTeamMember(teamId, email, opts = {}) {
         created = true;
     }
     const team = await api(`collections/${TEAMS}/records/${teamId}`);
+    let added = false;
     if (!(team.members || []).includes(user.id)) {
         await api(`collections/${TEAMS}/records/${teamId}`, {
             method: 'PATCH',
             body: JSON.stringify({ members: [...(team.members || []), user.id] }),
         });
+        added = true;
     }
     // Trả về thứ admin sẽ ĐỌC CHO người dùng nghe: PIN gốc, không phải chuỗi đã nở.
-    return { userId: user.id, email: user.email, created, password: created ? (raw || password) : null };
+    return { userId: user.id, email: user.email, created, added, password: created ? (raw || password) : null };
 }
 
 export async function removeTeamMember(teamId, userId) {
@@ -1309,6 +1356,41 @@ export async function removeTeamMember(teamId, userId) {
         method: 'PATCH',
         body: JSON.stringify({ members: (team.members || []).filter(id => id !== userId) }),
     });
+}
+
+/** Chuyển một nhân viên sang đội khác. Thêm vào đội mới trước để tránh rơi mất quyền nếu mạng lỗi giữa chừng. */
+export async function moveTeamMember(userId, fromTeamId, toTeamId) {
+    requireAdmin();
+    if (!userId || !toTeamId || fromTeamId === toTeamId) return { moved: false };
+    const [fromTeam, toTeam] = await Promise.all([
+        fromTeamId ? api(`collections/${TEAMS}/records/${fromTeamId}`) : Promise.resolve(null),
+        api(`collections/${TEAMS}/records/${toTeamId}`),
+    ]);
+    if (!(toTeam.members || []).includes(userId)) {
+        await api(`collections/${TEAMS}/records/${toTeamId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ members: [...(toTeam.members || []), userId] }),
+        });
+    }
+    if (fromTeam && (fromTeam.members || []).includes(userId)) {
+        await api(`collections/${TEAMS}/records/${fromTeamId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ members: (fromTeam.members || []).filter(id => id !== userId) }),
+        });
+    }
+    await refreshTeam().catch(() => {});
+    return { moved: true };
+}
+
+/** Chuyển tuyến nhận khách hàng sang đội khác; không thêm khách vào members của team. */
+export async function moveCustomer(customerProfileId, toTeamId) {
+    requireAdmin();
+    if (!customerProfileId || !toTeamId) throw new PbError('Thiếu khách hàng hoặc team đích', 400);
+    const rec = await api(`collections/${CUSTOMER_PROFILES}/records/${customerProfileId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ team: toTeamId }),
+    });
+    return customerOf(rec);
 }
 
 // ===== Dựng schema backend ngay trong app (chỉ superuser) =====
@@ -1379,7 +1461,7 @@ const TEAMS_RULES = {
 };
 
 const STAFF_TEAM_MEMBER = `(${IS_STAFF}) && team != "" && team.members.id ?= @request.auth.id`;
-const CUSTOMER_ACCESS_RULE = `user = @request.auth.id || (${STAFF_TEAM_MEMBER})`;
+const CUSTOMER_ACCESS_RULE = `user = @request.auth.id || ${IS_ADMIN} || (${STAFF_TEAM_MEMBER})`;
 const CUSTOMER_PROFILE_RULES = {
     listRule: CUSTOMER_ACCESS_RULE,
     viewRule: CUSTOMER_ACCESS_RULE,
@@ -1387,7 +1469,7 @@ const CUSTOMER_PROFILE_RULES = {
     updateRule: IS_ADMIN,
     deleteRule: IS_ADMIN,
 };
-const CUSTOMER_SUBMISSION_READ = `owner = @request.auth.id || (${STAFF_TEAM_MEMBER})`;
+const CUSTOMER_SUBMISSION_READ = `owner = @request.auth.id || ${IS_ADMIN} || (${STAFF_TEAM_MEMBER})`;
 const CUSTOMER_SUBMISSION_RULES = {
     listRule: CUSTOMER_SUBMISSION_READ,
     viewRule: CUSTOMER_SUBMISSION_READ,
@@ -1395,7 +1477,7 @@ const CUSTOMER_SUBMISSION_RULES = {
         + '&& @request.body.team != "" && @request.body.status = "submitted"',
     // Nhân viên chỉ được đổi trạng thái duyệt. Khóa payload, chủ sở hữu, team và khóa
     // idempotency để kết quả khách gửi trở thành một snapshot bất biến.
-    updateRule: `${STAFF_TEAM_MEMBER} `
+    updateRule: `(${IS_ADMIN} || (${STAFF_TEAM_MEMBER})) `
         + '&& @request.body.owner:isset = false && @request.body.team:isset = false '
         + '&& @request.body.payload:isset = false && @request.body.submission_key:isset = false '
         + '&& @request.body.source_project_id:isset = false',

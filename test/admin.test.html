@@ -37,7 +37,7 @@
     // ===== State giả lập backend =====
     let calls = [];
     let db;
-    const resetDb = () => { db = { users: [], teams: [], nextU: 0, nextT: 0, superAuthOk: true, usersAuthOk: false }; };
+    const resetDb = () => { db = { users: [], teams: [], customers: [], nextU: 0, nextT: 0, nextC: 0, superAuthOk: true, usersAuthOk: false }; };
 
     window.fetch = async (url, opts = {}) => {
         const path = String(url).replace('https://db.mkg.vn/api/', '');
@@ -62,7 +62,7 @@
                 if ((b.password || '').length < 8) {
                     return res({ message: 'Failed to create record.', data: { password: { code: 'min', message: 'Giá trị phải dài từ 8 đến 71 ký tự.' } } }, 400);
                 }
-                const rec = { id: `u${++db.nextU}`, email: b.email, name: b.name || '', username: b.username };
+                const rec = { id: `u${++db.nextU}`, email: b.email, name: b.name || '', username: b.username, role: b.role || '' };
                 db.users.push(rec);
                 return res({ ...rec });
             },
@@ -87,6 +87,33 @@
                 const b = bodyOf(o);
                 const rec = { id: `t${++db.nextT}`, name: b.name, slug: b.slug, members: b.members || [] };
                 db.teams.push(rec);
+                return res({ ...rec });
+            },
+
+            'collections/customer_profiles/records?': (p) => {
+                let rows = db.customers;
+                const team = (decodeURIComponent(p).match(/team='([^']+)'/) || [])[1];
+                const user = (decodeURIComponent(p).match(/user='([^']+)'/) || [])[1];
+                if (team) rows = rows.filter(c => c.team === team);
+                if (user) rows = rows.filter(c => c.user === user);
+                rows = rows.map(c => ({
+                    ...c,
+                    expand: p.includes('expand=user') ? { user: db.users.find(u => u.id === c.user) } : undefined,
+                }));
+                return res({ items: rows, page: 1, totalPages: 1 });
+            },
+            'collections/customer_profiles/records/': (p, o) => {
+                const id = p.split('/').pop().split('?')[0];
+                const c = db.customers.find(x => x.id === id);
+                if (!c) return res({ message: 'Not found' }, 404);
+                if ((o.method || 'GET') === 'PATCH') Object.assign(c, bodyOf(o));
+                return res({ ...c });
+            },
+            'collections/customer_profiles/records': (p, o) => {
+                if ((o.method || 'GET') !== 'POST') return res({ items: db.customers, page: 1, totalPages: 1 });
+                const b = bodyOf(o);
+                const rec = { id: `c${++db.nextC}`, user: b.user, team: b.team, name: b.name || '', phone: b.phone || '', active: b.active !== false };
+                db.customers.push(rec);
                 return res({ ...rec });
             },
 
@@ -285,7 +312,38 @@
         ok('bị chặn ngay ở client, không tốn round-trip mạng', calls.length === before);
     }
 
-    // ===== 8. Nhiều team — dự án đẩy đúng team đã chọn, không mặc định về team đầu tiên =====
+    // ===== 8. Dashboard tổng thể — kéo/thả thực chất là đổi team trên server =====
+    group('Dashboard tổng thể & chuyển đội');
+    {
+        localStorage.removeItem('ks_auth');
+        resetDb();
+        db.loginEmail = 'dash@mkg.vn'; db.superAuthOk = true;
+        db.users.push(
+            { id: 'staff1', email: 'staff1@mkg.vn', name: 'Staff 1', username: 'staff1', role: '' },
+            { id: 'kh1', email: 'kh1@khach.mkg.vn', name: 'Khách 1', username: 'khach1', role: 'customer' },
+        );
+        db.teams.push(
+            { id: 'team_a', name: 'Team A', slug: 'a', members: ['staff1'] },
+            { id: 'team_b', name: 'Team B', slug: 'b', members: [] },
+        );
+        db.customers.push({ id: 'cp1', user: 'kh1', team: 'team_a', name: 'Khách 1', phone: '0901', active: true });
+        await pb.login('dash@mkg.vn', 'pw');
+
+        const dash = await pb.getTeamDashboard();
+        ok('dashboard thấy đủ 2 team', dash.teams.length === 2);
+        ok('dashboard gom nhân viên vào đúng team', dash.teams.find(t => t.id === 'team_a')?.members.some(m => m.id === 'staff1'));
+        ok('dashboard gom khách vào đúng tuyến', dash.teams.find(t => t.id === 'team_a')?.customers.some(c => c.id === 'cp1' && c.login === 'khach1'));
+
+        await pb.moveTeamMember('staff1', 'team_a', 'team_b');
+        ok('chuyển nhân viên: team cũ mất member', !db.teams.find(t => t.id === 'team_a').members.includes('staff1'));
+        ok('chuyển nhân viên: team mới nhận member', db.teams.find(t => t.id === 'team_b').members.includes('staff1'));
+
+        const movedCustomer = await pb.moveCustomer('cp1', 'team_b');
+        ok('chuyển khách: profile đổi team', movedCustomer.teamId === 'team_b' && db.customers.find(c => c.id === 'cp1').team === 'team_b');
+        ok('chuyển khách không thêm vào members', !db.teams.find(t => t.id === 'team_b').members.includes('kh1'));
+    }
+
+    // ===== 9. Nhiều team — dự án đẩy đúng team đã chọn, không mặc định về team đầu tiên =====
     group('Đa team — chọn đúng team cho từng dự án');
     {
         localStorage.removeItem('ks_auth');
@@ -307,7 +365,7 @@
             JSON.stringify(sent));
     }
 
-    // ===== 9. Lỗi validate từ PocketBase được lộ ra rõ ràng =====
+    // ===== 10. Lỗi validate từ PocketBase được lộ ra rõ ràng =====
     group('Thông báo lỗi có chi tiết field');
     {
         localStorage.removeItem('ks_auth');
