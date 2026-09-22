@@ -436,12 +436,16 @@ export default function App() {
 
             // Áp dữ liệu kéo về: đọc-sửa-ghi để không đè lên dự án tạo trong lúc đang sync.
             if (res.pulledProjects.length || delProjSet.size) {
+                const recoveredProjectIds = new Set(res.pulledProjects.filter(p => p.recoveredFromDocs).map(p => String(p.id)));
+                const pulledProjects = res.pulledProjects.map(({ recoveredFromDocs, ...p }) => p);
                 const next = await persistProjects(cur => {
                     const map = new Map(cur.map(p => [String(p.id), p]));
-                    for (const p of res.pulledProjects) map.set(String(p.id), { ...map.get(String(p.id)), ...p });
+                    for (const p of pulledProjects) map.set(String(p.id), { ...map.get(String(p.id)), ...p });
                     for (const id of delProjSet) map.delete(id);
                     return [...map.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
                 });
+                for (const id of recoveredProjectIds) await db.markPending(id, 'project');
+                if (recoveredProjectIds.size) syncAgain.current = true;
                 for (const id of delProjSet) await db.deleteProjectDocs(id);
                 projectsRef.current = next;
             }

@@ -75,6 +75,9 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
             });
 
             const localIds = new Set(localProjects.map(p => String(p.id)));
+            const remoteProjectIds = new Set(remote.items
+                .filter(r => r.kind === 'project' && !r.deleted)
+                .map(r => String(r.item_id)));
             const remoteOnly = remote.items
                 .filter(r => r.kind === 'project' && !r.deleted && !localIds.has(r.item_id))
                 .map(r => ({
@@ -83,6 +86,27 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                     localDocs: 0, remoteDocs: remote.items.filter(x => x.kind === 'doc' && x.project_id === r.item_id).length,
                     docsPending: 0,
                 }));
+            const orphanDocsByProject = new Map();
+            for (const r of remote.items) {
+                if (r.deleted || r.kind !== 'doc') continue;
+                const pid = String(r.project_id || '');
+                if (!pid || localIds.has(pid) || remoteProjectIds.has(pid)) continue;
+                const list = orphanDocsByProject.get(pid) || [];
+                list.push(r);
+                orphanDocsByProject.set(pid, list);
+            }
+            const orphanRows = [...orphanDocsByProject].map(([pid, docs]) => ({
+                id: pid,
+                name: `Dự án khôi phục ${pid}`,
+                status: 'to_pull',
+                scope: docs[0]?.scope || pb.SCOPE_DEFAULT,
+                mine: docs[0]?.owner === uid,
+                ownerName: docs[0]?.ownerName,
+                localDocs: 0,
+                remoteDocs: docs.length,
+                docsPending: 0,
+                orphanDocs: true,
+            }));
 
             setStatus({
                 account: remote.account,
@@ -99,7 +123,8 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                 wrongTeam: remote.items.filter(r =>
                     !r.deleted && r.rawScope === 'team' && r.team && remote.myTeamId
                     && r.team !== remote.myTeamId).length,
-                rows: [...projectRows, ...remoteOnly],
+                orphanDocProjects: orphanRows.length,
+                rows: [...projectRows, ...remoteOnly, ...orphanRows],
                 pendingCount: pending.length,
                 lastSyncAt: meta.lastSyncAt,
                 skew: pb.clockSkew(),
@@ -162,6 +187,15 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                                 này — người trong team đó mới đọc được.
                             </div>
                         )}
+                        {status.loggedIn && status.orphanDocProjects > 0 && (
+                            <div style={{
+                                marginTop: 8, padding: 9, borderRadius: 9, background: 'var(--warn-soft)',
+                                fontSize: 12, lineHeight: 1.5,
+                            }}>
+                                <b>{status.orphanDocProjects} nhóm file trên cloud đang thiếu dự án.</b> Bấm
+                                “Đồng bộ lại ngay”, app sẽ tải file xuống và tự tạo dự án khôi phục để chúng hiện ra.
+                            </div>
+                        )}
                         {Math.abs(status.skew || 0) > 60_000 && (
                             <div style={{ color: 'var(--warn)', marginTop: 4 }}>
                                 Đồng hồ máy lệch {Math.round(status.skew / 60000)} phút so với server — đã tự bù khi sync.
@@ -200,6 +234,7 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                                 </div>
                                 <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 1 }}>
                                     {STATUS_LABEL[row.status]}
+                                    {row.orphanDocs && ' · thiếu dự án, sẽ khôi phục'}
                                     {row.docsPending > 0 && ` · ${row.docsPending} file chờ`}
                                     {!row.mine && row.ownerName && ` · của ${row.ownerName}`}
                                     {row.status !== 'to_pull' && row.localDocs !== row.remoteDocs

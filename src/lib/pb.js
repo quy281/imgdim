@@ -884,11 +884,13 @@ export async function fullSync(local, onProgress) {
             const data = full.data;
             if (!data || typeof data !== 'object') return;
             const item = { ...data, ownerId: rec.owner, ownerName: rec.owner_name || '' };
+            if (item.id == null) item.id = rec.item_id;
             if (rec.kind === 'project') {
                 item.scope = rec.scope || SCOPE_DEFAULT;
                 item.teamId = rec.team || null;
                 pulledProjects.push(item);
             } else {
+                if (item.projectId == null) item.projectId = rec.project_id;
                 // Ảnh nằm ở file field từ schema_v 3 → tải riêng, và chỉ khi hash đổi.
                 if (item.type === 'photo') {
                     const localDoc = localMap.get(rec.item_id)?.item;
@@ -916,6 +918,41 @@ export async function fullSync(local, onProgress) {
             p(`Đang tải về ${++pullDone}/${toPull.length}...`);
         }
     });
+
+    // Cloud đôi khi còn doc nhưng thiếu record project (ví dụ lần sync cũ đẩy file thành
+    // công nhưng project lỗi/quyền đọc project bị lệch). Máy mới vẫn tải doc về được, nhưng
+    // nếu không có project meta thì toàn bộ dữ liệu bị "mồ côi" và không hiện trên màn danh
+    // sách. Cứu bằng cách dựng một project tối thiểu từ chính các doc nhìn thấy được.
+    const knownProjectIds = new Set([
+        ...local.projects.map(pj => String(pj.id)),
+        ...pulledProjects.map(pj => String(pj.id)),
+    ]);
+    const docsByProject = new Map();
+    for (const d of pulledDocs) {
+        const pid = String(d.projectId || '');
+        if (!pid || knownProjectIds.has(pid)) continue;
+        const list = docsByProject.get(pid) || [];
+        list.push(d);
+        docsByProject.set(pid, list);
+    }
+    for (const [projectId, docs] of docsByProject) {
+        const metas = remote.filter(r => r.kind === 'doc' && String(r.project_id) === projectId);
+        const first = metas[0] || {};
+        const updatedAt = Math.max(...docs.map(d => Number(d.updatedAt || 0)), ...metas.map(r => Number(r.updated_ms || 0)), 0);
+        const createdAt = Math.min(...docs.map(d => Number(d.createdAt || updatedAt)).filter(Boolean), updatedAt) || updatedAt;
+        pulledProjects.push({
+            id: projectId,
+            name: `Dự án khôi phục ${projectId}`,
+            scope: first.scope || SCOPE_DEFAULT,
+            teamId: first.team || null,
+            ownerId: first.owner || docs[0]?.ownerId || null,
+            ownerName: first.owner_name || docs[0]?.ownerName || '',
+            createdAt,
+            updatedAt,
+            recoveredFromDocs: true,
+        });
+        knownProjectIds.add(projectId);
+    }
 
     // ===== 4. Push =====
     let pushed = 0;

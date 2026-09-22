@@ -116,6 +116,25 @@
         ok('d2 không bị kéo lại', !r.pulledDocs.some(d => d.id === 'd2'));
         ok('gắn ownerId khi pull', r.pulledDocs[0].ownerId === UID);
     }
+    {
+        // Ca máy mới: cloud còn file/doc nhưng thiếu record project. Trước đây doc được
+        // tải về IndexedDB nhưng không có project nên màn danh sách trống, nhìn như
+        // "cloud có mà không load xuống".
+        setup({
+            remote: [
+                rec({ item_id: 'd_orphan', project_id: 'p_orphan', updated_ms: 6000, scope: 'team', team: TEAM.id }),
+            ],
+            full: { rec_d_orphan: { id: 'd_orphan', projectId: 'p_orphan', type: 'plan', name: 'Mặt bằng', plan: { nodes: [], walls: [] }, createdAt: 1000, updatedAt: 6000 } },
+        });
+        const r = await pb.fullSync({ ...empty });
+        ok('doc mồ côi vẫn được kéo về', r.pulledDocs.length === 1 && r.pulledDocs[0].id === 'd_orphan');
+        ok('tự dựng project để doc hiện trên máy mới',
+            r.pulledProjects.length === 1 && r.pulledProjects[0].id === 'p_orphan' && r.pulledProjects[0].recoveredFromDocs,
+            JSON.stringify(r.pulledProjects));
+        ok('project khôi phục giữ team để lần sync sau đẩy lại đúng quyền',
+            r.pulledProjects[0]?.scope === 'team' && r.pulledProjects[0]?.teamId === TEAM.id,
+            JSON.stringify(r.pulledProjects[0]));
+    }
 
     // ===== 2. Push khi local mới hơn; rev tăng =====
     group('Push');
