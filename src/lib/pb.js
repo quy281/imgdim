@@ -558,6 +558,23 @@ async function fetchMeta() {
 
 const keyOf = (owner, itemId) => `${owner || ''}/${itemId}`;
 
+function projectFromMeta(rec) {
+    const id = String(rec.item_id || rec.project_id || '');
+    const at = Number(rec.updated_ms || 0) || now();
+    return {
+        id,
+        name: rec.name || (id ? `Dự án khôi phục ${id}` : 'Dự án khôi phục'),
+        scope: rec.scope || SCOPE_DEFAULT,
+        teamId: rec.team || null,
+        ownerId: rec.owner || null,
+        ownerName: rec.owner_name || '',
+        createdAt: at,
+        updatedAt: at,
+        // Báo App đánh dấu pending để lượt sync sau ghi lại payload `data` đầy đủ.
+        recoveredFromCloud: true,
+    };
+}
+
 // ===== Dấu xoá =====
 // Bảng riêng, mỗi dòng ~60 byte. Tách khỏi survey_items để bản ghi khảo sát được xoá THẬT
 // (kèm ảnh) mà lệnh xoá vẫn lan tới máy đang offline. Backend chưa có bảng này thì mọi hàm
@@ -703,6 +720,7 @@ async function writeRecord(recId, fields, photoDataUrl, rev, legacy) {
  *   docs: [],                // toàn bộ doc
  *   tombstones: [],          // [{ item_id, kind, deletedAt }]
  *   scopeDirty: [projectId], // dự án vừa đổi phạm vi → buộc đẩy lại cả doc
+ *   recoverRemote: true,     // thao tác thủ công: ưu tiên kéo bản cloud đang nhìn thấy
  * }
  */
 export async function fullSync(local, onProgress) {
@@ -766,6 +784,8 @@ export async function fullSync(local, onProgress) {
     ]);
     const tombstoneMap = new Map(local.tombstones.map(t => [t.item_id, t]));
     const scopeDirty = new Set((local.scopeDirty || []).map(String));
+    const recoverRemote = !!local.recoverRemote;
+    const forceRecovered = new Set();
 
     // Tra record trên cloud cho một item local. Item tạo lúc chưa đăng nhập chưa có
     // ownerId → nếu trên cloud chỉ có duy nhất một record cùng item_id thì nhận record đó.
@@ -793,6 +813,15 @@ export async function fullSync(local, onProgress) {
     await mapLimit(local.tombstones, SYNC_LIMIT, async (t) => {
         const rec = remoteByItem.get(t.item_id)?.find(r => r.owner === uid) || remoteByItem.get(t.item_id)?.[0];
         const already = remoteDel.get(t.item_id);
+        // Người dùng đang đứng ở màn kiểm tra đồng bộ và bấm "Đồng bộ lại ngay" khi thấy
+        // bản cloud còn tồn tại. Trong tình huống máy local có tombstone cũ nhưng không
+        // còn item local, đừng dùng tombstone đó để xoá mất bản cloud; hãy bỏ dấu xoá và
+        // cho bước pull tải lại. Sync nền KHÔNG bật nhánh này để tránh tự hồi sinh dữ liệu.
+        if (recoverRemote && rec && !localMap.has(t.item_id) && !already) {
+            clearedTombstones.push(t.item_id);
+            forceRecovered.add(t.item_id);
+            return;
+        }
         if (!rec && already) { clearedTombstones.push(t.item_id); return; }  // xong từ trước
         if (rec && (rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); return; } // cloud mới hơn → thắng
         p(`Đang xoá trên cloud ${++delDone}/${local.tombstones.length}...`);
@@ -831,6 +860,7 @@ export async function fullSync(local, onProgress) {
     for (const rec of remote) {
         if (remoteDel.has(rec.item_id)) continue;               // đã xoá, xử lý ở trên
         const t = tombstoneMap.get(rec.item_id);
+        if (forceRecovered.has(rec.item_id)) { toPull.push(rec); continue; }
         if (t && (rec.updated_ms || 0) <= t.deletedAt) continue; // ta vừa xóa, đừng kéo về
         const loc = localMap.get(rec.item_id);
         // `deleted` là dấu của schema cũ, còn sót trên bản ghi chưa dọn.
@@ -882,7 +912,14 @@ export async function fullSync(local, onProgress) {
         try {
             const full = legacy && rec._data ? { data: rec._data, ...rec } : await api(`collections/${COL}/records/${rec.id}`);
             const data = full.data;
-            if (!data || typeof data !== 'object') return;
+            if (!data || typeof data !== 'object') {
+                if (rec.kind === 'project') {
+                    pulledProjects.push(projectFromMeta(rec));
+                } else {
+                    pullFailed.push(rec.item_id);
+                }
+                return;
+            }
             const item = { ...data, ownerId: rec.owner, ownerName: rec.owner_name || '' };
             if (item.id == null) item.id = rec.item_id;
             if (rec.kind === 'project') {
@@ -941,12 +978,16 @@ export async function fullSync(local, onProgress) {
         const updatedAt = Math.max(...docs.map(d => Number(d.updatedAt || 0)), ...metas.map(r => Number(r.updated_ms || 0)), 0);
         const createdAt = Math.min(...docs.map(d => Number(d.createdAt || updatedAt)).filter(Boolean), updatedAt) || updatedAt;
         pulledProjects.push({
-            id: projectId,
-            name: `Dự án khôi phục ${projectId}`,
-            scope: first.scope || SCOPE_DEFAULT,
-            teamId: first.team || null,
-            ownerId: first.owner || docs[0]?.ownerId || null,
-            ownerName: first.owner_name || docs[0]?.ownerName || '',
+            ...projectFromMeta({
+                item_id: projectId,
+                project_id: projectId,
+                name: `Dự án khôi phục ${projectId}`,
+                scope: first.scope || SCOPE_DEFAULT,
+                team: first.team || null,
+                owner: first.owner || docs[0]?.ownerId || null,
+                owner_name: first.owner_name || docs[0]?.ownerName || '',
+                updated_ms: updatedAt,
+            }),
             createdAt,
             updatedAt,
             recoveredFromDocs: true,

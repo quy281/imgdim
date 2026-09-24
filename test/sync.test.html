@@ -135,6 +135,18 @@
             r.pulledProjects[0]?.scope === 'team' && r.pulledProjects[0]?.teamId === TEAM.id,
             JSON.stringify(r.pulledProjects[0]));
     }
+    {
+        // Một số bản cloud cũ/hỏng còn metadata nhưng thiếu payload `data`; màn kiểm tra vẫn
+        // báo "cần tải về" theo metadata. Sync phải dựng project tối thiểu để không kẹt mãi.
+        setup({
+            remote: [rec({ item_id: 'pMeta', kind: 'project', project_id: 'pMeta', name: 'Chỉ có meta', updated_ms: 1234 })],
+        });
+        const r = await pb.fullSync({ ...empty });
+        ok('project thiếu data vẫn hiện lại từ metadata',
+            r.pulledProjects.length === 1 && r.pulledProjects[0].id === 'pMeta' && r.pulledProjects[0].name === 'Chỉ có meta',
+            JSON.stringify(r.pulledProjects));
+        ok('project dựng từ metadata được đẩy sửa lại ở lượt sau', r.pulledProjects[0].recoveredFromCloud === true);
+    }
 
     // ===== 2. Push khi local mới hơn; rev tăng =====
     group('Push');
@@ -199,6 +211,21 @@
         const r = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd1', kind: 'doc', deletedAt: 3000 }] });
         ok('cloud mới hơn tombstone → không xóa', r.deleted === 0);
         ok('tombstone bị bỏ, item kéo về', r.clearedTombstones.includes('d1') && r.pulledDocs.length === 1);
+    }
+    {
+        // Màn "Kiểm tra đồng bộ" đã thấy bản cloud, người dùng bấm kéo về máy này.
+        // Khi đó tombstone cũ của riêng máy này không được xoá mất cloud trước khi pull.
+        setup({
+            remote: [rec({ item_id: 'pGone', kind: 'project', project_id: 'pGone', name: 'Trên cloud', updated_ms: 1000 })],
+            full: { rec_pGone: proj('pGone', 1000, { name: 'Trên cloud' }) },
+        });
+        const r = await pb.fullSync({ ...empty, recoverRemote: true, tombstones: [{ item_id: 'pGone', kind: 'project', deletedAt: 7000 }] });
+        ok('recoverRemote không xóa bản cloud còn nhìn thấy',
+            r.deleted === 0 && !calls.some(c => c.method === 'DELETE' && c.path.includes('rec_pGone')),
+            JSON.stringify(calls));
+        ok('recoverRemote bỏ tombstone local và kéo project về',
+            r.clearedTombstones.includes('pGone') && r.pulledProjects[0]?.name === 'Trên cloud',
+            JSON.stringify(r));
     }
     {
         // Xóa lúc offline, item chưa từng lên cloud → ghi một dấu xóa tối thiểu rồi dọn

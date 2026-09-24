@@ -410,7 +410,7 @@ export default function App() {
     };
 
     // ===== Sync =====
-    const syncAll = async (silent) => {
+    const syncAll = async (silent, options = {}) => {
         if (!pb.isLoggedIn() || pb.isCustomer()) return;
         if (syncBusyRef.current) { syncAgain.current = true; return; }
         if (navigator.onLine === false) {
@@ -429,7 +429,13 @@ export default function App() {
                 db.loadProjects(), db.listAllDocs(), db.getTombstones(), db.getMeta(),
             ]);
             const res = await pb.fullSync(
-                { projects: localProjects, docs: localDocs, tombstones, scopeDirty: meta.scopeDirty || [] },
+                {
+                    projects: localProjects,
+                    docs: localDocs,
+                    tombstones,
+                    scopeDirty: meta.scopeDirty || [],
+                    recoverRemote: !!options.recoverRemote,
+                },
                 setSyncMsg,
             );
 
@@ -438,8 +444,10 @@ export default function App() {
 
             // Áp dữ liệu kéo về: đọc-sửa-ghi để không đè lên dự án tạo trong lúc đang sync.
             if (res.pulledProjects.length || delProjSet.size) {
-                const recoveredProjectIds = new Set(res.pulledProjects.filter(p => p.recoveredFromDocs).map(p => String(p.id)));
-                const pulledProjects = res.pulledProjects.map(({ recoveredFromDocs, ...p }) => p);
+                const recoveredProjectIds = new Set(res.pulledProjects
+                    .filter(p => p.recoveredFromDocs || p.recoveredFromCloud)
+                    .map(p => String(p.id)));
+                const pulledProjects = res.pulledProjects.map(({ recoveredFromDocs, recoveredFromCloud, ...p }) => p);
                 const next = await persistProjects(cur => {
                     const map = new Map(cur.map(p => [String(p.id), p]));
                     for (const p of pulledProjects) map.set(String(p.id), { ...map.get(String(p.id)), ...p });
@@ -686,7 +694,7 @@ export default function App() {
             <SyncStatusSheet
                 open={showSyncStatus}
                 onClose={() => setShowSyncStatus(false)}
-                onSync={() => { setShowSyncStatus(false); syncAll(false); }}
+                onSync={(opts) => { setShowSyncStatus(false); syncAll(false, opts); }}
                 onRepairTeam={async () => { setShowSyncStatus(false); await repairTeamShare(); }}
             />
             <ShareSheet project={shareFor} onClose={() => setShareFor(null)} />

@@ -193,7 +193,7 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                                 fontSize: 12, lineHeight: 1.5,
                             }}>
                                 <b>{status.orphanDocProjects} nhóm file trên cloud đang thiếu dự án.</b> Bấm
-                                “Đồng bộ lại ngay”, app sẽ tải file xuống và tự tạo dự án khôi phục để chúng hiện ra.
+                                “Kéo cloud về máy này”, app sẽ tải file xuống và tự tạo dự án khôi phục để chúng hiện ra.
                             </div>
                         )}
                         {Math.abs(status.skew || 0) > 60_000 && (
@@ -251,8 +251,8 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                                 <Clock size={13} /> {status.pendingCount} mục đang chờ đẩy lên
                             </div>
                         )}
-                        <button className="btn btn-primary btn-block" onClick={onSync}>
-                            <RefreshCw size={15} /> Đồng bộ lại ngay
+                        <button className="btn btn-primary btn-block" onClick={() => onSync?.({ recoverRemote: true })}>
+                            <RefreshCw size={15} /> Kéo cloud về máy này
                         </button>
                         {/* Luôn hiện khi đã đăng nhập. Trước đây nút này chỉ hiện khi phát hiện
                             được bản ghi hỏng — mà ca tệ nhất là cloud TRỐNG RỖNG: không có gì
