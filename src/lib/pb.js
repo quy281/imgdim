@@ -1579,6 +1579,23 @@ const SHARE_RULES = {
 const rulesEqual = (collection, wanted) => !!collection
     && Object.entries(wanted).every(([key, value]) => collection[key] === value);
 
+function inspectSummary(state) {
+    if (!state) return 'không đọc được trạng thái backend';
+    const miss = [];
+    if (!state.surveyExists) miss.push('bảng survey_items');
+    if (!state.teams) miss.push('bảng teams');
+    if (!state.shares) miss.push('bảng shares');
+    if (!state.deletions) miss.push('bảng deletions');
+    if (!state.customerProfilesReady) miss.push('customer_profiles');
+    if (!state.customerSubmissionsReady) miss.push('customer_submissions');
+    if (!state.customerRole) miss.push('role customer');
+    if (state.missingFields?.length) miss.push(`cột ${state.missingFields.join(', ')}`);
+    if (state.missingIndexes?.length) miss.push(`${state.missingIndexes.length} index`);
+    if (!state.rulesOk) miss.push('quyền survey_items');
+    if (!state.auxiliaryRulesOk) miss.push('quyền shares/deletions');
+    return miss.length ? miss.join('; ') : 'đã đủ';
+}
+
 function makePbClient() {
     const pb = new PocketBase(BASE);
     const auth = getAuth();
@@ -2090,9 +2107,35 @@ export async function provisionBackend(onProgress, onBackup) {
                 });
                 say(`survey_items: thêm ${toAdd.length} cột (${toAdd.map(f => f.name).join(', ')})`);
             } catch (err) {
-                warn('survey_items — thêm cột', err);
+                warn('survey_items — thêm nhiều cột một lượt', err);
+                // PocketBase từ chối cả request nếu chỉ MỘT field không hợp lệ. Nếu dừng
+                // ở đây thì `updated_ms` cũng không được thêm, app tiếp tục báo "chưa nâng
+                // schema". Thêm từng cột giúp các cột cốt lõi vẫn vào được và log chỉ rõ
+                // cột nào còn kẹt.
+                for (const f of toAdd) {
+                    const latest = await pb.collections.getOne(surveyCol.id);
+                    if (latest.fields.some(x => x.name === f.name)) {
+                        surveyCol = latest;
+                        continue;
+                    }
+                    try {
+                        surveyCol = await pb.collections.update(surveyCol.id, {
+                            fields: [...latest.fields, f],
+                        });
+                        say(`survey_items: thêm cột ${f.name}`);
+                    } catch (err2) {
+                        surveyCol = latest;
+                        warn(`survey_items — thêm cột ${f.name}`, err2);
+                    }
+                }
             }
         }
+
+        // Luôn đọc lại sau bước thêm từng cột. Nếu không, một cột đã thêm thành công ở
+        // lượt fallback vẫn không được dùng để đặt rule/index ngay trong lần bấm này.
+        try {
+            surveyCol = await pb.collections.getOne(surveyCol.id);
+        } catch { /* giữ bản đang có */ }
 
         // BƯỚC 2 — giờ cột đã có thật, mới đặt rule và index.
         const nowHas = new Set(surveyCol.fields.map(f => f.name));
@@ -2192,10 +2235,23 @@ export async function provisionBackend(onProgress, onBackup) {
 
     // Nạp lại team vào phiên hiện tại để app dùng được ngay, không cần đăng nhập lại.
     await refreshTeam().catch(() => {});
-    say(warnings.length
-        ? `Xong nhưng có ${warnings.length} bước chưa đạt — xem chi tiết bên dưới`
-        : 'Xong — đã sẵn sàng cấp tài khoản');
-    return { log, warnings };
+    let finalState = null;
+    try {
+        finalState = await inspectBackend();
+        if (!finalState.ready) {
+            const msg = `Backend chưa sẵn sàng: ${inspectSummary(finalState)}`;
+            warnings.push(msg);
+            log.push(`⚠ ${msg}`);
+        }
+    } catch (err) {
+        const msg = `Không kiểm tra lại được backend: ${err.message}`;
+        warnings.push(msg);
+        log.push(`⚠ ${msg}`);
+    }
+    say(finalState?.ready
+        ? 'Xong — backend đã đủ schema mới'
+        : 'Chưa xong — còn thiếu schema, xem chi tiết bên dưới');
+    return { log, warnings, ready: !!finalState?.ready, inspect: finalState };
 }
 
 /**

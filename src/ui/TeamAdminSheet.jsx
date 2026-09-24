@@ -198,16 +198,17 @@ export default function TeamAdminSheet({ open, onClose }) {
                 (json) => downloadText(json, `pb-schema-backup-${stamp}.json`, 'application/json'),
             );
             setSetupLog(null);
-            setNeedsSetup(false);
+            setNeedsSetup(!res.ready);
+            if (res.inspect) setInspect(res.inspect);
             setConfirmSetup(false);
             await load();
             // Nhật ký phải HIỆN LÊN màn hình, không chỉ nằm trong console: người dùng đang
             // đứng ở điện thoại, không mở được DevTools để biết bước nào chưa đạt.
             setReport(res);
-            toast(res.warnings.length
-                ? `Dựng xong nhưng ${res.warnings.length} bước chưa đạt`
+            toast(!res.ready
+                ? `Backend chưa sẵn sàng — còn ${res.warnings.length || 1} mục cần xử lý`
                 : 'Đã dựng xong backend — cấp tài khoản được rồi',
-                res.warnings.length ? 'err' : 'ok');
+                res.ready ? 'ok' : 'err');
         } catch (err) {
             setSetupLog(null);
             setError('Dựng backend thất bại: ' + err.message);
