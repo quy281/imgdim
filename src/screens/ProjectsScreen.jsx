@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
-    Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox,
+    Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -20,7 +20,7 @@ const fmtSince = (ts) => {
 };
 
 export default function ProjectsScreen({
-    projects, account, syncBusy, syncMsg, lastSyncAt,
+    projects, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
     onLogin, onLogout,
@@ -39,6 +39,7 @@ export default function ProjectsScreen({
     const [, setDefaultTick] = useState(0);
 
     const logged = pb.isLoggedIn();
+    const syncProblem = logged && syncError;
     // ownerId() chứ không myId(): với superuser, myId() là id trong _superusers, không
     // khớp project.ownerId (được ghi bằng ownerId() lúc tạo — xem App.jsx createProject).
     const myId = pb.ownerId();
@@ -101,11 +102,14 @@ export default function ProjectsScreen({
                         </div>
                     </div>
                 </div>
-                <div className={`sync-chip ${syncBusy ? 'busy' : logged ? 'on' : 'off'}`}
+                <div className={`sync-chip ${syncBusy ? 'busy' : syncProblem ? 'err' : logged ? 'on' : 'off'}`}
                     onClick={() => logged && onOpenSyncStatus?.()}>
-                    {syncBusy ? <RefreshCw size={13} className="spin" /> : logged ? <Cloud size={13} /> : <CloudOff size={13} />}
+                    {syncBusy ? <RefreshCw size={13} className="spin" />
+                        : syncProblem ? <AlertCircle size={13} />
+                            : logged ? <Cloud size={13} /> : <CloudOff size={13} />}
                     {syncBusy ? (syncMsg ? syncMsg.replace(/^Đang /, '').replace(/\.\.\.$/, '') : 'Đang sync')
-                        : logged ? fmtSince(lastSyncAt) : 'Offline'}
+                        : syncProblem ? (syncError.needsSetup ? 'Cần dựng' : 'Lỗi sync')
+                            : logged ? fmtSince(lastSyncAt) : 'Offline'}
                 </div>
                 <button className="icon-btn" onClick={() => setShowSettings(true)}><Settings size={21} /></button>
             </div>
@@ -275,6 +279,28 @@ export default function ProjectsScreen({
                                 </div>
                             </div>
                         </div>
+                        {syncError && (
+                            <div style={{
+                                margin: '10px 0', padding: 12, borderRadius: 12,
+                                background: syncError.needsSetup ? 'var(--warn-soft)' : '#fee2e2',
+                                color: syncError.needsSetup ? 'var(--ink)' : '#7f1d1d',
+                                fontSize: 12.5, lineHeight: 1.55,
+                            }}>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                    <AlertCircle size={16} style={{ color: syncError.needsSetup ? 'var(--warn)' : '#dc2626', flexShrink: 0, marginTop: 1 }} />
+                                    <div style={{ flex: 1 }}>
+                                        <b>{syncError.needsSetup ? 'Tài khoản đang chưa sync được vì backend chưa dựng đủ.' : 'Đồng bộ đang lỗi.'}</b>
+                                        <div>{syncError.message}</div>
+                                        {syncError.needsSetup && pb.isAdmin() && (
+                                            <button className="btn btn-primary btn-block" style={{ marginTop: 10 }}
+                                                onClick={() => { setShowSettings(false); onOpenTeamAdmin?.(); }}>
+                                                <ShieldCheck size={15} /> Mở Quản lý team để Dựng ngay
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                         <button className="sheet-row" onClick={() => { setShowSettings(false); onSync(); }}>
                             <RefreshCw size={19} style={{ color: 'var(--blue)' }} className={syncBusy ? 'spin' : ''} />
                             <div style={{ flex: 1 }}>Đồng bộ ngay<div className="sub">Kéo về + đẩy lên toàn bộ</div></div>

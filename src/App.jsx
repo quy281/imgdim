@@ -42,6 +42,7 @@ export default function App() {
     const [docs, setDocs] = useState([]);           // doc của dự án đang mở
     const [syncBusy, setSyncBusy] = useState(false);
     const [syncMsg, setSyncMsg] = useState(null);
+    const [syncError, setSyncError] = useState(null);
     const [lastSyncAt, setLastSyncAt] = useState(null);
     const [showSyncStatus, setShowSyncStatus] = useState(false);
     const [showTeamAdmin, setShowTeamAdmin] = useState(false);
@@ -419,6 +420,7 @@ export default function App() {
         syncBusyRef.current = true;
         syncAgain.current = false;
         setSyncBusy(true);
+        setSyncError(null);
         try {
             // Founder có thể thêm tài khoản vào team SAU khi người dùng đã đăng nhập —
             // dò lại để không phải đăng xuất/đăng nhập mới thấy dữ liệu chung.
@@ -478,6 +480,7 @@ export default function App() {
 
             const at = pb.now();
             setLastSyncAt(at);
+            setSyncError(null);
             await db.setMeta({ lastSyncAt: at });
 
             // Làm mới danh sách doc của dự án đang mở, giữ lại bản in-memory của doc đang sửa.
@@ -514,6 +517,11 @@ export default function App() {
             }
             if (skippedOpen && !silent) toast(`${skippedOpen} file đang sửa — giữ bản trên máy`, 'ok');
         } catch (err) {
+            setSyncError({
+                message: err.message,
+                status: err.status || 0,
+                needsSetup: err.status === 503 || /schema|Dựng ngay|customer_submissions|chưa nâng/i.test(err.message || ''),
+            });
             if (err.status === 401) {
                 setAccount(null); // pb đã xóa phiên — cho chip cloud phản ánh đúng
                 toast(err.message, 'err');
@@ -541,6 +549,7 @@ export default function App() {
             // thô — nhờ vậy Founder vẫn vào được bằng mật khẩu superuser cũ.
             const user = await pb.loginSmart(identity, secret);
             authenticated = true;
+            setSyncError(null);
             if (opts.customerOnly && !pb.isCustomer()) {
                 throw new pb.PbError('Đây là tài khoản nhân viên, không phải tài khoản khách hàng', 403);
             }
@@ -572,6 +581,7 @@ export default function App() {
     const logout = () => {
         pb.logout();
         setAccount(null);
+        setSyncError(null);
         setCustomerInboxCount(0);
         // Giữ nguyên store đang mở — dữ liệu vẫn thấy được trên máy. Chỉ khi một tài
         // khoản KHÁC đăng nhập thì db.setAccount mới đổi sang store riêng của họ.
@@ -651,6 +661,7 @@ export default function App() {
                 account={account}
                 syncBusy={syncBusy}
                 syncMsg={syncMsg}
+                syncError={syncError}
                 lastSyncAt={lastSyncAt}
                 onOpen={openProject}
                 onCreate={createProject}

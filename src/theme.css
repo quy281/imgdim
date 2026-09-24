@@ -774,6 +774,7 @@ input, textarea {
 .sync-chip.on { background: var(--ok-soft); color: var(--ok); }
 .sync-chip.off { background: var(--bg); color: var(--muted); }
 .sync-chip.busy { background: var(--blue-soft); color: var(--blue); }
+.sync-chip.err { background: var(--warn-soft); color: var(--warn); }
 
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg) } }
