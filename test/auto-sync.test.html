@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>auto sync running</title>
+<link rel="stylesheet" href="/src/theme.css">
+<pre id="out">running…</pre>
+<div id="root"></div>
+<script>
+    window.__cloud = [];
+    window.__writes = [];
+    window.__poll = null;
+    window.__clockAdvance = 0;
+    const realNow = Date.now.bind(Date);
+    Date.now = () => realNow() + window.__clockAdvance;
+    const realInterval = window.setInterval.bind(window);
+    window.setInterval = (fn, delay, ...args) => {
+        if (delay === 30000) window.__poll = fn;
+        return realInterval(fn, delay, ...args);
+    };
+    const realFetch = window.fetch.bind(window);
+    window.fetch = async (url, opts = {}) => {
+        if (!String(url).includes('db.mkg.vn/api/')) return realFetch(url, opts);
+        const path = String(url).split('/api/')[1];
+        const json = body => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+        if (path.includes('auth-refresh')) return json({ token: 'test-auto', record: { id: 'auto-user', email: 'auto@test.invalid' } });
+        if ((opts.method || 'GET') !== 'GET') window.__writes.push(path);
+        if (path.startsWith('collections/teams/')) return json({ items: [{ id: 't1', name: 'Test', members: ['auto-user'] }] });
+        if (path.startsWith('collections/survey_items/records?')) return json({
+            items: window.__cloud.map(r => path.includes('fields=') ? { ...r, data: undefined } : r), totalPages: 1,
+        });
+        return json({ items: [], totalPages: 1 });
+    };
+</script>
+<script type="module">
+    import React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import App from '/src/App.jsx';
+    import * as db from '/src/lib/db.js';
+    const results = [];
+    let failed = 0;
+    const check = (label, cond) => { if (!cond) failed++; results.push(`${cond ? 'PASS' : 'FAIL'} ${label}`); };
+    const waitUntil = async fn => {
+        for (let i = 0; i < 100; i++) {
+            if (await fn()) return;
+            await new Promise(r => setTimeout(r, 30));
+        }
+        throw new Error('Timeout waiting for app');
+    };
+    const record = (id, name, updatedAt = 1000) => ({ id: `record_${id}`, item_id: id, kind: 'project', owner: 'auto-user',
+        name, data: { id, name, createdAt: 1, updatedAt, scope: 'private' } });
+    let root;
+    try {
+        localStorage.setItem('ks_auth', JSON.stringify({ token: 'test-auto', model: { id: 'auto-user', email: 'auto@test.invalid' },
+            loginAt: Date.now(), team: { id: 't1', name: 'Test' } }));
+        await db.setAccount('auto-user');
+        await db.markPending('local-draft', 'project');
+        window.__cloud = [record('p1', 'Cloud legacy project')];
+        root = createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+        await waitUntil(() => document.querySelector('.sync-chip')?.textContent.includes('Chỉ tải về'));
+        check('boot automatically displays legacy cloud project', document.getElementById('root').textContent.includes('Cloud legacy project'));
+        check('read-only pull preserves pending edits', (await db.getPending()).some(p => p.item_id === 'local-draft'));
+        check('read-only pull does not mark full sync complete', !(await db.getMeta()).lastSyncAt);
+        check('poll is registered while app stays open', !!window.__poll);
+
+        window.__cloud.push(record('p2', 'Second device update', 2000));
+        window.__clockAdvance = 121000;
+        window.__poll();
+        await waitUntil(() => document.getElementById('root').textContent.includes('Second device update'));
+        await waitUntil(() => document.querySelector('.sync-chip')?.textContent.includes('Chỉ tải về'));
+        check('poll downloads new project without visibility/online event or manual click', (await db.loadProjects()).some(p => p.id === 'p2'));
+        check('poll preserves pending edits', (await db.getPending()).some(p => p.item_id === 'local-draft'));
+        check('legacy automatic sync makes no cloud writes', window.__writes.length === 0);
+    } catch (error) {
+        check(error.stack, false);
+    } finally {
+        root?.unmount();
+        localStorage.removeItem('ks_auth');
+        document.getElementById('out').textContent = results.join('\n');
+        document.title = failed ? `${failed} FAIL` : `${results.length} pass`;
+    }
+</script>

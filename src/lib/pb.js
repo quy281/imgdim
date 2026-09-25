@@ -530,8 +530,7 @@ async function fetchMeta() {
     for (let page = 1; ; page++) {
         const res = await api(`collections/${COL}/records?page=${page}&perPage=500&sort=-updated&fields=${META_FIELDS}`);
         const batch = res.items || [];
-        // Backend chưa provision schema mới → chưa có cột updated_ms. Vẫn tải full data
-        // để màn kiểm tra biết backend đang legacy; fullSync sẽ fail-closed, không ghi.
+        // Backend cũ vẫn cho đọc dữ liệu; chỉ chặn ghi khi thiếu schema.
         if (page === 1 && batch.length && !('updated_ms' in batch[0])) { legacy = true; break; }
         items.push(...batch);
         if (page >= (res.totalPages || 1)) break;
@@ -548,8 +547,8 @@ async function fetchMeta() {
         legacy: true,
         items: full.map(r => ({
             ...r,
-            updated_ms: Number(r.data?.updatedAt) || 0,
-            deleted: !!r.data?._deleted,
+            updated_ms: Number(r.updated_ms) || Number(r.data?.updatedAt) || 0,
+            deleted: !!r.deleted || !!r.data?._deleted,
             schema_v: r.schema_v || 2,
             _data: r.data,
         })),
@@ -727,10 +726,17 @@ export async function fullSync(local, onProgress) {
     if (!isLoggedIn()) throw new PbError('Chưa đăng nhập', 401);
     if (navigator.onLine === false) throw new PbError('Không có mạng', 0);
     if (!(await ensureSession())) throw new PbError('Phiên đăng nhập hết hạn — vui lòng đăng nhập lại', 401);
+    const p = (m) => onProgress?.(m);
+    p('Đang so sánh với cloud...');
+    const { items: remote, legacy } = await fetchMeta();
+    // Máy chủ cũ: cho tải bản cloud mà API cho phép đọc, nhưng không ghi/xoá gì.
+    // Nâng schema không còn là điều kiện để xem dữ liệu trên thiết bị mới.
+    const readOnly = legacy;
+
     // Superuser cần một danh tính trong bảng `users` để ghi được owner (xem resolveIdentity).
     // login()/refreshTeam() đã thử việc này; nếu lần đó lỗi mạng thì thử lại một lần ở đây
     // thay vì chặn cứng — chỉ báo lỗi khi vẫn không có sau khi thử lại.
-    if (isSuperuser() && !getAuth()?.identityId) {
+    if (!readOnly && isSuperuser() && !getAuth()?.identityId) {
         await resolveIdentityAndTeams(me()?.email, true).catch(() => {});
         if (!getAuth()?.identityId) {
             throw new PbError('Không tạo được tài khoản đồng bộ cho quản trị viên trong bảng `users`. '
@@ -739,17 +745,6 @@ export async function fullSync(local, onProgress) {
     }
 
     const uid = ownerId();
-    const p = (m) => onProgress?.(m);
-
-    p('Đang so sánh với cloud...');
-    const { items: remote, legacy } = await fetchMeta();
-    // Fail closed khi backend chưa đủ schema. Tiếp tục đẩy kiểu tương thích từng tạo ra
-    // hàng chục record không có scope/team: chủ sở hữu thấy "đã sync" nhưng đồng nghiệp
-    // không bao giờ đọc được. Bản local + pending vẫn giữ nguyên để thử lại sau khi nâng.
-    if (legacy) {
-        throw new PbError('Máy chủ chưa nâng schema mới — dữ liệu vẫn an toàn trên máy và chưa được đẩy. '
-            + 'Founder cần vào Quản lý team & người dùng → Dựng ngay.', 503);
-    }
     const remoteByKey = new Map();
     const remoteByItem = new Map();
     for (const r of remote) {
@@ -762,11 +757,11 @@ export async function fullSync(local, onProgress) {
     // đồng nghiệp không thấy dữ liệu: máy đăng nhập lúc collection `teams` chưa tồn tại
     // sẽ đẩy mọi dự án lên với team rỗng, rule đọc theo team không khớp, và không có
     // lỗi nào hiện ra vì bản thân việc đẩy vẫn thành công.
-    if (!myTeam()) await refreshTeam().catch(() => {});
+    if (!readOnly && !myTeam()) await refreshTeam().catch(() => {});
     const defaultTeamId = myTeam()?.id || null;
     // Vẫn không có team sau khi nạp lại → những dự án này lên cloud nhưng KHÔNG ai
     // ngoài chủ sở hữu đọc được. Phải báo, không được im lặng.
-    const orphanTeam = defaultTeamId ? [] : local.projects
+    const orphanTeam = readOnly || defaultTeamId ? [] : local.projects
         .filter(pr => (pr.scope || SCOPE_DEFAULT) === 'team' && !pr.teamId)
         .map(pr => pr.name || String(pr.id));
     const scopeOfProject = new Map(local.projects.map(pr => [String(pr.id), pr.scope || SCOPE_DEFAULT]));
@@ -798,7 +793,7 @@ export async function fullSync(local, onProgress) {
 
     // ===== 1. Dấu xoá trên cloud =====
     // Đọc trước để cả bước pull và push đều biết cái gì đã bị xoá.
-    const remoteDel = await fetchDeletions();
+    const remoteDel = readOnly ? new Map() : await fetchDeletions();
 
     // ===== 1b. Đẩy các lệnh xoá — XOÁ THẬT rồi ghi dấu =====
     //
@@ -822,6 +817,7 @@ export async function fullSync(local, onProgress) {
             forceRecovered.add(t.item_id);
             return;
         }
+        if (readOnly) return; // Giữ lệnh xoá chờ, không gửi lên backend cũ.
         if (!rec && already) { clearedTombstones.push(t.item_id); return; }  // xong từ trước
         if (rec && (rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); return; } // cloud mới hơn → thắng
         p(`Đang xoá trên cloud ${++delDone}/${local.tombstones.length}...`);
@@ -865,7 +861,7 @@ export async function fullSync(local, onProgress) {
         const loc = localMap.get(rec.item_id);
         // `deleted` là dấu của schema cũ, còn sót trên bản ghi chưa dọn.
         if (rec.deleted) {
-            if (loc && (rec.updated_ms || 0) >= (loc.item.updatedAt || 0)) {
+            if (!readOnly && loc && (rec.updated_ms || 0) >= (loc.item.updatedAt || 0)) {
                 (rec.kind === 'project' ? deletedProjects : deletedDocs).push(rec.item_id);
             }
             continue;
@@ -876,6 +872,7 @@ export async function fullSync(local, onProgress) {
     const deletedSet = new Set([...deletedProjects, ...deletedDocs]);
     const toPush = [];
     for (const [id, loc] of localMap) {
+        if (readOnly) continue;
         // Vừa quyết định xoá theo lệnh của máy khác → tuyệt đối không đẩy lại, nếu không
         // nó hồi sinh ngay trong cùng một lượt sync.
         if (deletedSet.has(id)) continue;
@@ -1028,6 +1025,7 @@ export async function fullSync(local, onProgress) {
     });
     // Chỉ báo đã xong việc đổi scope khi TOÀN BỘ item của dự án đó đẩy được.
     for (const pid of scopeDirty) {
+        if (readOnly) continue;
         const anyFailed = toPush.some(t =>
             String(t.kind === 'doc' ? t.item.projectId : t.item.id) === pid &&
             failedIds.includes(String(t.item.id)));
@@ -1041,6 +1039,7 @@ export async function fullSync(local, onProgress) {
         scopeSynced: [...scopeSynced],
         orphanTeam,
         legacy,
+        readOnly,
     };
 }
 

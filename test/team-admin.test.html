@@ -9,6 +9,7 @@
 <script>
 // Mock PHẢI đặt trước khi module app chạy — pb.js gọi fetch lúc runtime nên bắt được.
 window.__calls = [];
+window.__surveySchema = null;
 const realFetch = window.fetch;
 window.fetch = async (url, opts = {}) => {
     const u = String(url);
@@ -55,19 +56,25 @@ window.fetch = async (url, opts = {}) => {
             totalPages: 1,
         });
     }
+    if (u.includes('/api/collections/colSurvey') && (opts.method || 'GET') === 'GET') {
+        return json(window.__surveySchema);
+    }
     if (u.includes('/api/collections') && (opts.method === 'POST' || opts.method === 'PATCH')) {
         // Sau khi collection `teams` được tạo, các truy vấn teams tiếp theo phải thành công
         // — giống hệt server thật, nếu không bước tạo team MKG sẽ thấy 404 giả.
         const body = (() => { try { return JSON.parse(opts.body || '{}'); } catch { return {}; } })();
         if ((opts.body || '').includes('"name":"teams"')) window.__provisioned = true;
         if (u.includes('/api/collections/colSurvey')) {
-            return json({
+            const previous = window.__surveySchema || {};
+            window.__surveySchema = {
                 id: 'colSurvey', name: 'survey_items',
                 fields: body.fields || [], indexes: body.indexes || [],
                 listRule: body.listRule || '', viewRule: body.viewRule || '',
                 createRule: body.createRule || '', updateRule: body.updateRule || '',
                 deleteRule: body.deleteRule || '',
-            });
+                ...previous, ...body,
+            };
+            return json(window.__surveySchema);
         }
         return json({ id: body.name === 'teams' ? 'colTeams' : `col_${body.name || 'x'}`, name: body.name, fields: body.fields || [{ name: 'id', max: 10 }] });
     }

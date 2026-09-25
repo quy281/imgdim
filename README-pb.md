@@ -17,7 +17,9 @@ PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs
 
 Truoc khi sua schema, app/script tao backup schema vao may. Chay lai nhieu lan van an toan.
 
-Neu backend chua du schema moi, client se **dung sync va giu pending tren may**. Day la chu y thiet ke: khong day kieu tuong thich cu nua vi kieu do tao record thieu `scope/team`, lam dong nghiep khong doc duoc.
+Neu backend cu thieu `updated_ms`, client chuyen sang **chi tai ve**: van doc du lieu ma API cho tai khoan xem, giu pending va lenh xoa tren may, khong ghi kieu v2 thieu `scope/team`. May moi khong can doi nang schema de tai du an va anh da co tren cloud. Sau khi nang schema, luot sync tiep theo tu tro lai hai chieu.
+
+App kiem tra cloud moi 30 giay khi dang mo va co mang; backend cu gian con 2 phut vi can doc JSON/anh cu. Loi mang duoc thu lai voi khoang cho tang dan, toi da 5 phut. Mo lai app, quay lai tab hoac co mang tro lai se kich hoat sync ngay. Android co the tam dung tab nen khi khoa man hinh; day khong phai dich vu dong bo nen lien tuc.
 
 ## Schema Chinh
 
@@ -133,7 +135,7 @@ PB_EMAIL=founder@mkg.vn PB_PASSWORD='***' node scripts/pb-setup.mjs \
 
 Chay `npm run dev` roi mo:
 
-- `/test/sync.test.html` - sync hai pha, fail-closed khi backend cu.
+- `/test/sync.test.html` - sync hai pha, backend cu tai ve duoc nhung khong ghi/xoa.
 - `/test/user.test.html` - tach du lieu theo tai khoan, cuu du lieu anon, khach khong nhan nham anon.
 - `/test/customer.test.html` - login khach, gui snapshot, nhan vien duyet hop thu.
 - `/test/admin.test.html` - superuser, quan ly team/user, da team.

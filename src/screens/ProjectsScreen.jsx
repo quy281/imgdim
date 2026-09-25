@@ -108,7 +108,7 @@ export default function ProjectsScreen({
                         : syncProblem ? <AlertCircle size={13} />
                             : logged ? <Cloud size={13} /> : <CloudOff size={13} />}
                     {syncBusy ? (syncMsg ? syncMsg.replace(/^Đang /, '').replace(/\.\.\.$/, '') : 'Đang sync')
-                        : syncProblem ? (syncError.needsSetup ? 'Cần dựng' : 'Lỗi sync')
+                        : syncProblem ? (syncError.readOnly ? 'Chỉ tải về' : syncError.needsSetup ? 'Cần dựng' : 'Lỗi sync')
                             : logged ? fmtSince(lastSyncAt) : 'Offline'}
                 </div>
                 <button className="icon-btn" onClick={() => setShowSettings(true)}><Settings size={21} /></button>
@@ -289,7 +289,7 @@ export default function ProjectsScreen({
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                                     <AlertCircle size={16} style={{ color: syncError.needsSetup ? 'var(--warn)' : '#dc2626', flexShrink: 0, marginTop: 1 }} />
                                     <div style={{ flex: 1 }}>
-                                        <b>{syncError.needsSetup ? 'Tài khoản đang chưa sync được vì backend chưa dựng đủ.' : 'Đồng bộ đang lỗi.'}</b>
+                                        <b>{syncError.readOnly ? 'Có thể tải cloud về; gửi lên đang tạm dừng.' : syncError.needsSetup ? 'Tài khoản đang chưa sync được vì backend chưa dựng đủ.' : 'Đồng bộ đang lỗi.'}</b>
                                         <div>{syncError.message}</div>
                                         {syncError.needsSetup && pb.isAdmin() && (
                                             <button className="btn btn-primary btn-block" style={{ marginTop: 10 }}

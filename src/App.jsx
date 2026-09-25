@@ -65,6 +65,9 @@ export default function App() {
     const syncTimer = useRef(null);       // trigger sync có debounce
     const syncBusyRef = useRef(false);    // chặn sync chạy trùng (tránh stale closure)
     const syncAgain = useRef(false);      // có thay đổi mới trong lúc đang sync
+    const storeReady = useRef(false);
+    const nextBackgroundSync = useRef(0);
+    const syncFailures = useRef(0);
 
     const refreshCustomerInboxCount = async () => {
         if (!pb.isLoggedIn() || pb.isCustomer()) { setCustomerInboxCount(0); return; }
@@ -85,6 +88,7 @@ export default function App() {
                     adoptAnon: !customerPortal && !pb.isCustomer(),
                 });
                 setProjects(await db.loadProjects());
+                storeReady.current = true;
                 if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
                 if (!pb.isLoggedIn()) return;
                 // Xác thực token thật với server trước khi tin là đang đăng nhập — xem
@@ -138,7 +142,17 @@ export default function App() {
         };
         document.addEventListener('visibilitychange', onVisible);
         window.addEventListener('online', onOnline);
+        // Máy thứ hai có thể luôn mở app, không phát sinh online/visibilitychange.
+        // Kiểm tra định kỳ; backend cũ/lỗi mạng được giãn nhịp để tránh tải dồn.
+        const poll = setInterval(() => {
+            if (storeReady.current && !syncBusyRef.current && !customerPortal
+                && document.visibilityState === 'visible' && navigator.onLine !== false
+                && pb.isLoggedIn() && !pb.isCustomer() && Date.now() >= nextBackgroundSync.current) {
+                syncAll(true);
+            }
+        }, 30_000);
         return () => {
+            clearInterval(poll);
             window.removeEventListener('popstate', onPop);
             document.removeEventListener('visibilitychange', onVisible);
             window.removeEventListener('online', onOnline);
@@ -411,7 +425,7 @@ export default function App() {
 
     // ===== Sync =====
     const syncAll = async (silent, options = {}) => {
-        if (!pb.isLoggedIn() || pb.isCustomer()) return;
+        if (!storeReady.current || !pb.isLoggedIn() || pb.isCustomer()) return;
         if (syncBusyRef.current) { syncAgain.current = true; return; }
         if (navigator.onLine === false) {
             if (!silent) toast('Không có mạng — sẽ tự đồng bộ khi có lại', 'err');
@@ -424,7 +438,8 @@ export default function App() {
         try {
             // Founder có thể thêm tài khoản vào team SAU khi người dùng đã đăng nhập —
             // dò lại để không phải đăng xuất/đăng nhập mới thấy dữ liệu chung.
-            if (!pb.myTeam()) await pb.refreshTeam();
+            // Team chưa dựng không được chặn tải dữ liệu đã có trên cloud.
+            if (!pb.myTeam()) await pb.refreshTeam().catch(() => {});
             const [localProjects, localDocs, tombstones, meta] = await Promise.all([
                 db.loadProjects(), db.listAllDocs(), db.getTombstones(), db.getMeta(),
             ]);
@@ -454,8 +469,10 @@ export default function App() {
                     for (const id of delProjSet) map.delete(id);
                     return [...map.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
                 });
-                for (const id of recoveredProjectIds) await db.markPending(id, 'project');
-                if (recoveredProjectIds.size) syncAgain.current = true;
+                if (!res.readOnly) {
+                    for (const id of recoveredProjectIds) await db.markPending(id, 'project');
+                    if (recoveredProjectIds.size) syncAgain.current = true;
+                }
                 for (const id of delProjSet) await db.deleteProjectDocs(id);
                 projectsRef.current = next;
             }
@@ -480,16 +497,25 @@ export default function App() {
 
             // Chỉ xóa pending cho item đã đẩy được (item lỗi giữ lại để thử tiếp).
             const pending = await db.getPending();
-            if (pending.length) {
+            if (!res.readOnly && pending.length) {
                 const failSet = new Set(res.failedIds);
                 const toClear = pending.filter(p => !failSet.has(p.item_id)).map(p => p.item_id);
                 await db.clearPending(toClear);
             }
 
-            const at = pb.now();
-            setLastSyncAt(at);
-            setSyncError(null);
-            await db.setMeta({ lastSyncAt: at });
+            const failCount = res.failedIds.length + res.pullFailed.length;
+            syncFailures.current = failCount ? syncFailures.current + 1 : 0;
+            nextBackgroundSync.current = Date.now() + (res.readOnly ? 120_000
+                : failCount ? Math.min(300_000, 30_000 * 2 ** Math.min(syncFailures.current, 4)) : 30_000);
+            setSyncError(res.readOnly ? {
+                message: 'Đang ở chế độ chỉ tải về. Các bản sửa trên máy vẫn chờ gửi; máy chủ cần nâng cấp để đồng bộ hai chiều.',
+                needsSetup: true, readOnly: true,
+            } : failCount ? { message: `${failCount} mục chưa đồng bộ được — app sẽ tự thử lại.`, needsSetup: false } : null);
+            if (!res.readOnly && !failCount) {
+                const at = pb.now();
+                setLastSyncAt(at);
+                await db.setMeta({ lastSyncAt: at });
+            }
 
             // Làm mới danh sách doc của dự án đang mở, giữ lại bản in-memory của doc đang sửa.
             const r = routeRef.current;
@@ -505,17 +531,16 @@ export default function App() {
             const pulled = res.pulledProjects.length + res.pulledDocs.length;
             const remoteDels = delDocSet.size + delProjSet.size;
             const changed = pulled + res.pushed + res.deleted + remoteDels;
-            const failCount = res.failedIds.length + res.pullFailed.length;
             if (failCount > 0) {
-                toast(`Sync: ${res.pushed} đẩy lên, ${pulled} tải về — ${failCount} lỗi, sẽ thử lại`, 'err');
+                if (!silent) toast(`Sync: ${res.pushed} đẩy lên, ${pulled} tải về — ${failCount} lỗi, sẽ thử lại`, 'err');
             } else if (changed > 0) {
                 const bits = [];
                 if (pulled) bits.push(`${pulled} tải về`);
                 if (res.pushed) bits.push(`${res.pushed} đẩy lên`);
                 if (res.deleted || remoteDels) bits.push(`${res.deleted + remoteDels} xóa`);
-                if (!silent || pulled || remoteDels) toast(`Đồng bộ xong: ${bits.join(', ')}`, 'ok');
+                if (!silent || pulled || remoteDels) toast(`${res.readOnly ? 'Đã tải từ cloud' : 'Đồng bộ xong'}: ${bits.join(', ')}`, 'ok');
             } else if (!silent) {
-                toast('Dữ liệu đã mới nhất', 'ok');
+                toast(res.readOnly ? 'Đã kiểm tra cloud — các bản sửa vẫn chờ máy chủ nâng cấp để gửi lên' : 'Dữ liệu đã mới nhất', 'ok');
             }
             // Đẩy lên thành công mà đồng nghiệp vẫn không thấy là kiểu lỗi tệ nhất: không
             // có thông báo nào sai, chỉ có người ngồi chờ dữ liệu không bao giờ tới.
@@ -525,6 +550,8 @@ export default function App() {
             }
             if (skippedOpen && !silent) toast(`${skippedOpen} file đang sửa — giữ bản trên máy`, 'ok');
         } catch (err) {
+            syncFailures.current++;
+            nextBackgroundSync.current = Date.now() + Math.min(300_000, 30_000 * 2 ** Math.min(syncFailures.current, 4));
             setSyncError({
                 message: err.message,
                 status: err.status || 0,
@@ -563,6 +590,7 @@ export default function App() {
             }
             const sw = await db.setAccount(user.id, { adoptAnon: !pb.isCustomer() });
             storeSwitched = true;
+            storeReady.current = true;
             setAccount(user);
             setProjects(await db.loadProjects());
             const r = routeRef.current;

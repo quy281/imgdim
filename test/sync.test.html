@@ -510,8 +510,8 @@
         ok('không lưu phiên khi đăng nhập thất bại', !pb.isLoggedIn());
     }
 
-    // ===== 6. Đồng hồ + backend cũ fail-closed =====
-    group('Đồng hồ & backend cũ fail-closed');
+    // ===== 6. Backend cũ: đọc được, ghi vẫn fail-closed =====
+    group('Đồng hồ & backend cũ chỉ tải về');
     {
         setup({ remote: [] });
         await pb.fullSync({ ...empty });
@@ -519,17 +519,17 @@
         ok('bù lệch giờ theo header Date của server', Math.abs(pb.now() - SERVER_NOW) < 5000, `skew ${skew}ms, now ${new Date(pb.now()).toISOString()}`);
     }
     {
-        // Backend chưa chạy provision: metadata không có updated_ms. Client mới phải
-        // dừng an toàn, không ghi kiểu v2 vì kiểu đó tạo record thiếu scope/team.
+        // Backend chưa provision không được chặn toàn bộ việc tải về.
         setup({
             remote: [rec({ item_id: 'd1', updated_ms: 8000, data: doc('d1', 8000) })],
             legacy: true,
         });
-        let caught = null;
-        try { await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 2000)] }); }
-        catch (e) { caught = e; }
-        ok('backend chưa nâng schema → báo lỗi 503', caught?.status === 503, caught?.message);
-        ok('thông báo hướng người dùng dựng schema', /Dựng ngay/.test(caught?.message || ''), caught?.message);
+        routes['collections/survey_items/records?'] = path => res({ items: [path.includes('fields=')
+            ? { id: 'rec_d1', item_id: 'd1', kind: 'doc', project_id: 'p1', owner: UID }
+            : { id: 'rec_d1', item_id: 'd1', kind: 'doc', project_id: 'p1', owner: UID, data: doc('d1', 8000) }] });
+        const result = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [doc('d1', 2000)] });
+        ok('backend chưa nâng schema → chế độ chỉ tải về', result.readOnly && result.legacy);
+        ok('tự tải bản cloud mới hơn dù chưa dựng schema', result.pulledDocs[0]?.updatedAt === 8000);
         ok('không ghi gì lên survey_items khi schema cũ', writes().length === 0,
             `writes=${writes().map(c => c.path).join('|')}`);
     }
@@ -553,10 +553,8 @@
         setup({ remote: [photoRec] });
         legacyRoutes([photoRec]);
         const localPhoto = { id: 'ph9', projectId: 'p1', type: 'photo', name: 'Ảnh 9 sửa', img: IMG, photoHash: hashString(IMG), thumb: 't', createdAt: 1, updatedAt: 9000 };
-        let caught = null;
-        try { await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [localPhoto] }); }
-        catch (e) { caught = e; }
-        ok('nhận ra backend cũ và dừng', caught?.status === 503, caught?.message);
+        const result = await pb.fullSync({ ...empty, projects: [proj('p1', 1)], docs: [localPhoto] });
+        ok('backend cũ không đè ảnh local mới hơn', result.readOnly && result.pulledDocs.length === 0);
         ok('KHÔNG upload multipart lên field photo chưa tồn tại', !writes().some(c => c.isForm), 'vẫn gửi FormData');
         ok('không PATCH bản ảnh kiểu v2', !writes().some(c => c.path.includes('rec_ph9')),
             `writes=${writes().map(c => c.path).join('|')}`);
@@ -570,13 +568,12 @@
         const projRec = { id: 'rec_p1', item_id: 'p1', kind: 'project', project_id: 'p1', name: 'P p1', owner: UID, data: proj('p1', 5000) };
         setup({ remote: [projRec, photoRec] });
         legacyRoutes([projRec, photoRec]);
-        let caught = null;
-        try { await pb.fullSync({
+        const result = await pb.fullSync({
             projects: [proj('p1', 5000, { scope: 'team' })],
             docs: [{ id: 'ph8', projectId: 'p1', type: 'photo', img: IMG, photoHash: hashString(IMG), updatedAt: 5000 }],
             tombstones: [], scopeDirty: ['p1'],
-        }); } catch (e) { caught = e; }
-        ok('schema cũ không nhận đổi scope/team', caught?.status === 503, caught?.message);
+        });
+        ok('schema cũ giữ hàng đợi đổi scope/team', result.readOnly && result.scopeSynced.length === 0);
         ok('giữ nguyên trên máy, không ghi scope v2', writes().length === 0,
             `writes=${writes().map(c => c.path).join('|')}`);
     }
@@ -586,12 +583,39 @@
         const docRec = { id: 'rec_d7', item_id: 'd7', kind: 'doc', project_id: 'p1', name: 'D d7', owner: UID, data: doc('d7', 1000) };
         setup({ remote: [docRec] });
         legacyRoutes([docRec]);
-        let caught = null;
-        try { await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd7', kind: 'doc', deletedAt: 7000 }] }); }
-        catch (e) { caught = e; }
-        ok('schema cũ không nhận lệnh xoá v2', caught?.status === 503, caught?.message);
+        const result = await pb.fullSync({ ...empty, tombstones: [{ item_id: 'd7', kind: 'doc', deletedAt: 7000 }] });
+        ok('schema cũ giữ lệnh xoá để gửi sau', result.readOnly && result.clearedTombstones.length === 0);
+        ok('không hồi sinh bản đã xoá local', result.pulledDocs.length === 0);
+        ok('không DELETE hoặc ghi bảng deletions', !calls.some(c => c.method === 'DELETE' || c.path.startsWith('collections/deletions')));
         ok('không gửi soft-delete lên data._deleted', writes().length === 0,
             `writes=${writes().map(c => c.path).join('|')}`);
+    }
+
+    {
+        const records = [
+            { id: 'old_p', item_id: 'p1', kind: 'project', owner: UID, data: proj('p1', 5000) },
+            { id: 'old_photo', item_id: 'ph', project_id: 'p1', kind: 'doc', owner: UID,
+                data: doc('ph', 5000, { type: 'photo', img: IMG }) },
+        ];
+        setup({ remote: records });
+        legacyRoutes(records);
+        const result = await pb.fullSync({ ...empty });
+        ok('máy mới tự tải cả dự án và ảnh trên backend cũ', result.pulledProjects.length === 1 && result.pulledDocs[0]?.img === IMG);
+        ok('backend cũ dùng payload đã tải, không GET lại từng record', !gets().some(c => /records\/old_/.test(c.path)));
+        ok('tải trên máy mới không ghi server', writes().length === 0 && result.pushed === 0);
+
+        // Nâng schema xong: lượt sau tự chuyển về hai chiều, không cần đăng nhập lại.
+        setup({ remote: [] });
+        const upgraded = await pb.fullSync({ ...empty, projects: [proj('new', 9000)] });
+        ok('schema mới tự trở lại sync hai chiều', !upgraded.readOnly && upgraded.pushed === 1);
+    }
+    {
+        const deletedRecord = { id: 'old_deleted', item_id: 'gone', kind: 'doc', project_id: 'p1', owner: UID,
+            data: { ...doc('gone', 8000), _deleted: true } };
+        setup({ remote: [deletedRecord] });
+        legacyRoutes([deletedRecord]);
+        const result = await pb.fullSync({ ...empty, docs: [doc('gone', 1000)] });
+        ok('chế độ chỉ tải không xoá dữ liệu local theo dấu xoá cũ', !result.deletedDocs.length && !result.pulledDocs.length);
     }
 
     // ===== 7. Id sinh ra phải duy nhất giữa các thiết bị =====

@@ -65,6 +65,10 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                 let s;
                 if (!rp) s = pendingSet.has(rid) ? 'pending' : 'not_synced';
                 else if ((p.updatedAt || 0) > (rp.updatedAt || 0) || docsPending > 0) s = 'pending';
+                else if ((rp.updatedAt || 0) > (p.updatedAt || 0) || rDocs.some(rd => {
+                    const ld = pDocs.find(d => String(d.id) === String(rd.item_id));
+                    return !ld || (rd.updatedAt || 0) > (ld.updatedAt || 0);
+                })) s = 'to_pull';
                 else s = 'synced';
 
                 return {
@@ -206,10 +210,9 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                                 marginTop: 8, padding: 10, borderRadius: 9,
                                 background: '#fee2e2', color: '#7f1d1d', fontSize: 12, lineHeight: 1.55,
                             }}>
-                                <b>Chia sẻ theo team đang TẮT.</b> Bảng <code>survey_items</code> trên máy
-                                chủ chưa có cột <code>scope</code>/<code>team</code>, nên mỗi lượt đẩy lên
-                                không kèm được thông tin team — chỉ người tạo đọc được dữ liệu của mình.
-                                Đẩy lại bao nhiêu lần cũng không đổi.
+                                <b>Đang chỉ tải dữ liệu từ cloud về máy.</b> Máy chủ chưa đủ cấu trúc
+                                cho đồng bộ hai chiều. App vẫn tải dữ liệu tài khoản có quyền xem;
+                                các bản sửa và lệnh xoá trên máy được giữ chờ, chưa gửi lên.
                                 <div style={{ marginTop: 6 }}>
                                     Cách sửa: đăng nhập tài khoản <b>superuser PocketBase</b> → Cài đặt →
                                     Quản lý team &amp; người dùng → <b>Dựng ngay</b>. Sau đó mọi người
