@@ -1471,9 +1471,9 @@ export async function moveCustomer(customerProfileId, toTeamId) {
 }
 
 // ===== Dựng schema backend ngay trong app (chỉ superuser) =====
-// Dùng PocketBase JS SDK cho thao tác schema — cleaner API, tự retry 429.
 // Idempotent: bấm lại nhiều lần vẫn an toàn, mỗi bước kiểm "đã có thì bỏ qua".
-import PocketBase from 'pocketbase';
+// Dùng REST API qua cùng lớp auth/retry với phần sync. Trước đây dùng SDK, nhưng backend
+// live từng lệch phiên bản SDK/server nên báo lỗi schema rất mơ hồ và khó tự phục hồi.
 
 const F = {
     id: (pattern = '[a-z0-9]{15}', len = 15, charset = 'a-z0-9') => ({
@@ -1595,18 +1595,12 @@ function inspectSummary(state) {
     return miss.length ? miss.join('; ') : 'đã đủ';
 }
 
-function makePbClient() {
-    const pb = new PocketBase(BASE);
-    const auth = getAuth();
-    if (auth?.token) pb.authStore.save(auth.token, auth.model || {});
-    return pb;
-}
-
 /**
- * Bóc lý do THẬT ra khỏi lỗi của SDK.
+ * Bóc lý do THẬT ra khỏi lỗi schema.
  *
- * SDK chỉ đặt `message` là câu chung chung kiểu "Failed to update collection." — lý do
- * nằm trong `response.data`, lồng theo từng field: {fields:{"3":{name:{message:"..."}}}}.
+ * PocketBase đôi khi đặt `message` là câu chung chung kiểu "Failed to update collection."
+ * — lý do nằm trong `response.data`, lồng theo từng field:
+ * {fields:{"3":{name:{message:"..."}}}}.
  * Không bóc ra thì người dùng chỉ thấy "thất bại" và không ai đoán nổi cột nào sai.
  */
 function sdkMsg(err) {
@@ -1625,6 +1619,28 @@ function sdkMsg(err) {
     return parts.length ? `${base} — ${parts.join('; ')}` : base;
 }
 
+async function listCollections() {
+    const out = [];
+    for (let page = 1; ; page++) {
+        const res = await api(`collections?page=${page}&perPage=200`);
+        out.push(...(res.items || []));
+        if (page >= (res.totalPages || 1)) break;
+    }
+    return out;
+}
+
+async function getCollection(idOrName) {
+    return api(`collections/${idOrName}`);
+}
+
+async function createCollection(body) {
+    return api('collections', { method: 'POST', body: JSON.stringify(body) });
+}
+
+async function updateCollection(idOrName, body) {
+    return api(`collections/${idOrName}`, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
 async function listAllRecords(col, fields) {
     const out = [];
     for (let page = 1; ; page++) {
@@ -1638,8 +1654,8 @@ async function listAllRecords(col, fields) {
 /** Xem backend còn thiếu gì. Không sửa gì cả. */
 export async function inspectBackend() {
     requireSuperuser();
-    const all = await api('collections?perPage=200');
-    const byName = new Map((all.items || []).map(c => [c.name, c]));
+    const all = await listCollections();
+    const byName = new Map(all.map(c => [c.name, c]));
     const users = byName.get('users');
     const survey = byName.get(COL);
     if (!users) {
@@ -1696,7 +1712,7 @@ export async function inspectBackend() {
 }
 
 /**
- * Dựng đầy đủ schema v3 qua PocketBase SDK. onProgress(text) để UI hiện tiến độ.
+ * Dựng đầy đủ schema v3 qua PocketBase REST API. onProgress(text) để UI hiện tiến độ.
  * Trả về mảng dòng log để hiện lại cho người dùng.
  * Hoạt động cả khi survey_items chưa tồn tại (fresh install) lẫn khi đã có nhưng thiếu cột.
  */
@@ -1714,12 +1730,10 @@ export async function provisionBackend(onProgress, onBackup) {
         onProgress?.(m);
     };
 
-    const pb = makePbClient();
-
-    // Tải toàn bộ schema hiện tại qua SDK
+    // Tải toàn bộ schema hiện tại
     let allCols;
     try {
-        allCols = await pb.collections.getFullList({ batch: 200 });
+        allCols = await listCollections();
     } catch (err) {
         throw new PbError(`Không đọc được cấu trúc PocketBase: ${sdkMsg(err)}`, err.status || 0);
     }
@@ -1738,27 +1752,24 @@ export async function provisionBackend(onProgress, onBackup) {
         throw new PbError('Không tìm thấy collection users — sai project PocketBase', 404);
     }
 
-    // ===== 0. users: cột role/username, đăng nhập bằng tên ngắn, token 30 ngày =====
-    // `username` bị bỏ khỏi collection users mặc định từ PocketBase 0.23, nên phải tự
-    // thêm lại — không có nó thì không đăng nhập được bằng tên ngắn, chỉ còn gõ email.
+    // ===== 0. users: chỉ bổ sung field/enum tối thiểu, KHÔNG ghi đè quyền app khác =====
+    // PocketBase này đang dùng chung nhiều ứng dụng. Collection `users` có thể đã có role,
+    // rule và identityFields riêng của app khác; vì vậy bước dựng khảo sát chỉ thêm thứ
+    // còn thiếu để khách hàng hoạt động, không thay toàn bộ rules của users.
     {
         const have = new Set(usersCol.fields.map(f => f.name));
         const addU = [];
         if (!have.has('role')) {
-            addU.push({ name: 'role', type: 'select', values: ['admin'], maxSelect: 1 });
+            addU.push({ name: 'role', type: 'select', values: ['admin', 'customer'], maxSelect: 1 });
         }
         if (!have.has('username')) addU.push(F.text('username', 60));
 
-        // BƯỚC 1 — thêm cột trước, RIÊNG một lượt. identityFields được PocketBase kiểm
-        // theo cột đang có; gộp chung một lượt thì nó soi trạng thái cũ và từ chối vì
-        // "username không tồn tại", làm hỏng cả lần dựng.
-        //
         // Thêm TỪNG cột một: gộp cả hai mà một cột sai thì PocketBase từ chối cả lượt và
         // ta không biết cột nào có lỗi.
         let addedU = 0;
         for (const f of addU) {
             try {
-                usersCol = await pb.collections.update(usersCol.id, {
+                usersCol = await updateCollection(usersCol.id, {
                     fields: [...usersCol.fields, f],
                 });
                 addedU++;
@@ -1767,70 +1778,25 @@ export async function provisionBackend(onProgress, onBackup) {
                 warn(`users — thêm cột ${f.name}`, err);
             }
         }
-        // Nâng enum role riêng một lượt để tài khoản khách không bao giờ bị hiểu nhầm
-        // thành nhân viên thường. Giữ nguyên mọi giá trị role tương lai đã có.
+        // Nâng enum role riêng một lượt. Giữ nguyên mọi giá trị role đang có của app khác
+        // (vd ADMIN/PROJECT_MANAGER), chỉ thêm admin/customer chữ thường cho app khảo sát.
         const roleField = usersCol.fields.find(f => f.name === 'role');
         let roleChanged = false;
-        if (roleField && !(roleField.values || []).includes('customer')) {
+        if (roleField && !['admin', 'customer'].every(v => (roleField.values || []).includes(v))) {
             try {
-                usersCol = await pb.collections.update(usersCol.id, {
+                usersCol = await updateCollection(usersCol.id, {
                     fields: usersCol.fields.map(f => f.name === 'role'
                         ? { ...f, values: [...new Set([...(f.values || []), 'admin', 'customer'])] }
                         : f),
                 });
                 roleChanged = true;
-                say('users: thêm vai trò customer');
+                say('users: thêm vai trò admin/customer cho app khảo sát');
             } catch (err) {
-                warn('users — thêm vai trò customer', err);
+                warn('users — thêm vai trò admin/customer', err);
             }
         }
-        // Đọc lại từ collection VỪA trả về, không suy ra từ danh sách định thêm: cột nào
-        // thêm hụt thì bước sau phải biết, nếu không nó khai username làm identityField
-        // trong khi cột không tồn tại và PocketBase đổ cả lượt.
-        const hasUsername = usersCol.fields.some(f => f.name === 'username');
-
-        // Unique index cho username: chỉ áp cho hàng CÓ username. Index unique thường sẽ
-        // đổ ngay nếu backend đang có từ hai tài khoản username rỗng trở lên — SQLite coi
-        // hai chuỗi rỗng là trùng nhau (khác với NULL).
-        const uIdx = new Set((usersCol.indexes || []).map(idxName));
-        const newUIdx = uIdx.has('idx_users_username')
-            ? []
-            : ["CREATE UNIQUE INDEX `idx_users_username` ON `users` (`username`) WHERE `username` != ''"];
-
-        const ident = usersCol.passwordAuth?.identityFields || ['email'];
-        // Không có cột username thì tuyệt đối KHÔNG khai nó là identityField — PocketBase
-        // sẽ từ chối cả lượt, và người dùng mất luôn phần rule đi kèm.
-        const wantIdent = hasUsername ? [...new Set([...ident, 'username'])] : ident;
-        const identChanged = wantIdent.length !== ident.length;
-        const tokenChanged = usersCol.authToken?.duration !== SESSION_DAYS * 86400;
-        const rulesChanged = usersCol.listRule !== USERS_RULES.listRule;
-
-        // BƯỚC 2 — giờ cột đã có thật, mới bật đăng nhập bằng tên ngắn.
-        if (newUIdx.length || identChanged || tokenChanged || rulesChanged) {
-            try {
-                usersCol = await pb.collections.update(usersCol.id, {
-                    indexes: [...(usersCol.indexes || []), ...newUIdx],
-                    passwordAuth: { ...(usersCol.passwordAuth || {}), enabled: true, identityFields: wantIdent },
-                    authToken: { ...(usersCol.authToken || {}), duration: SESSION_DAYS * 86400 },
-                    ...USERS_RULES,
-                });
-                say(`users: đăng nhập bằng ${wantIdent.join('/')}, phiên ${SESSION_DAYS} ngày, quyền quản trị`);
-            } catch (err) {
-                // Thử lại KHÔNG kèm index — unique index là thứ hay đổ nhất khi dữ liệu
-                // sẵn có đã trùng, mà rule + hạn phiên thì quan trọng hơn nhiều.
-                try {
-                    usersCol = await pb.collections.update(usersCol.id, {
-                        passwordAuth: { ...(usersCol.passwordAuth || {}), enabled: true, identityFields: wantIdent },
-                        authToken: { ...(usersCol.authToken || {}), duration: SESSION_DAYS * 86400 },
-                        ...USERS_RULES,
-                    });
-                    say(`users: đặt quyền + phiên ${SESSION_DAYS} ngày (bỏ qua unique index username)`);
-                } catch (err2) {
-                    warn('users — đặt quyền và hạn phiên', err2);
-                }
-            }
-        } else if (!addedU && !roleChanged) {
-            say('users: đã đủ cột và quyền');
+        if (!addedU && !roleChanged) {
+            say('users: giữ nguyên quyền hiện có, đã đủ role/username cho khảo sát');
         }
     }
 
@@ -1839,7 +1805,7 @@ export async function provisionBackend(onProgress, onBackup) {
     if (teamsCol) {
         if (teamsCol.listRule !== TEAMS_RULES.listRule) {
             try {
-                teamsCol = await pb.collections.update(teamsCol.id, TEAMS_RULES);
+                teamsCol = await updateCollection(teamsCol.id, TEAMS_RULES);
                 say('Collection teams: cập nhật quyền cho tài khoản quản trị');
             } catch (err) {
                 warn('teams — cập nhật quyền', err);
@@ -1848,7 +1814,7 @@ export async function provisionBackend(onProgress, onBackup) {
             say('Collection teams: đã có');
         }
     } else {
-        teamsCol = await pb.collections.create({
+        teamsCol = await createCollection({
             name: TEAMS, type: 'base',
             fields: [
                 F.id(), F.text('name', 120, true), F.text('slug', 60, true),
@@ -1865,7 +1831,7 @@ export async function provisionBackend(onProgress, onBackup) {
     let customerProfilesCol = byName.get(CUSTOMER_PROFILES);
     if (!customerProfilesCol) {
         try {
-            customerProfilesCol = await pb.collections.create({
+            customerProfilesCol = await createCollection({
                 name: CUSTOMER_PROFILES, type: 'base',
                 fields: [
                     F.id(), F.rel('user', usersCol.id, 1, true, true),
@@ -1892,7 +1858,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 F.text('name', 160), F.text('phone', 100), F.bool('active'),
             ].filter(f => !have.has(f.name));
             if (missing.length) {
-                customerProfilesCol = await pb.collections.update(customerProfilesCol.id, {
+                customerProfilesCol = await updateCollection(customerProfilesCol.id, {
                     fields: [...customerProfilesCol.fields, ...missing],
                 });
                 say(`customer_profiles: thêm ${missing.length} cột`);
@@ -1902,7 +1868,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 `CREATE INDEX \`idx_customer_profile_team\` ON \`${CUSTOMER_PROFILES}\` (\`team\`)`,
             ];
             const haveIdx = new Set((customerProfilesCol.indexes || []).map(idxName));
-            customerProfilesCol = await pb.collections.update(customerProfilesCol.id, {
+            customerProfilesCol = await updateCollection(customerProfilesCol.id, {
                 indexes: [...(customerProfilesCol.indexes || []), ...profileIndexes.filter(x => !haveIdx.has(idxName(x)))],
                 ...CUSTOMER_PROFILE_RULES,
             });
@@ -1914,7 +1880,7 @@ export async function provisionBackend(onProgress, onBackup) {
     let customerSubmissionsCol = byName.get(CUSTOMER_SUBMISSIONS);
     if (!customerSubmissionsCol) {
         try {
-            customerSubmissionsCol = await pb.collections.create({
+            customerSubmissionsCol = await createCollection({
                 name: CUSTOMER_SUBMISSIONS, type: 'base',
                 fields: [
                     F.id(), F.rel('owner', usersCol.id, 1, true, true),
@@ -1947,7 +1913,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 F.num('submitted_ms'), F.rel('reviewed_by', usersCol.id, 1), F.num('reviewed_ms'),
             ].filter(f => !have.has(f.name));
             if (missing.length) {
-                customerSubmissionsCol = await pb.collections.update(customerSubmissionsCol.id, {
+                customerSubmissionsCol = await updateCollection(customerSubmissionsCol.id, {
                     fields: [...customerSubmissionsCol.fields, ...missing],
                 });
                 say(`customer_submissions: thêm ${missing.length} cột`);
@@ -1957,7 +1923,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 `CREATE INDEX \`idx_customer_submission_team_status\` ON \`${CUSTOMER_SUBMISSIONS}\` (\`team\`, \`status\`)`,
             ];
             const haveIdx = new Set((customerSubmissionsCol.indexes || []).map(idxName));
-            customerSubmissionsCol = await pb.collections.update(customerSubmissionsCol.id, {
+            customerSubmissionsCol = await updateCollection(customerSubmissionsCol.id, {
                 indexes: [...(customerSubmissionsCol.indexes || []), ...submissionIndexes.filter(x => !haveIdx.has(idxName(x)))],
                 ...CUSTOMER_SUBMISSION_RULES,
             });
@@ -1969,12 +1935,12 @@ export async function provisionBackend(onProgress, onBackup) {
     const deletionsCol = byName.get(DELETIONS);
     if (deletionsCol) {
         try {
-            await pb.collections.update(deletionsCol.id, DELETION_RULES);
+            await updateCollection(deletionsCol.id, DELETION_RULES);
             say('Collection deletions: đã có, đã khóa khỏi tài khoản khách');
         } catch (err) { warn('deletions — cập nhật quyền', err); }
     } else {
         try {
-            await pb.collections.create({
+            await createCollection({
                 name: DELETIONS, type: 'base',
                 fields: [
                     F.id(), F.text('item_id', 60, true), F.text('kind', 20),
@@ -1996,7 +1962,7 @@ export async function provisionBackend(onProgress, onBackup) {
     const sharesCol = byName.get(SHARES);
     if (sharesCol) {
         try {
-            await pb.collections.update(sharesCol.id, SHARE_RULES);
+            await updateCollection(sharesCol.id, SHARE_RULES);
             say('Collection shares: đã có, đã khóa thao tác của tài khoản khách');
         } catch (err) { warn('shares — cập nhật quyền', err); }
     } else {
@@ -2014,11 +1980,11 @@ export async function provisionBackend(onProgress, onBackup) {
             ...SHARE_RULES,
         };
         try {
-            await pb.collections.create(sharesBody);
+            await createCollection(sharesBody);
             say('Collection shares: đã tạo (mã 10 ký tự)');
         } catch {
             sharesBody.fields[0] = F.id();
-            await pb.collections.create(sharesBody);
+            await createCollection(sharesBody);
             say('Collection shares: đã tạo (mã 15 ký tự — bản PB cũ)');
         }
     }
@@ -2052,7 +2018,7 @@ export async function provisionBackend(onProgress, onBackup) {
 
     if (!surveyCol) {
         // Fresh install: tạo luôn với đầy đủ schema v3
-        surveyCol = await pb.collections.create({
+        surveyCol = await createCollection({
             name: COL, type: 'base',
             fields: [
                 F.rel('owner', usersCol.id, 1, true, true),
@@ -2101,7 +2067,7 @@ export async function provisionBackend(onProgress, onBackup) {
         // scope/team nên đồng nghiệp không bao giờ đọc được.
         if (toAdd.length) {
             try {
-                surveyCol = await pb.collections.update(surveyCol.id, {
+                surveyCol = await updateCollection(surveyCol.id, {
                     fields: [...surveyCol.fields, ...toAdd],
                 });
                 say(`survey_items: thêm ${toAdd.length} cột (${toAdd.map(f => f.name).join(', ')})`);
@@ -2112,13 +2078,13 @@ export async function provisionBackend(onProgress, onBackup) {
                 // schema". Thêm từng cột giúp các cột cốt lõi vẫn vào được và log chỉ rõ
                 // cột nào còn kẹt.
                 for (const f of toAdd) {
-                    const latest = await pb.collections.getOne(surveyCol.id);
+                    const latest = await getCollection(surveyCol.id);
                     if (latest.fields.some(x => x.name === f.name)) {
                         surveyCol = latest;
                         continue;
                     }
                     try {
-                        surveyCol = await pb.collections.update(surveyCol.id, {
+                        surveyCol = await updateCollection(surveyCol.id, {
                             fields: [...latest.fields, f],
                         });
                         say(`survey_items: thêm cột ${f.name}`);
@@ -2133,7 +2099,7 @@ export async function provisionBackend(onProgress, onBackup) {
         // Luôn đọc lại sau bước thêm từng cột. Nếu không, một cột đã thêm thành công ở
         // lượt fallback vẫn không được dùng để đặt rule/index ngay trong lần bấm này.
         try {
-            surveyCol = await pb.collections.getOne(surveyCol.id);
+            surveyCol = await getCollection(surveyCol.id);
         } catch { /* giữ bản đang có */ }
 
         // BƯỚC 2 — giờ cột đã có thật, mới đặt rule và index.
@@ -2144,7 +2110,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 'thiếu cột scope/team nên chưa đặt được quyền đọc chung team'));
         } else if (newIndexes.length || surveyCol.listRule !== READ_RULE) {
             try {
-                await pb.collections.update(surveyCol.id, {
+                await updateCollection(surveyCol.id, {
                     indexes: [...(surveyCol.indexes || []), ...newIndexes],
                     ...SURVEY_RULES,
                 });
@@ -2153,7 +2119,7 @@ export async function provisionBackend(onProgress, onBackup) {
                 // Bỏ index ra thử lại: index chỉ để chạy nhanh, còn rule mới là thứ quyết
                 // định đồng nghiệp có đọc được dữ liệu hay không.
                 try {
-                    await pb.collections.update(surveyCol.id, SURVEY_RULES);
+                    await updateCollection(surveyCol.id, SURVEY_RULES);
                     say('survey_items: đặt quyền đọc chung team (bỏ qua index)');
                 } catch (err2) {
                     warn('survey_items — đặt quyền', err2);
