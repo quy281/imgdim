@@ -627,7 +627,7 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                                     {!inspect.customerSubmissionsReady && <li>bảng <code>customer_submissions</code></li>}
                                     {!inspect.customerRole && <li>vai trò <code>customer</code></li>}
                                     {inspect.missingFields.length > 0 && <li>cột: {inspect.missingFields.join(', ')}</li>}
-                                    {inspect.missingIndexes.length > 0 && <li>{inspect.missingIndexes.length} index</li>}
+                                    {inspect.missingIndexes.length > 0 && <li>{inspect.missingIndexes.length} index hiệu năng (không chặn đồng bộ)</li>}
                                     {!inspect.rulesOk && <li>quyền truy cập theo team</li>}
                                     {!inspect.auxiliaryRulesOk && <li>quyền bảng <code>shares/deletions</code></li>}
                                     {inspect.ready && <li>(không thiếu gì)</li>}

@@ -1615,7 +1615,8 @@ function inspectSummary(state) {
     if (!state.customerSubmissionsReady) miss.push('customer_submissions');
     if (!state.customerRole) miss.push('role customer');
     if (state.missingFields?.length) miss.push(`cột ${state.missingFields.join(', ')}`);
-    if (state.missingIndexes?.length) miss.push(`${state.missingIndexes.length} index`);
+    // Index chỉ phục vụ tốc độ truy vấn. Nếu schema/rule đã đủ thì thiếu index không được
+    // giữ app ở trạng thái "backend chưa sẵn sàng", vì đồng bộ hai chiều vẫn chạy được.
     if (!state.rulesOk) miss.push('quyền survey_items');
     if (!state.auxiliaryRulesOk) miss.push('quyền shares/deletions');
     return miss.length ? miss.join('; ') : 'đã đủ';
@@ -1732,7 +1733,7 @@ export async function inspectBackend() {
     };
     result.ready = result.surveyExists && result.teams && result.shares && result.deletions
         && result.customerProfilesReady && result.customerSubmissionsReady && result.customerRole
-        && !result.missingFields.length && !result.missingIndexes.length
+        && !result.missingFields.length
         && result.rulesOk && result.auxiliaryRulesOk;
     return result;
 }
