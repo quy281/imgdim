@@ -323,27 +323,21 @@ export async function refreshCustomerProfile() {
     return profile;
 }
 
-export async function login(identity, password) {
-    // Bảng `users` cho đăng nhập bằng email HOẶC username (identityFields của server).
-    let data, superuser = false;
-    try {
-        data = await api('collections/users/auth-with-password', {
-            method: 'POST',
-            body: JSON.stringify({ identity, password }),
-        }, 1);
-    } catch (err) {
-        if (err.status !== 400) throw err;
-        // Rơi về `_superusers` để Founder vẫn vào được khi chưa có record trong `users`.
-        try {
-            data = await api('collections/_superusers/auth-with-password', {
-                method: 'POST',
-                body: JSON.stringify({ identity, password }),
-            }, 1);
-            superuser = true;
-        } catch {
-            throw new PbError('Sai tài khoản hoặc mật khẩu', 400);
-        }
-    }
+async function authUsers(identity, password) {
+    return api('collections/users/auth-with-password', {
+        method: 'POST',
+        body: JSON.stringify({ identity, password }),
+    }, 1);
+}
+
+async function authSuperuser(identity, password) {
+    return api('collections/_superusers/auth-with-password', {
+        method: 'POST',
+        body: JSON.stringify({ identity, password }),
+    }, 1);
+}
+
+async function finishLogin(data, superuser) {
     saveAuth({
         token: data.token, model: data.record, superuser,
         role: superuser ? '' : (data.record.role || ''),
@@ -357,6 +351,33 @@ export async function login(identity, password) {
         await resolveIdentityAndTeams(data.record.email, superuser);
     }
     return data.record;
+}
+
+export async function login(identity, password, opts = {}) {
+    // Bảng `users` cho đăng nhập bằng email HOẶC username (identityFields của server).
+    let data, superuser = false;
+    if (opts.preferSuperuser) {
+        try {
+            data = await authSuperuser(identity, password);
+            superuser = true;
+            return finishLogin(data, superuser);
+        } catch (err) {
+            if (err.status !== 400) throw err;
+        }
+    }
+    try {
+        data = await authUsers(identity, password);
+    } catch (err) {
+        if (err.status !== 400) throw err;
+        // Rơi về `_superusers` để Founder vẫn vào được khi chưa có record trong `users`.
+        try {
+            data = await authSuperuser(identity, password);
+            superuser = true;
+        } catch {
+            throw new PbError('Sai tài khoản hoặc mật khẩu', 400);
+        }
+    }
+    return finishLogin(data, superuser);
 }
 
 /**
@@ -374,7 +395,12 @@ export async function loginSmart(identity, secret) {
         }
     }
     try {
-        return await login(identity, s);
+        return await login(identity, s, {
+            // Khi Founder có cả record trong `users` cùng email, users-auth có thể thắng
+            // trước và app tưởng đó là nhân viên thường, làm mất nút Dựng backend. Với
+            // email + mật khẩu dài, ưu tiên thử bảng `_superusers`; PIN vẫn đi users trước.
+            preferSuperuser: String(identity || '').includes('@'),
+        });
     } catch (err) {
         if (err.status !== 400) throw err;
         const hint = await emptyBackendHint();

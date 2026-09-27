@@ -12,7 +12,7 @@ import * as pb from '../lib/pb';
  * Quản lý team, nhân viên và khách hàng. `role=admin` được cấp/sửa người dùng; riêng
  * thao tác dựng schema vẫn bắt buộc superuser PocketBase và server rule là lớp bảo vệ thật.
  */
-export default function TeamAdminSheet({ open, onClose }) {
+export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }) {
     const [teams, setTeams] = useState(null);
     const [error, setError] = useState(null);
     const [selected, setSelected] = useState(null); // team object đang xem thành viên
@@ -47,7 +47,7 @@ export default function TeamAdminSheet({ open, onClose }) {
 
     const load = async () => {
         setError(null);
-        setNeedsSetup(false);
+        setNeedsSetup(!!needsSetupHint);
         try {
             const fetchedTeams = await pb.listTeams();
             setTeams(fetchedTeams);
@@ -606,6 +606,13 @@ export default function TeamAdminSheet({ open, onClose }) {
                             <div style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--ink)' }}>
                                 <b>Backend chưa dựng xong.</b> Máy chủ còn thiếu bảng/quyền cho
                                 team, đồng bộ nội bộ hoặc cổng khách hàng.
+                                {!pb.isSuperuser() && (
+                                    <div style={{ marginTop: 8 }}>
+                                        Phiên hiện tại chưa phải <b>superuser PocketBase</b>. Hãy đăng xuất,
+                                        rồi đăng nhập lại bằng email superuser và mật khẩu dài của PocketBase.
+                                        Sau khi vào lại, mở mục này và bấm <b>Dựng ngay</b>.
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -628,7 +635,13 @@ export default function TeamAdminSheet({ open, onClose }) {
                             </div>
                         )}
 
-                        {!confirmSetup && !busy && (
+                        {!pb.isSuperuser() && !busy && (
+                            <button className="btn btn-primary btn-block" style={{ marginTop: 12 }} onClick={onClose}>
+                                Đã hiểu, quay lại đăng xuất
+                            </button>
+                        )}
+
+                        {pb.isSuperuser() && !confirmSetup && !busy && (
                             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                                 <button className="btn" style={{ flex: 1, border: '1.5px solid var(--line)', background: 'none' }}
                                     onClick={doInspect}>
@@ -641,7 +654,7 @@ export default function TeamAdminSheet({ open, onClose }) {
                             </div>
                         )}
 
-                        {confirmSetup && !busy && (
+                        {pb.isSuperuser() && confirmSetup && !busy && (
                             <>
                                 <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 10, color: 'var(--ink-2)' }}>
                                     Thao tác này sẽ đổi cấu trúc dữ liệu trên máy chủ <b>db.mkg.vn</b>:

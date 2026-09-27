@@ -726,7 +726,11 @@ export default function App() {
                 onRepairTeam={async () => { setShowSyncStatus(false); await repairTeamShare(); }}
             />
             <ShareSheet project={shareFor} onClose={() => setShareFor(null)} />
-            <TeamAdminSheet open={showTeamAdmin} onClose={() => setShowTeamAdmin(false)} />
+            <TeamAdminSheet
+                open={showTeamAdmin}
+                onClose={() => setShowTeamAdmin(false)}
+                needsSetupHint={!!syncError?.needsSetup}
+            />
             <CustomerInboxSheet
                 open={showCustomerInbox}
                 onClose={() => setShowCustomerInbox(false)}

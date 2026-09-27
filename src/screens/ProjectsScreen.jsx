@@ -291,10 +291,11 @@ export default function ProjectsScreen({
                                     <div style={{ flex: 1 }}>
                                         <b>{syncError.readOnly ? 'Có thể tải cloud về; gửi lên đang tạm dừng.' : syncError.needsSetup ? 'Tài khoản đang chưa sync được vì backend chưa dựng đủ.' : 'Đồng bộ đang lỗi.'}</b>
                                         <div>{syncError.message}</div>
-                                        {syncError.needsSetup && pb.isAdmin() && (
+                                        {syncError.needsSetup && (
                                             <button className="btn btn-primary btn-block" style={{ marginTop: 10 }}
                                                 onClick={() => { setShowSettings(false); onOpenTeamAdmin?.(); }}>
-                                                <ShieldCheck size={15} /> Mở Quản lý team để Dựng ngay
+                                                <ShieldCheck size={15} />
+                                                {pb.isSuperuser() ? 'Mở Quản lý team để Dựng ngay' : 'Mở hướng dẫn đăng nhập superuser'}
                                             </button>
                                         )}
                                     </div>
@@ -342,10 +343,15 @@ export default function ProjectsScreen({
                                 </div>
                             </button>
                         )}
-                        {pb.isAdmin() && (
+                        {(pb.isAdmin() || syncError?.needsSetup) && (
                             <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenTeamAdmin?.(); }}>
                                 <ShieldCheck size={19} style={{ color: 'var(--blue)' }} />
-                                <div style={{ flex: 1 }}>Quản lý team & người dùng<div className="sub">Cấp tài khoản, gán team</div></div>
+                                <div style={{ flex: 1 }}>
+                                    {pb.isAdmin() ? 'Quản lý team & người dùng' : 'Dựng backend đồng bộ'}
+                                    <div className="sub">
+                                        {pb.isAdmin() ? 'Cấp tài khoản, gán team' : 'Cần đăng nhập superuser PocketBase để nâng schema'}
+                                    </div>
+                                </div>
                             </button>
                         )}
                         {pinForm && (
