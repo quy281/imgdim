@@ -32,6 +32,9 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
     const [confirmReassign, setConfirmReassign] = useState(null); // team object
     const [customerForm, setCustomerForm] = useState(null); // { login, name, pin }
     const [customerRevealed, setCustomerRevealed] = useState(null);
+    const [signupRequests, setSignupRequests] = useState([]);
+    const [signupTeam, setSignupTeam] = useState({});
+    const [signupRevealed, setSignupRevealed] = useState(null);
     const [dashboard, setDashboard] = useState(null);
     const [dragging, setDragging] = useState(null); // { type, item, fromTeamId }
     const [dropTeamId, setDropTeamId] = useState(null);
@@ -40,6 +43,7 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
         if (open) {
             load(); setSelected(null); setRevealed(null); setAddForm(null); setConfirmSetup(false);
             setCustomers(null); setCustomerForm(null); setCustomerRevealed(null);
+            setSignupRequests([]); setSignupTeam({}); setSignupRevealed(null);
             setDashboard(null); setDragging(null); setDropTeamId(null);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -53,7 +57,14 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
             setTeams(fetchedTeams);
             if (pb.isAdmin()) {
                 try {
-                    setDashboard(await pb.getTeamDashboard());
+                    const [dash, requests] = await Promise.all([
+                        pb.getTeamDashboard(),
+                        pb.listSignupRequests(),
+                    ]);
+                    setDashboard(dash);
+                    setSignupRequests(requests);
+                    const firstTeam = dash.teams?.[0]?.id || fetchedTeams[0]?.id || '';
+                    setSignupTeam(Object.fromEntries(requests.map(r => [r.id, firstTeam])));
                 } catch (err) {
                     console.warn('team dashboard:', err.message);
                     setDashboard({ teams: fetchedTeams.map(t => ({ ...t, members: [], customers: [] })) });
@@ -385,6 +396,41 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
         }
     };
 
+    const doApproveSignup = async (req) => {
+        const teamId = signupTeam[req.id] || teams?.[0]?.id || dashboardTeams[0]?.id;
+        if (!teamId) { toast('Chưa có team để kích hoạt tài khoản', 'err'); return; }
+        setBusy(true);
+        try {
+            const res = await pb.approveSignupRequest(req.id, teamId);
+            setSignupRequests(list => list.map(x => x.id === req.id ? res.request : x));
+            setSignupRevealed({
+                email: req.email,
+                name: req.name,
+                pin: res.pin,
+                teamName: (dashboardTeams.find(t => t.id === teamId) || teams?.find(t => t.id === teamId))?.name || '',
+            });
+            await load();
+            toast('Đã kích hoạt tài khoản', 'ok');
+        } catch (err) {
+            toast('Không kích hoạt được: ' + err.message, 'err');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const doRejectSignup = async (req) => {
+        setBusy(true);
+        try {
+            const next = await pb.rejectSignupRequest(req.id);
+            setSignupRequests(list => list.map(x => x.id === req.id ? next : x));
+            toast('Đã từ chối đăng ký', 'ok');
+        } catch (err) {
+            toast('Không từ chối được: ' + err.message, 'err');
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const doRemove = async (m) => {
         // Bỏ khỏi danh sách NGAY, gọi server sau. Xoá là thao tác người dùng đã quyết —
         // bắt họ nhìn spinner vài giây rồi mới thấy dòng biến mất là vô nghĩa. Hỏng thì
@@ -625,6 +671,7 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                                     {!inspect.deletions && <li>bảng <code>deletions</code></li>}
                                     {!inspect.customerProfilesReady && <li>bảng <code>customer_profiles</code></li>}
                                     {!inspect.customerSubmissionsReady && <li>bảng <code>customer_submissions</code></li>}
+                                    {!inspect.signupRequestsReady && <li>bảng <code>signup_requests</code></li>}
                                     {!inspect.customerRole && <li>vai trò <code>customer</code></li>}
                                     {inspect.missingFields.length > 0 && <li>cột: {inspect.missingFields.join(', ')}</li>}
                                     {inspect.missingIndexes.length > 0 && <li>{inspect.missingIndexes.length} index hiệu năng (không chặn đồng bộ)</li>}
@@ -707,6 +754,68 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                             <div style={{ flex: 1 }}>{t.name}<div className="sub">{t.memberCount} thành viên</div></div>
                         </button>
                     ))}
+
+                    {pb.isAdmin() && signupRequests.filter(r => r.status === 'pending').length > 0 && (
+                        <div style={{ margin: '12px 16px', padding: 12, borderRadius: 14, background: 'var(--bg-2)', border: '1px solid var(--line)' }}>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                                <UserPlus size={17} style={{ color: 'var(--blue)' }} />
+                                <div style={{ flex: 1 }}>
+                                    <div style={{ fontWeight: 850, fontSize: 14 }}>Đăng ký chờ kích hoạt</div>
+                                    <div className="sub">Admin chọn team rồi kích hoạt; tài khoản chỉ dùng được sau bước này.</div>
+                                </div>
+                            </div>
+                            <div style={{ display: 'grid', gap: 8 }}>
+                                {signupRequests.filter(r => r.status === 'pending').map(req => (
+                                    <div key={req.id} style={{ padding: 10, borderRadius: 12, background: 'var(--card)', border: '1px solid var(--line)' }}>
+                                        <div style={{ fontWeight: 800 }}>{req.name}</div>
+                                        <div className="sub">{req.email}{req.phone ? ` · ${req.phone}` : ''}</div>
+                                        {req.note && <div style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 3 }}>{req.note}</div>}
+                                        <select value={signupTeam[req.id] || teams?.[0]?.id || ''}
+                                            disabled={busy}
+                                            onChange={e => setSignupTeam(m => ({ ...m, [req.id]: e.target.value }))}
+                                            style={{
+                                                width: '100%', marginTop: 8, border: '1px solid var(--line)', borderRadius: 8,
+                                                padding: '8px 9px', fontSize: 13, background: 'var(--card)', color: 'var(--ink)',
+                                            }}>
+                                            {(dashboardTeams.length ? dashboardTeams : teams || []).map(t => (
+                                                <option key={t.id} value={t.id}>{t.name}</option>
+                                            ))}
+                                        </select>
+                                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                            <button className="btn btn-primary" style={{ flex: 1 }} disabled={busy}
+                                                onClick={() => doApproveSignup(req)}>
+                                                Kích hoạt
+                                            </button>
+                                            <button className="btn" style={{ flex: 1, border: '1.5px solid var(--line)', background: 'none' }} disabled={busy}
+                                                onClick={() => doRejectSignup(req)}>
+                                                Từ chối
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {signupRevealed && (
+                        <div style={{ margin: '12px 16px', padding: 12, borderRadius: 12, background: 'var(--warn-soft)', border: '1px solid #f0d999' }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--warn)', marginBottom: 6 }}>
+                                Tài khoản vừa kích hoạt
+                            </div>
+                            <div style={{ fontSize: 13 }}>Người dùng: <b>{signupRevealed.name || signupRevealed.email}</b></div>
+                            <div style={{ fontSize: 13 }}>Đăng nhập: <b>{signupRevealed.email}</b></div>
+                            <div style={{ fontSize: 13 }}>
+                                {signupRevealed.pin ? <>PIN: <b>{signupRevealed.pin}</b></> : 'Tài khoản đã có từ trước — PIN không đổi'}
+                            </div>
+                            {signupRevealed.teamName && <div className="sub">Team: {signupRevealed.teamName}</div>}
+                            <button className="btn" style={{ marginTop: 8 }} onClick={() => copy(
+                                `MKG Khảo Sát\n${window.location.origin}\nĐăng nhập: ${signupRevealed.email}`
+                                + (signupRevealed.pin ? `\nPIN: ${signupRevealed.pin}` : '\nPIN: giữ nguyên như cũ')
+                            )}>
+                                <Copy size={15} /> Copy gửi người dùng
+                            </button>
+                        </div>
+                    )}
 
                     {report && (
                         <div style={{

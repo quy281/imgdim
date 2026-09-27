@@ -3,6 +3,7 @@ import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
     Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
+    UserPlus,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -33,6 +34,9 @@ export default function ProjectsScreen({
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loggingIn, setLoggingIn] = useState(false);
+    const [signupOpen, setSignupOpen] = useState(false);
+    const [signupBusy, setSignupBusy] = useState(false);
+    const [signupForm, setSignupForm] = useState({ name: '', email: '', phone: '', note: '' });
     const [pinForm, setPinForm] = useState(null); // { old, next, again }
     const [pinBusy, setPinBusy] = useState(false);
     // Đội mặc định nằm ở localStorage (không phải state) — cần cờ này để ô chọn vẽ lại.
@@ -63,6 +67,20 @@ export default function ProjectsScreen({
             setShowSettings(false);
         } catch { /* toast đã báo */ } finally {
             setLoggingIn(false);
+        }
+    };
+
+    const doSignup = async () => {
+        setSignupBusy(true);
+        try {
+            await pb.submitSignupRequest(signupForm);
+            setSignupForm({ name: '', email: '', phone: '', note: '' });
+            setSignupOpen(false);
+            toast('Đã gửi đăng ký — admin sẽ kích hoạt tài khoản rồi gửi PIN cho bạn', 'ok');
+        } catch (err) {
+            toast('Không gửi được đăng ký: ' + err.message, 'err');
+        } finally {
+            setSignupBusy(false);
         }
     };
 
@@ -406,6 +424,40 @@ export default function ProjectsScreen({
                         <button className="btn btn-primary btn-block" disabled={loggingIn} onClick={doLogin}>
                             <LogIn size={18} /> {loggingIn ? 'Đang đăng nhập...' : 'Đăng nhập để đồng bộ'}
                         </button>
+                        <button className="btn btn-block" style={{ marginTop: 8, border: '1.5px solid var(--line)', background: 'none', color: 'var(--ink-2)' }}
+                            onClick={() => setSignupOpen(v => !v)}>
+                            <UserPlus size={17} /> Chưa có tài khoản? Đăng ký sử dụng
+                        </button>
+                        {signupOpen && (
+                            <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+                                <div className="field">
+                                    <label>Họ tên</label>
+                                    <input type="text" value={signupForm.name} placeholder="Nguyễn Văn A"
+                                        onChange={e => setSignupForm(f => ({ ...f, name: e.target.value }))} />
+                                </div>
+                                <div className="field">
+                                    <label>Email</label>
+                                    <input type="text" value={signupForm.email} placeholder="ten@mkg.vn"
+                                        autoCapitalize="none" autoCorrect="off" spellCheck="false"
+                                        onChange={e => setSignupForm(f => ({ ...f, email: e.target.value }))} />
+                                </div>
+                                <div className="field">
+                                    <label>Số điện thoại (tùy chọn)</label>
+                                    <input type="text" value={signupForm.phone} placeholder="090..."
+                                        onChange={e => setSignupForm(f => ({ ...f, phone: e.target.value }))} />
+                                </div>
+                                <div className="field">
+                                    <label>Ghi chú / đội muốn vào (tùy chọn)</label>
+                                    <input type="text" value={signupForm.note} placeholder="VD: đội Sunrise"
+                                        onChange={e => setSignupForm(f => ({ ...f, note: e.target.value }))}
+                                        onKeyDown={e => { if (e.key === 'Enter') doSignup(); }} />
+                                </div>
+                                <button className="btn btn-primary btn-block" disabled={signupBusy} onClick={doSignup}>
+                                    {signupBusy ? <RefreshCw size={15} className="spin" /> : <UserPlus size={15} />}
+                                    Gửi đăng ký chờ duyệt
+                                </button>
+                            </div>
+                        )}
                         <div style={{ fontSize: 12, color: 'var(--muted)', paddingTop: 12, lineHeight: 1.55 }}>
                             Phiên đăng nhập dùng được {pb.SESSION_DAYS} ngày rồi phải đăng nhập lại.
                             Nhận PIN từ quản trị, và đổi ngay sau lần đăng nhập đầu.

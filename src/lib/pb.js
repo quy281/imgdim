@@ -23,6 +23,7 @@ const TEAMS = 'teams';
 const SHARES = 'shares';
 const CUSTOMER_PROFILES = 'customer_profiles';
 const CUSTOMER_SUBMISSIONS = 'customer_submissions';
+const SIGNUP_REQUESTS = 'signup_requests';
 // Bảng dấu xoá. Bản ghi khảo sát bị XOÁ THẬT khỏi survey_items (kèm ảnh); ở đây chỉ còn
 // item_id + thời điểm. Không có dấu này thì máy đang offline lúc xoá sẽ đẩy bản cũ lên
 // lại ở lần sync sau — xoá rồi tự sống lại.
@@ -1306,6 +1307,93 @@ export async function createCustomer(teamId, { login: rawLogin, name, pin }) {
     return { id: profile.id, userId: user.id, login: username, pin: created ? String(pin) : null, created };
 }
 
+function signupOf(r) {
+    return {
+        id: r.id,
+        name: r.name || '',
+        email: r.email || '',
+        phone: r.phone || '',
+        note: r.note || '',
+        status: r.status || 'pending',
+        requestedMs: Number(r.requested_ms) || 0,
+        reviewedMs: Number(r.reviewed_ms) || 0,
+        teamId: r.team || '',
+        userId: r.user || '',
+    };
+}
+
+/** Người dùng ngoài hệ thống gửi yêu cầu đăng ký. Admin sẽ duyệt và cấp tài khoản sau. */
+export async function submitSignupRequest({ name, email, phone, note }) {
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanName = String(name || '').trim();
+    const cleanPhone = String(phone || '').trim();
+    const cleanNote = String(note || '').trim();
+    if (!cleanName) throw new PbError('Vui lòng nhập họ tên', 400);
+    if (!cleanEmail.includes('@')) throw new PbError('Email không hợp lệ', 400);
+    const body = {
+        name: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        note: cleanNote,
+        status: 'pending',
+        requested_ms: now(),
+    };
+    try {
+        return signupOf(await api(`collections/${SIGNUP_REQUESTS}/records`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }));
+    } catch (err) {
+        if (err.status === 404) {
+            throw new PbError('Chức năng đăng ký chưa được bật. Vui lòng báo admin bấm Dựng backend.', 503);
+        }
+        throw err;
+    }
+}
+
+export async function listSignupRequests() {
+    requireAdmin();
+    try {
+        const res = await api(`collections/${SIGNUP_REQUESTS}/records?perPage=200&sort=-requested_ms`);
+        return (res.items || []).map(signupOf);
+    } catch (err) {
+        if (err.status === 404) return [];
+        throw err;
+    }
+}
+
+const randomPin = () => String(Math.floor(1000 + Math.random() * 9000));
+
+export async function approveSignupRequest(requestId, teamId) {
+    requireAdmin();
+    if (!requestId || !teamId) throw new PbError('Thiếu yêu cầu hoặc team duyệt', 400);
+    const req = signupOf(await api(`collections/${SIGNUP_REQUESTS}/records/${encodeURIComponent(requestId)}`));
+    if (req.status !== 'pending') throw new PbError('Yêu cầu này đã được xử lý', 409);
+    const pin = randomPin();
+    const made = await addTeamMember(teamId, req.email, { name: req.name, password: pin });
+    const rec = await api(`collections/${SIGNUP_REQUESTS}/records/${encodeURIComponent(requestId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+            status: 'approved',
+            team: teamId,
+            user: made.userId,
+            reviewed_by: ownerId(),
+            reviewed_ms: now(),
+        }),
+    });
+    return { request: signupOf(rec), user: made, pin: made.created ? pin : null };
+}
+
+export async function rejectSignupRequest(requestId) {
+    requireAdmin();
+    if (!requestId) throw new PbError('Thiếu yêu cầu', 400);
+    const rec = await api(`collections/${SIGNUP_REQUESTS}/records/${encodeURIComponent(requestId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'rejected', reviewed_by: ownerId(), reviewed_ms: now() }),
+    });
+    return signupOf(rec);
+}
+
 // ===== Dựng schema backend (chỉ superuser PocketBase) =====
 function requireSuperuser() {
     if (!isSuperuser()) throw new PbError('Thao tác này cần tài khoản superuser của PocketBase', 403);
@@ -1586,6 +1674,13 @@ const CUSTOMER_SUBMISSION_RULES = {
         + '&& @request.body.source_project_id:isset = false',
     deleteRule: IS_ADMIN,
 };
+const SIGNUP_REQUEST_RULES = {
+    listRule: IS_ADMIN,
+    viewRule: IS_ADMIN,
+    createRule: '',
+    updateRule: IS_ADMIN,
+    deleteRule: IS_ADMIN,
+};
 const DELETION_RULES = {
     listRule: IS_STAFF,
     viewRule: IS_STAFF,
@@ -1613,6 +1708,7 @@ function inspectSummary(state) {
     if (!state.deletions) miss.push('bảng deletions');
     if (!state.customerProfilesReady) miss.push('customer_profiles');
     if (!state.customerSubmissionsReady) miss.push('customer_submissions');
+    if (!state.signupRequestsReady) miss.push('signup_requests');
     if (!state.customerRole) miss.push('role customer');
     if (state.missingFields?.length) miss.push(`cột ${state.missingFields.join(', ')}`);
     // Index chỉ phục vụ tốc độ truy vấn. Nếu schema/rule đã đủ thì thiếu index không được
@@ -1695,8 +1791,10 @@ export async function inspectBackend() {
     const roleField = users.fields?.find(f => f.name === 'role');
     const profileCol = byName.get(CUSTOMER_PROFILES);
     const submissionCol = byName.get(CUSTOMER_SUBMISSIONS);
+    const signupCol = byName.get(SIGNUP_REQUESTS);
     const profileFields = new Set((profileCol?.fields || []).map(f => f.name));
     const submissionFields = new Set((submissionCol?.fields || []).map(f => f.name));
+    const signupFields = new Set((signupCol?.fields || []).map(f => f.name));
     const profileIndexes = new Set((profileCol?.indexes || []).map(idxName));
     const submissionIndexes = new Set((submissionCol?.indexes || []).map(idxName));
     const profileReady = !!profileCol && ['user', 'team', 'name', 'active'].every(f => profileFields.has(f))
@@ -1707,6 +1805,9 @@ export async function inspectBackend() {
             .every(f => submissionFields.has(f))
         && submissionIndexes.has('idx_customer_submission_key')
         && rulesEqual(submissionCol, CUSTOMER_SUBMISSION_RULES);
+    const signupReady = !!signupCol
+        && ['name', 'email', 'phone', 'status', 'requested_ms'].every(f => signupFields.has(f))
+        && rulesEqual(signupCol, SIGNUP_REQUEST_RULES);
     const shares = byName.get(SHARES);
     const deletions = byName.get(DELETIONS);
     const result = {
@@ -1716,8 +1817,10 @@ export async function inspectBackend() {
         deletions: !!deletions,
         customerProfiles: !!byName.get(CUSTOMER_PROFILES),
         customerSubmissions: !!byName.get(CUSTOMER_SUBMISSIONS),
+        signupRequests: !!signupCol,
         customerProfilesReady: profileReady,
         customerSubmissionsReady: submissionReady,
+        signupRequestsReady: signupReady,
         customerRole: !!roleField && (roleField.values || []).includes('customer'),
         missingFields: survey
             ? ['scope', 'team', 'updated_ms', 'deleted', 'rev', 'schema_v', 'photo', 'photo_hash', 'owner_name']
@@ -1732,7 +1835,7 @@ export async function inspectBackend() {
         userCount: null,
     };
     result.ready = result.surveyExists && result.teams && result.shares && result.deletions
-        && result.customerProfilesReady && result.customerSubmissionsReady && result.customerRole
+        && result.customerProfilesReady && result.customerSubmissionsReady && result.signupRequestsReady && result.customerRole
         && !result.missingFields.length
         && result.rulesOk && result.auxiliaryRulesOk;
     return result;
@@ -1956,6 +2059,58 @@ export async function provisionBackend(onProgress, onBackup) {
             });
             say('Collection customer_submissions: đã có');
         } catch (err) { warn('customer_submissions — cập nhật quyền', err); }
+    }
+
+    // ===== 1d. signup_requests — người dùng tự đăng ký, admin duyệt/kích hoạt =====
+    let signupRequestsCol = byName.get(SIGNUP_REQUESTS);
+    if (!signupRequestsCol) {
+        try {
+            signupRequestsCol = await createCollection({
+                name: SIGNUP_REQUESTS, type: 'base',
+                fields: [
+                    F.id(), F.text('name', 160, true), F.text('email', 180, true),
+                    F.text('phone', 80), F.text('note', 500),
+                    { name: 'status', type: 'select', values: ['pending', 'approved', 'rejected'], maxSelect: 1, required: true },
+                    F.num('requested_ms'), F.rel('team', teamsCol.id, 1),
+                    F.rel('user', usersCol.id, 1), F.rel('reviewed_by', usersCol.id, 1), F.num('reviewed_ms'),
+                    F.date('created', false), F.date('updated', true),
+                ],
+                indexes: [
+                    `CREATE INDEX \`idx_signup_status\` ON \`${SIGNUP_REQUESTS}\` (\`status\`, \`requested_ms\`)`,
+                    `CREATE INDEX \`idx_signup_email\` ON \`${SIGNUP_REQUESTS}\` (\`email\`)`,
+                ],
+                ...SIGNUP_REQUEST_RULES,
+            });
+            say('Collection signup_requests: đã tạo (đăng ký chờ admin duyệt)');
+        } catch (err) {
+            warn('signup_requests — tạo collection', err);
+        }
+    } else {
+        try {
+            const have = new Set(signupRequestsCol.fields.map(f => f.name));
+            const missing = [
+                F.text('name', 160, true), F.text('email', 180, true), F.text('phone', 80), F.text('note', 500),
+                { name: 'status', type: 'select', values: ['pending', 'approved', 'rejected'], maxSelect: 1, required: true },
+                F.num('requested_ms'), F.rel('team', teamsCol.id, 1),
+                F.rel('user', usersCol.id, 1), F.rel('reviewed_by', usersCol.id, 1), F.num('reviewed_ms'),
+            ].filter(f => !have.has(f.name));
+            if (missing.length) {
+                signupRequestsCol = await updateCollection(signupRequestsCol.id, {
+                    fields: [...signupRequestsCol.fields, ...missing],
+                });
+                say(`signup_requests: thêm ${missing.length} cột`);
+            }
+            const signupIndexes = [
+                `CREATE INDEX \`idx_signup_status\` ON \`${SIGNUP_REQUESTS}\` (\`status\`, \`requested_ms\`)`,
+                `CREATE INDEX \`idx_signup_email\` ON \`${SIGNUP_REQUESTS}\` (\`email\`)`,
+            ];
+            const haveIdx = new Set((signupRequestsCol.indexes || []).map(idxName));
+            signupRequestsCol = await updateCollection(signupRequestsCol.id, {
+                indexes: [...(signupRequestsCol.indexes || []), ...signupIndexes.filter(x => !haveIdx.has(idxName(x)))],
+                ...SIGNUP_REQUEST_RULES,
+            });
+            say('Collection signup_requests: đã có');
+        } catch (err) { warn('signup_requests — cập nhật quyền', err); }
     }
 
     // ===== 2b. deletions — dấu xoá, để xoá THẬT mà máy offline vẫn xoá theo =====
