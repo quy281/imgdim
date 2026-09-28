@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, ExternalLink, PlayCircle } from 'lucide-react';
+import { BookOpen, PlayCircle } from 'lucide-react';
 import { latestExperience } from '../lib/experienceLibrary';
 
 export default function ExperiencePreview({ onOpenExperience, compact = false }) {
@@ -23,9 +23,6 @@ export default function ExperiencePreview({ onOpenExperience, compact = false })
                             <span>{item.category}</span>
                         </div>
                         <div className="experience-latest-title">{item.title}</div>
-                        <div className="experience-latest-meta">
-                            Xem chi tiết <ExternalLink size={12} />
-                        </div>
                     </button>
                 ))}
             </div>

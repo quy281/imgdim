@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Edit3, ExternalLink, Save, X } from 'lucide-react';
+import { Edit3, ExternalLink, Eye, EyeOff, Save, X } from 'lucide-react';
 import Sheet from './Sheet';
+import * as pb from '../lib/pb';
 
 const STORAGE_KEY = 'mkg_service_banner_v1';
+const VISIBLE_KEY = 'mkg_service_banner_visible_v1';
 
 const DEFAULT_SERVICES = [
     {
@@ -32,6 +34,8 @@ const DEFAULT_SERVICES = [
 ];
 
 export default function ServiceBanner({ compact = false }) {
+    const canManage = pb.isAdmin();
+    const [visible, setVisible] = useState(() => localStorage.getItem(VISIBLE_KEY) === '1');
     const [services, setServices] = useState(() => {
         try {
             const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
@@ -62,6 +66,22 @@ export default function ServiceBanner({ compact = false }) {
         setServices(clean);
         setEditing(false);
     };
+    const setBannerVisible = (next) => {
+        setVisible(next);
+        localStorage.setItem(VISIBLE_KEY, next ? '1' : '0');
+    };
+
+    if (!visible) {
+        if (!canManage) return null;
+        return (
+            <section className={`service-admin-toggle ${compact ? 'compact' : ''}`}>
+                <span><EyeOff size={14} /> Dịch vụ đang ẩn</span>
+                <button className="section-action" onClick={() => setBannerVisible(true)}>
+                    <Eye size={15} /> Hiện
+                </button>
+            </section>
+        );
+    }
 
     return (
         <>
@@ -71,9 +91,16 @@ export default function ServiceBanner({ compact = false }) {
                         <div className="section-eyebrow">Dịch vụ MKG</div>
                         <div className="section-heading">Bảng giá & hỗ trợ gia công</div>
                     </div>
-                    <button className="section-action" onClick={() => setEditing(true)}>
-                        <Edit3 size={15} /> Sửa
-                    </button>
+                    {canManage && (
+                        <div className="service-admin-actions">
+                            <button className="section-action" onClick={() => setBannerVisible(false)}>
+                                <EyeOff size={15} /> Ẩn
+                            </button>
+                            <button className="section-action" onClick={() => setEditing(true)}>
+                                <Edit3 size={15} /> Sửa
+                            </button>
+                        </div>
+                    )}
                 </div>
                 <div className="service-strip">
                     {services.map(s => (
