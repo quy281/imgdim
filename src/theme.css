@@ -766,6 +766,50 @@ input, textarea {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.experience-submit {
+    margin: 0 0 13px;
+    padding: 11px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+}
+.experience-submit-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+.experience-submit-form {
+    display: grid;
+    gap: 9px;
+    margin-top: 10px;
+}
+.experience-submit-form input,
+.experience-submit-form textarea,
+.experience-submit-form select {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    padding: 10px 11px;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 14px;
+}
+.experience-submit-form textarea {
+    resize: vertical;
+    min-height: 54px;
+}
+.experience-submit-msg {
+    margin-top: 9px;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    background: var(--blue-soft);
+    color: var(--blue);
+    font-size: 12.5px;
+    font-weight: 750;
+}
 .exp-chip-row {
     overflow-x: auto;
     padding-bottom: 2px;
@@ -803,11 +847,35 @@ input, textarea {
     font-weight: 700;
 }
 .experience-body { padding: 13px; }
+.experience-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
 .experience-cat {
     font-size: 11.5px;
     font-weight: 800;
     color: var(--blue);
-    margin-bottom: 4px;
+}
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    padding: 4px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 850;
+}
+.status-pill.pending {
+    color: var(--warn);
+    background: var(--warn-soft);
+}
+.status-pill.rejected {
+    color: #dc2626;
+    background: #fef2f2;
 }
 .experience-title {
     font-weight: 800;
@@ -820,6 +888,23 @@ input, textarea {
     font-size: 13px;
     line-height: 1.45;
     margin-bottom: 12px;
+}
+.experience-owner {
+    margin: -4px 0 10px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+.experience-review-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 9px;
+}
+.experience-review-actions .btn {
+    min-height: 38px;
+    padding: 0 10px;
+    font-size: 13px;
 }
 
 /* Floating selection action bar */

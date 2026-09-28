@@ -24,6 +24,7 @@ const SHARES = 'shares';
 const CUSTOMER_PROFILES = 'customer_profiles';
 const CUSTOMER_SUBMISSIONS = 'customer_submissions';
 const SIGNUP_REQUESTS = 'signup_requests';
+const EXPERIENCE_POSTS = 'experience_posts';
 // Bảng dấu xoá. Bản ghi khảo sát bị XOÁ THẬT khỏi survey_items (kèm ảnh); ở đây chỉ còn
 // item_id + thời điểm. Không có dấu này thì máy đang offline lúc xoá sẽ đẩy bản cũ lên
 // lại ở lần sync sau — xoá rồi tự sống lại.
@@ -1394,6 +1395,72 @@ export async function rejectSignupRequest(requestId) {
     return signupOf(rec);
 }
 
+function experiencePostOf(r) {
+    return {
+        id: r.id,
+        source: 'cloud',
+        ownerId: r.owner || '',
+        ownerName: r.owner_name || '',
+        category: r.category || '',
+        type: r.type || 'video',
+        title: r.title || '',
+        desc: r.desc || '',
+        detailUrl: r.detail_url || '',
+        embedUrl: r.embed_url || '',
+        status: r.status || 'pending',
+        submittedMs: Number(r.submitted_ms) || 0,
+        updatedAt: Number(r.submitted_ms) || 0,
+    };
+}
+
+/** Video/bài kinh nghiệm: public cho mọi user, pending chỉ chủ bài và admin thấy. */
+export async function listExperiencePosts() {
+    if (!isLoggedIn() || isCustomer()) return [];
+    try {
+        const res = await api(`collections/${EXPERIENCE_POSTS}/records?perPage=200&sort=-submitted_ms`);
+        return (res.items || []).map(experiencePostOf);
+    } catch (err) {
+        if (err.status === 404 || err.status === 403) return [];
+        throw err;
+    }
+}
+
+export async function createExperiencePost(input) {
+    if (!isLoggedIn() || isCustomer()) throw new PbError('Cần đăng nhập tài khoản nhân viên để thêm video', 403);
+    const title = String(input.title || '').trim();
+    const detailUrl = String(input.detailUrl || '').trim();
+    const category = String(input.category || '').trim();
+    if (!title) throw new PbError('Vui lòng nhập tiêu đề video', 400);
+    if (!category) throw new PbError('Vui lòng chọn catalogue', 400);
+    if (!/^https?:\/\//i.test(detailUrl)) throw new PbError('Link video cần bắt đầu bằng http:// hoặc https://', 400);
+    const rec = await api(`collections/${EXPERIENCE_POSTS}/records`, {
+        method: 'POST',
+        body: JSON.stringify({
+            owner: ownerId(),
+            owner_name: ownerName(),
+            category,
+            type: String(input.type || 'video').trim() || 'video',
+            title,
+            desc: String(input.desc || '').trim(),
+            detail_url: detailUrl,
+            embed_url: String(input.embedUrl || '').trim(),
+            status: 'pending',
+            submitted_ms: now(),
+        }),
+    });
+    return experiencePostOf(rec);
+}
+
+export async function reviewExperiencePost(id, status) {
+    requireAdmin();
+    if (!['public', 'rejected', 'pending'].includes(status)) throw new PbError('Trạng thái video không hợp lệ', 400);
+    const rec = await api(`collections/${EXPERIENCE_POSTS}/records/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, reviewed_by: ownerId(), reviewed_ms: now() }),
+    });
+    return experiencePostOf(rec);
+}
+
 // ===== Dựng schema backend (chỉ superuser PocketBase) =====
 function requireSuperuser() {
     if (!isSuperuser()) throw new PbError('Thao tác này cần tài khoản superuser của PocketBase', 403);
@@ -1681,6 +1748,14 @@ const SIGNUP_REQUEST_RULES = {
     updateRule: IS_ADMIN,
     deleteRule: IS_ADMIN,
 };
+const EXPERIENCE_READ_RULE = `${IS_STAFF} && (status = "public" || owner = @request.auth.id || ${IS_ADMIN})`;
+const EXPERIENCE_POST_RULES = {
+    listRule: EXPERIENCE_READ_RULE,
+    viewRule: EXPERIENCE_READ_RULE,
+    createRule: `${IS_STAFF} && @request.body.owner = @request.auth.id && @request.body.status = "pending"`,
+    updateRule: IS_ADMIN,
+    deleteRule: IS_ADMIN,
+};
 const DELETION_RULES = {
     listRule: IS_STAFF,
     viewRule: IS_STAFF,
@@ -1709,6 +1784,7 @@ function inspectSummary(state) {
     if (!state.customerProfilesReady) miss.push('customer_profiles');
     if (!state.customerSubmissionsReady) miss.push('customer_submissions');
     if (!state.signupRequestsReady) miss.push('signup_requests');
+    if (!state.experiencePostsReady) miss.push('experience_posts');
     if (!state.customerRole) miss.push('role customer');
     if (state.missingFields?.length) miss.push(`cột ${state.missingFields.join(', ')}`);
     // Index chỉ phục vụ tốc độ truy vấn. Nếu schema/rule đã đủ thì thiếu index không được
@@ -1792,9 +1868,11 @@ export async function inspectBackend() {
     const profileCol = byName.get(CUSTOMER_PROFILES);
     const submissionCol = byName.get(CUSTOMER_SUBMISSIONS);
     const signupCol = byName.get(SIGNUP_REQUESTS);
+    const experienceCol = byName.get(EXPERIENCE_POSTS);
     const profileFields = new Set((profileCol?.fields || []).map(f => f.name));
     const submissionFields = new Set((submissionCol?.fields || []).map(f => f.name));
     const signupFields = new Set((signupCol?.fields || []).map(f => f.name));
+    const experienceFields = new Set((experienceCol?.fields || []).map(f => f.name));
     const profileIndexes = new Set((profileCol?.indexes || []).map(idxName));
     const submissionIndexes = new Set((submissionCol?.indexes || []).map(idxName));
     const profileReady = !!profileCol && ['user', 'team', 'name', 'active'].every(f => profileFields.has(f))
@@ -1808,6 +1886,10 @@ export async function inspectBackend() {
     const signupReady = !!signupCol
         && ['name', 'email', 'phone', 'status', 'requested_ms'].every(f => signupFields.has(f))
         && rulesEqual(signupCol, SIGNUP_REQUEST_RULES);
+    const experienceReady = !!experienceCol
+        && ['owner', 'owner_name', 'category', 'type', 'title', 'desc', 'detail_url', 'embed_url', 'status', 'submitted_ms']
+            .every(f => experienceFields.has(f))
+        && rulesEqual(experienceCol, EXPERIENCE_POST_RULES);
     const shares = byName.get(SHARES);
     const deletions = byName.get(DELETIONS);
     const result = {
@@ -1818,9 +1900,11 @@ export async function inspectBackend() {
         customerProfiles: !!byName.get(CUSTOMER_PROFILES),
         customerSubmissions: !!byName.get(CUSTOMER_SUBMISSIONS),
         signupRequests: !!signupCol,
+        experiencePosts: !!experienceCol,
         customerProfilesReady: profileReady,
         customerSubmissionsReady: submissionReady,
         signupRequestsReady: signupReady,
+        experiencePostsReady: experienceReady,
         customerRole: !!roleField && (roleField.values || []).includes('customer'),
         missingFields: survey
             ? ['scope', 'team', 'updated_ms', 'deleted', 'rev', 'schema_v', 'photo', 'photo_hash', 'owner_name']
@@ -1835,7 +1919,8 @@ export async function inspectBackend() {
         userCount: null,
     };
     result.ready = result.surveyExists && result.teams && result.shares && result.deletions
-        && result.customerProfilesReady && result.customerSubmissionsReady && result.signupRequestsReady && result.customerRole
+        && result.customerProfilesReady && result.customerSubmissionsReady && result.signupRequestsReady
+        && result.experiencePostsReady && result.customerRole
         && !result.missingFields.length
         && result.rulesOk && result.auxiliaryRulesOk;
     return result;
@@ -2111,6 +2196,51 @@ export async function provisionBackend(onProgress, onBackup) {
             });
             say('Collection signup_requests: đã có');
         } catch (err) { warn('signup_requests — cập nhật quyền', err); }
+    }
+
+    // ===== 1e. experience_posts — video/bài kinh nghiệm user gửi, admin duyệt public =====
+    let experiencePostsCol = byName.get(EXPERIENCE_POSTS);
+    const experienceFieldsWanted = [
+        F.id(), F.rel('owner', usersCol.id, 1, true, true), F.text('owner_name', 160),
+        F.text('category', 120, true), F.text('type', 40), F.text('title', 220, true),
+        F.text('desc', 600), F.text('detail_url', 1000, true), F.text('embed_url', 1000),
+        { name: 'status', type: 'select', values: ['pending', 'public', 'rejected'], maxSelect: 1, required: true },
+        F.num('submitted_ms'), F.rel('reviewed_by', usersCol.id, 1), F.num('reviewed_ms'),
+        F.date('created', false), F.date('updated', true),
+    ];
+    const experienceIndexes = [
+        `CREATE INDEX \`idx_experience_status_time\` ON \`${EXPERIENCE_POSTS}\` (\`status\`, \`submitted_ms\`)`,
+        `CREATE INDEX \`idx_experience_owner_status\` ON \`${EXPERIENCE_POSTS}\` (\`owner\`, \`status\`)`,
+    ];
+    if (!experiencePostsCol) {
+        try {
+            experiencePostsCol = await createCollection({
+                name: EXPERIENCE_POSTS, type: 'base',
+                fields: experienceFieldsWanted,
+                indexes: experienceIndexes,
+                ...EXPERIENCE_POST_RULES,
+            });
+            say('Collection experience_posts: đã tạo (video user gửi chờ admin duyệt)');
+        } catch (err) {
+            warn('experience_posts — tạo collection', err);
+        }
+    } else {
+        try {
+            const have = new Set(experiencePostsCol.fields.map(f => f.name));
+            const missing = experienceFieldsWanted.filter(f => !have.has(f.name));
+            if (missing.length) {
+                experiencePostsCol = await updateCollection(experiencePostsCol.id, {
+                    fields: [...experiencePostsCol.fields, ...missing],
+                });
+                say(`experience_posts: thêm ${missing.length} cột`);
+            }
+            const haveIdx = new Set((experiencePostsCol.indexes || []).map(idxName));
+            experiencePostsCol = await updateCollection(experiencePostsCol.id, {
+                indexes: [...(experiencePostsCol.indexes || []), ...experienceIndexes.filter(x => !haveIdx.has(idxName(x)))],
+                ...EXPERIENCE_POST_RULES,
+            });
+            say('Collection experience_posts: đã có');
+        } catch (err) { warn('experience_posts — cập nhật quyền', err); }
     }
 
     // ===== 2b. deletions — dấu xoá, để xoá THẬT mà máy offline vẫn xoá theo =====

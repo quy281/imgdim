@@ -1,9 +1,18 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, PlayCircle } from 'lucide-react';
-import { latestExperience } from '../lib/experienceLibrary';
+import { latestExperience, latestExperienceFrom, loadExperienceItems } from '../lib/experienceLibrary';
 
 export default function ExperiencePreview({ onOpenExperience, compact = false }) {
-    const items = latestExperience(3);
+    const [items, setItems] = useState(() => latestExperience(3));
+
+    useEffect(() => {
+        let alive = true;
+        loadExperienceItems().then(next => {
+            if (alive) setItems(latestExperienceFrom(next, 3));
+        });
+        return () => { alive = false; };
+    }, []);
+
     return (
         <section className={`experience-preview ${compact ? 'compact' : ''}`} aria-label="Kinh nghiệm mới nhất">
             <div className="section-head">
