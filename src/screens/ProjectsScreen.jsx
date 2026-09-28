@@ -8,6 +8,8 @@ import {
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
 import Confirm from '../ui/Confirm';
+import ServiceBanner from '../ui/ServiceBanner';
+import ExperiencePreview from '../ui/ExperiencePreview';
 import { toast } from '../ui/Toast';
 import * as pb from '../lib/pb';
 
@@ -24,7 +26,7 @@ export default function ProjectsScreen({
     projects, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
-    onLogin, onLogout,
+    onLogin, onLogout, onOpenExperience,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
@@ -178,6 +180,9 @@ export default function ProjectsScreen({
                         </div>
                     ))
                 )}
+
+                <ExperiencePreview onOpenExperience={onOpenExperience} />
+                <ServiceBanner />
             </div>
 
             {/* Menu từng dự án */}

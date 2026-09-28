@@ -1,5 +1,6 @@
 // Immutable mutations on plan data + doc/project factories.
 import { genId, detectRooms, shoelaceArea, polygonPerimeter, pointInPolygon, labelPoint } from './geometry';
+export { newBoardDoc } from './boardModel';
 
 // ===== Factories =====
 export function newProject(name) {

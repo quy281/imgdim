@@ -3,6 +3,8 @@ import ProjectsScreen from './screens/ProjectsScreen';
 import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
+import BoardEditor from './screens/BoardEditor';
+import ExperienceScreen from './screens/ExperienceScreen';
 import CustomerLoginScreen from './screens/CustomerLoginScreen';
 import CustomerHomeScreen from './screens/CustomerHomeScreen';
 import SyncStatusSheet from './ui/SyncStatusSheet';
@@ -13,7 +15,7 @@ import ShareViewer from './screens/ShareViewer';
 import { ToastHost, toast } from './ui/Toast';
 import * as db from './lib/db';
 import * as pb from './lib/pb';
-import { newProject, newPlanDoc, newPhotoDoc } from './lib/planModel';
+import { newProject, newPlanDoc, newPhotoDoc, newBoardDoc } from './lib/planModel';
 import { fileToPhoto, makePlanThumb } from './lib/image';
 import { genId } from './lib/geometry';
 
@@ -272,7 +274,11 @@ export default function App() {
     };
 
     const openDoc = (doc) => {
-        navigate({ screen: doc.type === 'plan' ? 'plan' : 'photo', projectId: doc.projectId, docId: doc.id });
+        navigate({
+            screen: doc.type === 'plan' ? 'plan' : doc.type === 'board' ? 'board' : 'photo',
+            projectId: doc.projectId,
+            docId: doc.id,
+        });
     };
 
     // ===== Lưu doc =====
@@ -314,6 +320,16 @@ export default function App() {
         setDocs(prev => [...prev, doc]);
         markDirty('doc', doc);
         navigate({ screen: 'plan', projectId, docId: doc.id });
+    };
+
+    const createBoardDoc = async () => {
+        const projectId = routeRef.current.projectId;
+        const count = docsRef.current.filter(d => d.type === 'board').length + 1;
+        const doc = { ...newBoardDoc(projectId, `Ván tồn ${count}`), createdAt: pb.now(), updatedAt: pb.now() };
+        await db.putDoc(doc);
+        setDocs(prev => [...prev, doc]);
+        markDirty('doc', doc);
+        navigate({ screen: 'board', projectId, docId: doc.id });
     };
 
     const importPhotos = async (files) => {
@@ -660,10 +676,14 @@ export default function App() {
     const currentDoc = route.docId ? docs.find(d => d.id === route.docId) : null;
 
     let screen;
-    if ((route.screen === 'plan' || route.screen === 'photo') && currentDoc) {
+    if ((route.screen === 'plan' || route.screen === 'photo' || route.screen === 'board') && currentDoc) {
         screen = route.screen === 'plan'
             ? <PlanEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />
-            : <PhotoEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />;
+            : route.screen === 'board'
+                ? <BoardEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />
+                : <PhotoEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />;
+    } else if (route.screen === 'experience') {
+        screen = <ExperienceScreen onBack={goBack} />;
     } else if (route.screen !== 'projects' && currentProject) {
         screen = (
             <ProjectScreen
@@ -672,10 +692,12 @@ export default function App() {
                 onBack={goBack}
                 onOpenDoc={openDoc}
                 onCreatePlan={createPlanDoc}
+                onCreateBoard={createBoardDoc}
                 onImportPhotos={importPhotos}
                 onRenameProject={renameProject}
                 onRenameDoc={renameDoc}
                 onDeleteDoc={deleteDoc}
+                onOpenExperience={() => navigate({ screen: 'experience' })}
             />
         );
     } else if (pb.isCustomer()) {
@@ -709,6 +731,7 @@ export default function App() {
                 onOpenSyncStatus={() => setShowSyncStatus(true)}
                 onOpenTeamAdmin={() => setShowTeamAdmin(true)}
                 onOpenCustomerInbox={() => setShowCustomerInbox(true)}
+                onOpenExperience={() => navigate({ screen: 'experience' })}
                 customerInboxCount={customerInboxCount}
                 onLogin={login}
                 onLogout={logout}
