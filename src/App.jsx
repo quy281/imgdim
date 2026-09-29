@@ -4,6 +4,7 @@ import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
 import BoardEditor from './screens/BoardEditor';
+import BoardInventoryScreen from './screens/BoardInventoryScreen';
 import BoardMarketScreen from './screens/BoardMarketScreen';
 import ExperienceScreen from './screens/ExperienceScreen';
 import CustomerLoginScreen from './screens/CustomerLoginScreen';
@@ -38,6 +39,8 @@ function readShareParam() {
 }
 
 const customerPortalRequested = () => new URLSearchParams(window.location.search).get('customer') === '1';
+const BOARD_INVENTORY_PROJECT_NAME = 'Kho ván tồn';
+const isInventoryProject = (p) => p?.boardInventory === true || p?.name === BOARD_INVENTORY_PROJECT_NAME;
 
 export default function App() {
     const [projects, setProjects] = useState(null); // null = đang tải
@@ -300,9 +303,45 @@ export default function App() {
         navigate({ screen: 'board-market' });
     };
 
+    const openBoardInventory = async () => {
+        const all = await db.listAllDocs();
+        const boardDocs = all.filter(d => d.type === 'board');
+        setBoardMarketDocs(boardDocs);
+        setBoardMarketCount(boardDocs.filter(d => d.board?.market?.listed).length);
+        navigate({ screen: 'board-inventory' });
+    };
+
     const openMarketBoard = async (doc) => {
         setDocs(await db.listDocs(doc.projectId));
         navigate({ screen: 'board', projectId: doc.projectId, docId: doc.id });
+    };
+
+    const createInventoryBoardDoc = async () => {
+        const at = pb.now();
+        let project = projectsRef.current.find(isInventoryProject);
+        if (!project) {
+            project = {
+                ...newProject(BOARD_INVENTORY_PROJECT_NAME),
+                name: BOARD_INVENTORY_PROJECT_NAME,
+                boardInventory: true,
+                ownerId: pb.ownerId() || null,
+                scope: pb.isLoggedIn() ? 'team' : 'private',
+                teamId: pb.myTeam()?.id || null,
+                createdAt: at,
+                updatedAt: at,
+            };
+            await persistProjects(list => [project, ...list]);
+            markDirty('project', project);
+        }
+        const all = await db.listAllDocs();
+        const count = all.filter(d => d.type === 'board').length + 1;
+        const doc = { ...newBoardDoc(project.id, `Ván tồn ${count}`), createdAt: at, updatedAt: at };
+        await db.putDoc(doc);
+        refreshBoardMarketCount();
+        setDocs(await db.listDocs(project.id));
+        setBoardMarketDocs([...all.filter(d => d.type === 'board'), doc]);
+        markDirty('doc', doc);
+        navigate({ screen: 'board', projectId: project.id, docId: doc.id });
     };
 
     // ===== Lưu doc =====
@@ -703,6 +742,8 @@ export default function App() {
 
     const currentProject = route.projectId ? projects.find(p => p.id === route.projectId) : null;
     const currentDoc = route.docId ? docs.find(d => d.id === route.docId) : null;
+    const surveyProjects = projects.filter(p => !isInventoryProject(p));
+    const surveyDocs = docs.filter(d => d.type !== 'board');
 
     let screen;
     if ((route.screen === 'plan' || route.screen === 'photo' || route.screen === 'board') && currentDoc) {
@@ -713,6 +754,17 @@ export default function App() {
                 : <PhotoEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />;
     } else if (route.screen === 'experience') {
         screen = <ExperienceScreen onBack={goBack} />;
+    } else if (route.screen === 'board-inventory') {
+        screen = (
+            <BoardInventoryScreen
+                docs={boardMarketDocs}
+                projects={projects}
+                onBack={goBack}
+                onCreateBoard={createInventoryBoardDoc}
+                onOpenBoard={openMarketBoard}
+                onOpenMarket={openBoardMarket}
+            />
+        );
     } else if (route.screen === 'board-market') {
         screen = (
             <BoardMarketScreen
@@ -720,17 +772,17 @@ export default function App() {
                 projects={projects}
                 onBack={goBack}
                 onOpenBoard={openMarketBoard}
+                onOpenInventory={openBoardInventory}
             />
         );
     } else if (route.screen !== 'projects' && currentProject) {
         screen = (
             <ProjectScreen
                 project={currentProject}
-                docs={docs}
+                docs={surveyDocs}
                 onBack={goBack}
                 onOpenDoc={openDoc}
                 onCreatePlan={createPlanDoc}
-                onCreateBoard={createBoardDoc}
                 onImportPhotos={importPhotos}
                 onRenameProject={renameProject}
                 onRenameDoc={renameDoc}
@@ -741,7 +793,7 @@ export default function App() {
     } else if (pb.isCustomer()) {
         screen = (
             <CustomerHomeScreen
-                projects={projects}
+                projects={surveyProjects}
                 account={account}
                 onOpen={openProject}
                 onCreate={createProject}
@@ -753,7 +805,7 @@ export default function App() {
     } else {
         screen = (
             <ProjectsScreen
-                projects={projects}
+                projects={surveyProjects}
                 account={account}
                 syncBusy={syncBusy}
                 syncMsg={syncMsg}
@@ -770,6 +822,7 @@ export default function App() {
                 onOpenTeamAdmin={() => setShowTeamAdmin(true)}
                 onOpenCustomerInbox={() => setShowCustomerInbox(true)}
                 onOpenExperience={() => navigate({ screen: 'experience' })}
+                onOpenBoardInventory={openBoardInventory}
                 onOpenBoardMarket={openBoardMarket}
                 boardMarketCount={boardMarketCount}
                 customerInboxCount={customerInboxCount}

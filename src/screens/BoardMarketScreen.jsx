@@ -9,9 +9,9 @@ const fmtPrice = (v) => `${Number(v || 0).toLocaleString('vi-VN')}đ`;
 const fmtArea = (v) => `${(Number(v || 0) / 1e6).toFixed(2)}m²`;
 
 const statusLabel = {
-    available: 'Đang bán',
+    available: 'Đang trao đổi',
     reserved: 'Giữ chỗ',
-    sold: 'Đã bán',
+    sold: 'Đã trao đổi',
 };
 
 function boardOf(doc) {
@@ -33,7 +33,7 @@ function boardOf(doc) {
     };
 }
 
-export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard }) {
+export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard, onOpenInventory }) {
     const [filter, setFilter] = useState('available');
     const [q, setQ] = useState('');
     const boards = useMemo(() => docs
@@ -65,17 +65,22 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard 
             <div className="hdr">
                 <button className="icon-btn" onClick={onBack}><ArrowLeft size={22} /></button>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="hdr-title">Sàn bán ván</div>
-                    <div className="hdr-sub">Các tấm ván tồn đã chuẩn hóa mã, giá và file vẽ</div>
+                    <div className="hdr-title">Sàn trao đổi ván dư</div>
+                    <div className="hdr-sub">Các tấm ván dư đã chuẩn hóa mã, giá và file vẽ</div>
                 </div>
             </div>
 
             <div className="scroll-body">
+                <div className="module-tabs compact">
+                    <button className="module-tab" onClick={onOpenInventory}>Quản lý ván</button>
+                    <button className="module-tab on">Sàn trao đổi ván dư</button>
+                </div>
+
                 <section className="market-hero">
                     <div className="market-hero-icon"><Store size={24} /></div>
                     <div className="market-stat">
                         <b>{stats.count}</b>
-                        <span>tấm đăng bán</span>
+                        <span>tấm trao đổi</span>
                     </div>
                     <div className="market-stat">
                         <b>{fmtArea(stats.area)}</b>
@@ -94,9 +99,9 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard 
 
                 <div className="chip-row exp-chip-row">
                     {[
-                        ['available', 'Đang bán'],
+                        ['available', 'Đang trao đổi'],
                         ['reserved', 'Giữ chỗ'],
-                        ['sold', 'Đã bán'],
+                        ['sold', 'Đã trao đổi'],
                         ['all', 'Tất cả'],
                     ].map(([key, label]) => (
                         <button key={key} className={`chip ${filter === key ? 'on' : ''}`} onClick={() => setFilter(key)}>
@@ -109,7 +114,7 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard 
                     <div className="empty">
                         <PackageOpen size={52} />
                         <h3>Chưa có ván trên sàn</h3>
-                        <p>Vào một ván tồn, bấm Kho bán, nhập giá rồi đẩy lên sàn.</p>
+                        <p>Vào Quản lý ván, mở một tấm ván rồi bật đăng lên sàn trao đổi.</p>
                     </div>
                 ) : (
                     <div className="board-market-grid">

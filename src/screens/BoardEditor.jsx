@@ -247,7 +247,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
     const openMarketSheet = () => {
         const cur = docRef.current.board || board;
         if ((cur.outline || []).length < 3) {
-            toast('Vẽ và lưu biên ván trước khi đẩy lên kho bán', 'err');
+            toast('Vẽ và lưu biên ván trước khi đăng lên sàn trao đổi', 'err');
             return;
         }
         const code = standardBoardCode(cur);
@@ -280,7 +280,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
     const publishMarket = () => {
         const cur = docRef.current.board || board;
         const price = Number(String(marketDraft.price || '').replace(/[^\d]/g, ''));
-        if (!price) { toast('Nhập giá bán trước khi đẩy lên kho bán', 'err'); return; }
+        if (!price) { toast('Nhập giá trao đổi trước khi đăng sàn', 'err'); return; }
         const code = marketDraft.code?.trim() || standardBoardCode(cur);
         const listedBoard = { ...cur, code };
         const nextBoard = {
@@ -302,7 +302,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
         };
         commit(nextBoard, { name: code });
         setShowMarket(false);
-        toast('Đã đẩy ván lên kho bán', 'ok');
+        toast('Đã đăng ván lên sàn trao đổi', 'ok');
     };
 
     const saveMeta = (patch) => {
@@ -326,7 +326,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                     </div>
                 </div>
                 {board.market?.listed && (
-                    <div className="sync-chip on"><Store size={13} /> Kho bán</div>
+                    <div className="sync-chip on"><Store size={13} /> Trên sàn</div>
                 )}
                 <button className="icon-btn" onClick={() => setShowInfo(true)}><Info size={20} /></button>
                 <button className="icon-btn" style={{ color: 'var(--red-dark)' }} onClick={() => setShowExport(true)}><FileDown size={20} /></button>
@@ -545,7 +545,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                 </button>
                 <button className={`tool ${board.market?.listed ? 'on t-measure' : ''}`} onClick={openMarketSheet}>
                     <UploadCloud size={21} />
-                    Kho bán
+                    Đăng sàn
                 </button>
             </div>
 
@@ -597,8 +597,8 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                 <button className="sheet-row" onClick={openMarketSheet}>
                     <Store size={19} style={{ color: 'var(--ok)' }} />
                     <div style={{ flex: 1 }}>
-                        Kho bán
-                        <div className="sub">{board.market?.listed ? `${board.market.price?.toLocaleString('vi-VN')}đ · ${board.market.dxfFile}` : 'Chuẩn hóa mã, nhập giá, kèm thumbnail và DXF'}</div>
+                        Sàn trao đổi
+                        <div className="sub">{board.market?.listed ? `${board.market.price?.toLocaleString('vi-VN')}đ · ${board.market.dxfFile}` : 'Chuẩn hóa mã, giá trao đổi, kèm thumbnail và DXF'}</div>
                     </div>
                 </button>
             </Sheet>
@@ -610,8 +610,8 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                 </button>
             </Sheet>
 
-            <Sheet open={showMarket} onClose={() => setShowMarket(false)} title="Đẩy lên kho bán"
-                sub="Chuẩn hóa mã ván, nhập giá và lưu thumbnail/file DXF để đăng bán.">
+            <Sheet open={showMarket} onClose={() => setShowMarket(false)} title="Đăng lên sàn trao đổi ván dư"
+                sub="Chuẩn hóa mã ván, nhập giá trao đổi và lưu thumbnail/file DXF.">
                 <button className="sheet-row" onClick={() => setMarketDraft(d => ({ ...d, code: standardBoardCode(docRef.current.board || board) }))}>
                     <PackageOpen size={19} style={{ color: 'var(--blue)' }} />
                     <div style={{ flex: 1 }}>
@@ -620,7 +620,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                     </div>
                 </button>
                 <div className="field">
-                    <label>Mã ván bán</label>
+                    <label>Mã ván trao đổi</label>
                     <input value={marketDraft.code} onChange={e => setMarketDraft(d => ({ ...d, code: e.target.value }))} />
                 </div>
                 <div className="field">
@@ -628,7 +628,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                     <input value={marketDraft.title} onChange={e => setMarketDraft(d => ({ ...d, title: e.target.value }))} />
                 </div>
                 <div className="field">
-                    <label>Giá bán (VND)</label>
+                    <label>Giá trao đổi (VND)</label>
                     <input inputMode="numeric" value={marketDraft.price}
                         onChange={e => setMarketDraft(d => ({ ...d, price: e.target.value.replace(/[^\d]/g, '') }))}
                         placeholder="VD: 350000" />
@@ -636,9 +636,9 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                 <div className="field">
                     <label>Trạng thái</label>
                     <select value={marketDraft.status} onChange={e => setMarketDraft(d => ({ ...d, status: e.target.value }))}>
-                        <option value="available">Đang bán</option>
+                        <option value="available">Đang trao đổi</option>
                         <option value="reserved">Giữ chỗ</option>
-                        <option value="sold">Đã bán</option>
+                        <option value="sold">Đã trao đổi</option>
                     </select>
                 </div>
                 <input
@@ -657,7 +657,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                     )}
                     <div style={{ flex: 1 }}>
                         Ảnh chụp tấm ván
-                        <div className="sub">{marketDraft.photoThumb ? 'Sàn bán sẽ ưu tiên ảnh này làm thumbnail' : 'Nên chụp ảnh thật của tấm ván trước khi đăng bán'}</div>
+                        <div className="sub">{marketDraft.photoThumb ? 'Sàn trao đổi sẽ ưu tiên ảnh này làm thumbnail' : 'Nên chụp ảnh thật của tấm ván trước khi đăng sàn'}</div>
                     </div>
                 </button>
                 <div className="field">
@@ -665,13 +665,13 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                     <input value={marketDraft.desc} onChange={e => setMarketDraft(d => ({ ...d, desc: e.target.value }))} />
                 </div>
                 <div className="market-preview">
-                    <div className="market-preview-title">Gói đăng bán sẽ gồm</div>
+                    <div className="market-preview-title">Gói đăng sàn sẽ gồm</div>
                     <div>Thumbnail: {marketDraft.photoThumb ? 'ảnh chụp tấm ván' : makeBoardThumb(board) ? 'hình biên vẽ' : 'chưa có'}</div>
                     <div>File vẽ: {boardFileName({ ...board, code: marketDraft.code || board.code })}</div>
                     <div>Diện tích: {(boardArea(board) / 1e6).toFixed(3)} m²</div>
                 </div>
                 <button className="btn btn-primary btn-block" style={{ marginTop: 12 }} onClick={publishMarket}>
-                    <UploadCloud size={17} /> Đẩy lên kho bán
+                    <UploadCloud size={17} /> Đăng lên sàn
                 </button>
             </Sheet>
 

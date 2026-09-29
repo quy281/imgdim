@@ -3,7 +3,7 @@ import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
     Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
-    UserPlus, Store,
+    UserPlus, Store, PackageOpen,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -26,7 +26,7 @@ export default function ProjectsScreen({
     projects, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
-    onLogin, onLogout, onOpenExperience, onOpenBoardMarket, boardMarketCount = 0,
+    onLogin, onLogout, onOpenExperience, onOpenBoardInventory, onOpenBoardMarket, boardMarketCount = 0,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
@@ -135,6 +135,17 @@ export default function ProjectsScreen({
             </div>
 
             <div className="scroll-body">
+                <div className="module-tabs">
+                    <button className="module-tab on">Khảo sát</button>
+                    <button className="module-tab" onClick={onOpenBoardInventory}>
+                        <PackageOpen size={15} /> Quản lý ván
+                    </button>
+                    <button className="module-tab" onClick={onOpenBoardMarket}>
+                        <Store size={15} /> Sàn trao đổi ván dư
+                        {!!boardMarketCount && <b>{boardMarketCount}</b>}
+                    </button>
+                </div>
+
                 <button className="btn btn-primary btn-block" style={{ height: 52, fontSize: 15.5, marginBottom: 16 }}
                     onClick={() => setTextSheet({
                         title: 'Dự án mới',
@@ -143,11 +154,6 @@ export default function ProjectsScreen({
                         onOK: onCreate,
                     })}>
                     <Plus size={20} /> Dự án khảo sát mới
-                </button>
-
-                <button className="market-entry-btn" onClick={onOpenBoardMarket}>
-                    <span><Store size={19} /> Sàn bán ván</span>
-                    <b>{boardMarketCount} tấm</b>
                 </button>
 
                 {projects.length === 0 ? (
