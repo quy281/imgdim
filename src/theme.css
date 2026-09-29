@@ -415,10 +415,49 @@ input, textarea {
     color: var(--ink);
     font-size: 15px;
 }
+.board-view-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: -2px 0 12px;
+    color: var(--muted);
+    font-size: 12.2px;
+    font-weight: 750;
+}
+.board-view-row span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.segmented-mini {
+    flex-shrink: 0;
+    display: inline-flex;
+    padding: 3px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+}
+.segmented-mini button {
+    width: 32px;
+    height: 28px;
+    border-radius: 999px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--ink-2);
+}
+.segmented-mini button.on {
+    background: var(--ink);
+    color: #fff;
+}
 .board-market-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
     gap: 10px;
+}
+.board-market-grid.thumb-mode {
+    grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
 }
 .board-market-card {
     overflow: hidden;
@@ -432,6 +471,10 @@ input, textarea {
     grid-template-columns: 94px minmax(0, 1fr);
     min-height: 118px;
 }
+.board-market-grid.thumb-mode .board-market-card {
+    display: block;
+    min-height: 0;
+}
 .board-market-thumb {
     position: relative;
     width: 94px;
@@ -442,6 +485,14 @@ input, textarea {
     place-items: center;
     color: var(--muted);
     border-right: 1px solid var(--line);
+}
+.board-market-grid.thumb-mode .board-market-thumb {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    aspect-ratio: 1 / 1;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
 }
 .board-market-thumb img {
     width: 100%;
@@ -465,6 +516,7 @@ input, textarea {
 .board-market-status.reserved { background: var(--warn); }
 .board-market-status.sold { background: var(--ink-2); }
 .board-market-body { padding: 10px 11px; min-width: 0; }
+.board-market-grid.thumb-mode .board-market-body { padding: 8px 9px 9px; }
 .board-market-title {
     font-size: 14px;
     font-weight: 850;
@@ -473,6 +525,7 @@ input, textarea {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.board-market-grid.thumb-mode .board-market-title { font-size: 12.5px; }
 .board-market-code {
     margin-top: 2px;
     color: var(--blue);
@@ -481,6 +534,19 @@ input, textarea {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+.board-market-grid.thumb-mode .board-market-code,
+.board-market-grid.thumb-mode .board-market-meta,
+.board-market-grid.thumb-mode .board-market-project {
+    font-size: 11px;
+    margin-top: 3px;
+}
+.board-market-grid.thumb-mode .board-market-footer {
+    margin-top: 7px;
+    padding-top: 7px;
+}
+.board-market-grid.thumb-mode .board-market-footer b {
+    font-size: 12.5px;
 }
 .board-market-meta,
 .board-market-project {

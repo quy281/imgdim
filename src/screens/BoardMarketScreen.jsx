@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeft, Box, FileDown, PackageOpen, Search, Store } from 'lucide-react';
+import { ArrowLeft, Box, FileDown, Grid2X2, List, PackageOpen, Search, Store } from 'lucide-react';
 import { boardArea, boardBounds, makeBoardThumb } from '../lib/boardModel';
 import { boardFileName, generateBoardDxf } from '../lib/boardDxf';
 import { downloadText } from '../lib/export';
 import { toast } from '../ui/Toast';
+import { canCutRect, fitWaste, parseSizeQuery, textMatchesBoard } from '../lib/boardSearch';
 
 const fmtPrice = (v) => `${Number(v || 0).toLocaleString('vi-VN')}đ`;
 const fmtArea = (v) => `${(Number(v || 0) / 1e6).toFixed(2)}m²`;
@@ -36,6 +37,7 @@ function boardOf(doc) {
 export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard, onOpenInventory }) {
     const [filter, setFilter] = useState('available');
     const [q, setQ] = useState('');
+    const [viewMode, setViewMode] = useState('list');
     const boards = useMemo(() => docs
         .filter(d => d.type === 'board' && d.board?.market?.listed)
         .map(boardOf)
@@ -43,10 +45,15 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard,
     [docs]);
 
     const projectName = (id) => projects.find(p => p.id === id)?.name || 'Dự án';
-    const shown = boards.filter(item => {
-        const hay = `${item.title} ${item.code} ${item.board.material} ${item.board.color} ${item.board.location} ${projectName(item.doc.projectId)}`.toLowerCase();
-        return (filter === 'all' || item.status === filter) && (!q.trim() || hay.includes(q.trim().toLowerCase()));
-    });
+    const sizeQuery = parseSizeQuery(q);
+    const textQuery = sizeQuery ? q.replace(/(\d{2,5})\s*[xX×*]\s*(\d{2,5})/, '').trim() : q;
+    const shown = boards
+        .filter(item => (filter === 'all' || item.status === filter)
+            && textMatchesBoard(item, textQuery, projectName(item.doc.projectId))
+            && canCutRect(item.bounds, sizeQuery))
+        .sort((a, b) => sizeQuery
+            ? fitWaste(a.area, sizeQuery) - fitWaste(b.area, sizeQuery)
+            : Number(b.market.listedAt || b.doc.updatedAt || 0) - Number(a.market.listedAt || a.doc.updatedAt || 0));
     const stats = boards.reduce((acc, item) => {
         acc.count += 1;
         acc.area += item.area || 0;
@@ -94,7 +101,20 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard,
 
                 <div className="market-search">
                     <Search size={17} />
-                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Tìm mã ván, màu, kho A1..." />
+                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Tìm mã, màu, kho A1 hoặc 300x400..." />
+                </div>
+                <div className="board-view-row">
+                    {sizeQuery ? (
+                        <span>Đang tìm tấm đủ cắt {sizeQuery.text}, xếp theo phần dư ít nhất.</span>
+                    ) : <span>{shown.length} / {boards.length} tấm trên sàn</span>}
+                    <div className="segmented-mini">
+                        <button className={viewMode === 'thumb' ? 'on' : ''} onClick={() => setViewMode('thumb')} title="Thumbnail">
+                            <Grid2X2 size={15} />
+                        </button>
+                        <button className={viewMode === 'list' ? 'on' : ''} onClick={() => setViewMode('list')} title="List">
+                            <List size={15} />
+                        </button>
+                    </div>
                 </div>
 
                 <div className="chip-row exp-chip-row">
@@ -117,7 +137,7 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard,
                         <p>Vào Quản lý ván, mở một tấm ván rồi bật đăng lên sàn trao đổi.</p>
                     </div>
                 ) : (
-                    <div className="board-market-grid">
+                    <div className={`board-market-grid ${viewMode === 'thumb' ? 'thumb-mode' : 'list-mode'}`}>
                         {shown.map(item => (
                             <div key={item.doc.id} className="board-market-card" onClick={() => onOpenBoard(item.doc)}>
                                 <div className={`board-market-thumb ${item.thumbKind}`}>

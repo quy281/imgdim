@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeft, FileDown, PackageOpen, Plus, Search, Store } from 'lucide-react';
+import { ArrowLeft, FileDown, Grid2X2, List, PackageOpen, Plus, Search, Store } from 'lucide-react';
 import { boardArea, boardBounds, makeBoardThumb } from '../lib/boardModel';
 import { boardFileName, generateBoardDxf } from '../lib/boardDxf';
 import { downloadText } from '../lib/export';
 import { toast } from '../ui/Toast';
+import { canCutRect, fitWaste, parseSizeQuery, textMatchesBoard } from '../lib/boardSearch';
 
 const fmtArea = (v) => `${(Number(v || 0) / 1e6).toFixed(2)}m²`;
 const fmtPrice = (v) => Number(v || 0).toLocaleString('vi-VN') + 'đ';
@@ -29,6 +30,7 @@ function boardOf(doc, projectName) {
 export default function BoardInventoryScreen({ docs, projects, onBack, onCreateBoard, onOpenBoard, onOpenMarket }) {
     const [loc, setLoc] = useState('all');
     const [q, setQ] = useState('');
+    const [viewMode, setViewMode] = useState('list');
     const boards = useMemo(() => docs
         .filter(d => d.type === 'board')
         .map(d => boardOf(d, projects.find(p => p.id === d.projectId)?.name || 'Kho ván'))
@@ -39,10 +41,15 @@ export default function BoardInventoryScreen({ docs, projects, onBack, onCreateB
         const set = new Set(boards.map(b => b.location));
         return ['all', ...[...set].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true }))];
     }, [boards]);
-    const shown = boards.filter(item => {
-        const hay = `${item.title} ${item.board.material} ${item.board.color} ${item.location} ${item.projectName}`.toLowerCase();
-        return (loc === 'all' || item.location === loc) && (!q.trim() || hay.includes(q.trim().toLowerCase()));
-    });
+    const sizeQuery = parseSizeQuery(q);
+    const textQuery = sizeQuery ? q.replace(/(\d{2,5})\s*[xX×*]\s*(\d{2,5})/, '').trim() : q;
+    const shown = boards
+        .filter(item => (loc === 'all' || item.location === loc)
+            && textMatchesBoard(item, textQuery, item.projectName)
+            && canCutRect(item.bounds, sizeQuery))
+        .sort((a, b) => sizeQuery
+            ? fitWaste(a.area, sizeQuery) - fitWaste(b.area, sizeQuery)
+            : a.location.localeCompare(b.location, 'vi') || (b.doc.updatedAt || 0) - (a.doc.updatedAt || 0));
     const groups = useMemo(() => {
         const map = new Map();
         for (const item of shown) {
@@ -82,7 +89,20 @@ export default function BoardInventoryScreen({ docs, projects, onBack, onCreateB
 
                 <div className="market-search">
                     <Search size={17} />
-                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Tìm mã ván, màu, kho A1..." />
+                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Tìm mã, màu, kho A1 hoặc 300x400..." />
+                </div>
+                <div className="board-view-row">
+                    {sizeQuery ? (
+                        <span>Đang tìm tấm đủ cắt {sizeQuery.text}, xếp theo phần dư ít nhất.</span>
+                    ) : <span>{shown.length} / {boards.length} tấm ván</span>}
+                    <div className="segmented-mini">
+                        <button className={viewMode === 'thumb' ? 'on' : ''} onClick={() => setViewMode('thumb')} title="Thumbnail">
+                            <Grid2X2 size={15} />
+                        </button>
+                        <button className={viewMode === 'list' ? 'on' : ''} onClick={() => setViewMode('list')} title="List">
+                            <List size={15} />
+                        </button>
+                    </div>
                 </div>
 
                 <div className="chip-row exp-chip-row">
@@ -105,7 +125,7 @@ export default function BoardInventoryScreen({ docs, projects, onBack, onCreateB
                             <b>Kho {location}</b>
                             <span>{items.length} tấm · {fmtArea(items.reduce((s, x) => s + x.area, 0))}</span>
                         </div>
-                        <div className="board-market-grid">
+                        <div className={`board-market-grid ${viewMode === 'thumb' ? 'thumb-mode' : 'list-mode'}`}>
                             {items.map(item => (
                                 <div key={item.doc.id} className="board-market-card" onClick={() => onOpenBoard(item.doc)}>
                                     <div className={`board-market-thumb ${item.thumbKind}`}>
