@@ -18,6 +18,7 @@ import {
 } from '../lib/boardModel';
 import { boardFileName, generateBoardDxf } from '../lib/boardDxf';
 import { downloadText } from '../lib/export';
+import { fileToPhoto } from '../lib/image';
 
 const segmentMid = (pts, i) => {
     const a = pts[i];
@@ -118,10 +119,11 @@ export default function BoardEditor({ doc, onChange, onBack }) {
     const [showInfo, setShowInfo] = useState(false);
     const [showExport, setShowExport] = useState(false);
     const [showMarket, setShowMarket] = useState(false);
-    const [marketDraft, setMarketDraft] = useState({ code: '', title: '', price: '', desc: '', status: 'available' });
+    const [marketDraft, setMarketDraft] = useState({ code: '', title: '', price: '', desc: '', status: 'available', photoThumb: '' });
     const [draft, setDraft] = useState([]);
     const stageRef = useRef(null);
     const wrapRef = useRef(null);
+    const marketPhotoRef = useRef(null);
 
     const board = doc.board || { outline: rectOutline() };
     const pts = board.outline || [];
@@ -256,8 +258,23 @@ export default function BoardEditor({ doc, onChange, onBack }) {
             price: cur.market?.price ? String(cur.market.price) : '',
             desc: cur.market?.desc || `Ván tồn kho ${cur.location || ''}, diện tích ${(boardArea(cur) / 1e6).toFixed(3)} m², có file DXF theo biên thực tế.`,
             status: cur.market?.status || 'available',
+            photoThumb: cur.market?.photoThumb || '',
         });
         setShowMarket(true);
+    };
+
+    const pickMarketPhoto = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        try {
+            const photo = await fileToPhoto(file);
+            setMarketDraft(d => ({ ...d, photoThumb: photo.thumb }));
+            toast('Đã thêm ảnh chụp tấm ván', 'ok');
+        } catch (err) {
+            console.warn('market photo:', err);
+            toast('Không đọc được ảnh ván', 'err');
+        }
     };
 
     const publishMarket = () => {
@@ -278,6 +295,7 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                 listedAt: Date.now(),
                 dxfFile: boardFileName(listedBoard),
                 thumb: makeBoardThumb(listedBoard),
+                photoThumb: marketDraft.photoThumb || '',
                 area: boardArea(listedBoard),
                 bounds: boardBounds(listedBoard),
             },
@@ -623,13 +641,32 @@ export default function BoardEditor({ doc, onChange, onBack }) {
                         <option value="sold">Đã bán</option>
                     </select>
                 </div>
+                <input
+                    ref={marketPhotoRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={{ display: 'none' }}
+                    onChange={pickMarketPhoto}
+                />
+                <button className="sheet-row" onClick={() => marketPhotoRef.current?.click()}>
+                    {marketDraft.photoThumb ? (
+                        <img className="market-photo-mini" src={marketDraft.photoThumb} alt="Ảnh ván" />
+                    ) : (
+                        <PackageOpen size={19} style={{ color: 'var(--ok)' }} />
+                    )}
+                    <div style={{ flex: 1 }}>
+                        Ảnh chụp tấm ván
+                        <div className="sub">{marketDraft.photoThumb ? 'Sàn bán sẽ ưu tiên ảnh này làm thumbnail' : 'Nên chụp ảnh thật của tấm ván trước khi đăng bán'}</div>
+                    </div>
+                </button>
                 <div className="field">
                     <label>Mô tả</label>
                     <input value={marketDraft.desc} onChange={e => setMarketDraft(d => ({ ...d, desc: e.target.value }))} />
                 </div>
                 <div className="market-preview">
                     <div className="market-preview-title">Gói đăng bán sẽ gồm</div>
-                    <div>Thumbnail ván: {makeBoardThumb(board) ? 'có' : 'chưa có'}</div>
+                    <div>Thumbnail: {marketDraft.photoThumb ? 'ảnh chụp tấm ván' : makeBoardThumb(board) ? 'hình biên vẽ' : 'chưa có'}</div>
                     <div>File vẽ: {boardFileName({ ...board, code: marketDraft.code || board.code })}</div>
                     <div>Diện tích: {(boardArea(board) / 1e6).toFixed(3)} m²</div>
                 </div>

@@ -28,7 +28,8 @@ function boardOf(doc) {
         status: market.status || 'available',
         title: market.title || board.code || doc.name,
         code: market.code || board.code || doc.name,
-        thumb: market.thumb || doc.thumb || makeBoardThumb(board),
+        thumb: market.photoThumb || board.photoThumb || market.thumb || doc.thumb || makeBoardThumb(board),
+        thumbKind: market.photoThumb || board.photoThumb ? 'photo' : 'drawing',
     };
 }
 
@@ -114,7 +115,7 @@ export default function BoardMarketScreen({ docs, projects, onBack, onOpenBoard 
                     <div className="board-market-grid">
                         {shown.map(item => (
                             <div key={item.doc.id} className="board-market-card" onClick={() => onOpenBoard(item.doc)}>
-                                <div className="board-market-thumb">
+                                <div className={`board-market-thumb ${item.thumbKind}`}>
                                     {item.thumb
                                         ? <img src={item.thumb} alt={item.title} />
                                         : <Box size={34} />}

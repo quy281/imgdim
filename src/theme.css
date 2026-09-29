@@ -385,8 +385,8 @@ input, textarea {
 }
 .board-market-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 13px;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
+    gap: 10px;
 }
 .board-market-card {
     overflow: hidden;
@@ -396,14 +396,20 @@ input, textarea {
     box-shadow: var(--shadow);
     text-align: left;
     cursor: pointer;
+    display: grid;
+    grid-template-columns: 94px minmax(0, 1fr);
+    min-height: 118px;
 }
 .board-market-thumb {
     position: relative;
-    aspect-ratio: 4 / 3;
+    width: 94px;
+    height: 100%;
+    min-height: 118px;
     background: #f8fafc;
     display: grid;
     place-items: center;
     color: var(--muted);
+    border-right: 1px solid var(--line);
 }
 .board-market-thumb img {
     width: 100%;
@@ -411,21 +417,22 @@ input, textarea {
     object-fit: contain;
     display: block;
 }
+.board-market-thumb.photo img { object-fit: cover; }
 .board-market-status {
     position: absolute;
-    left: 8px;
-    top: 8px;
-    padding: 4px 8px;
+    left: 6px;
+    top: 6px;
+    padding: 3px 7px;
     border-radius: 999px;
     color: #fff;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 850;
     background: var(--ok);
     box-shadow: 0 1px 5px rgba(0, 0, 0, .15);
 }
 .board-market-status.reserved { background: var(--warn); }
 .board-market-status.sold { background: var(--ink-2); }
-.board-market-body { padding: 11px; }
+.board-market-body { padding: 10px 11px; min-width: 0; }
 .board-market-title {
     font-size: 14px;
     font-weight: 850;
@@ -462,13 +469,21 @@ input, textarea {
     justify-content: space-between;
     gap: 10px;
     margin-top: 10px;
-    padding-top: 10px;
+    padding-top: 8px;
     border-top: 1px solid var(--line);
 }
 .board-market-footer b {
     color: var(--red-dark);
     font-size: 15px;
     white-space: nowrap;
+}
+.market-photo-mini {
+    width: 42px;
+    height: 42px;
+    border-radius: var(--r-sm);
+    object-fit: cover;
+    border: 1px solid var(--line);
+    flex-shrink: 0;
 }
 
 /* Chips */
