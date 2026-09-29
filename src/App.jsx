@@ -4,6 +4,7 @@ import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
 import BoardEditor from './screens/BoardEditor';
+import BoardMarketScreen from './screens/BoardMarketScreen';
 import ExperienceScreen from './screens/ExperienceScreen';
 import CustomerLoginScreen from './screens/CustomerLoginScreen';
 import CustomerHomeScreen from './screens/CustomerHomeScreen';
@@ -50,6 +51,8 @@ export default function App() {
     const [showTeamAdmin, setShowTeamAdmin] = useState(false);
     const [showCustomerInbox, setShowCustomerInbox] = useState(false);
     const [customerInboxCount, setCustomerInboxCount] = useState(0);
+    const [boardMarketCount, setBoardMarketCount] = useState(0);
+    const [boardMarketDocs, setBoardMarketDocs] = useState([]);
     const [submittingId, setSubmittingId] = useState(null);
     const [shareFor, setShareFor] = useState(null); // project object
     const [account, setAccount] = useState(() => pb.me());
@@ -79,6 +82,13 @@ export default function App() {
         } catch (err) { console.warn('customer inbox:', err.message); }
     };
 
+    const refreshBoardMarketCount = async () => {
+        try {
+            const all = await db.listAllDocs();
+            setBoardMarketCount(all.filter(d => d.type === 'board' && d.board?.market?.listed).length);
+        } catch (err) { console.warn('board market count:', err.message); }
+    };
+
     // ===== Boot =====
     useEffect(() => {
         if (share) return; // chế độ xem link chia sẻ: không chạm dữ liệu local
@@ -90,6 +100,7 @@ export default function App() {
                     adoptAnon: !customerPortal && !pb.isCustomer(),
                 });
                 setProjects(await db.loadProjects());
+                refreshBoardMarketCount();
                 storeReady.current = true;
                 if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
                 if (!pb.isLoggedIn()) return;
@@ -281,6 +292,19 @@ export default function App() {
         });
     };
 
+    const openBoardMarket = async () => {
+        const all = await db.listAllDocs();
+        const boardDocs = all.filter(d => d.type === 'board');
+        setBoardMarketDocs(boardDocs);
+        setBoardMarketCount(boardDocs.filter(d => d.board?.market?.listed).length);
+        navigate({ screen: 'board-market' });
+    };
+
+    const openMarketBoard = async (doc) => {
+        setDocs(await db.listDocs(doc.projectId));
+        navigate({ screen: 'board', projectId: doc.projectId, docId: doc.id });
+    };
+
     // ===== Lưu doc =====
     const updateDoc = useCallback((doc) => {
         setDocs(prev => prev.map(d => d.id === doc.id ? doc : d));
@@ -301,6 +325,7 @@ export default function App() {
                 // await, login có thể chuyển store trong lúc save còn treo và lỗi ghi bị
                 // nuốt, khiến UI có dữ liệu nhưng lần mở sau không còn.
                 await db.putDoc(toSave);
+                if (toSave.type === 'board') refreshBoardMarketCount();
                 setDocs(prev => prev.map(d => d.id === toSave.id ? toSave : d));
                 markDirty('doc', toSave);
                 if (syncBusyRef.current) syncAgain.current = true;
@@ -327,6 +352,7 @@ export default function App() {
         const count = docsRef.current.filter(d => d.type === 'board').length + 1;
         const doc = { ...newBoardDoc(projectId, `Ván tồn ${count}`), createdAt: pb.now(), updatedAt: pb.now() };
         await db.putDoc(doc);
+        refreshBoardMarketCount();
         setDocs(prev => [...prev, doc]);
         markDirty('doc', doc);
         navigate({ screen: 'board', projectId, docId: doc.id });
@@ -367,6 +393,7 @@ export default function App() {
     const deleteDoc = async (id) => {
         setDocs(prev => prev.filter(d => d.id !== id));
         await db.deleteDoc(id);
+        refreshBoardMarketCount();
         await db.addTombstone(String(id), 'doc', pb.now());
         toast('Đã xóa', 'ok');
         if (pb.isLoggedIn() && !pb.isCustomer()) syncAll(true);
@@ -501,6 +528,7 @@ export default function App() {
                 await db.putDoc(d);
             }
             for (const id of delDocSet) await db.deleteDoc(id);
+            if (res.pulledDocs.some(d => d.type === 'board') || delDocSet.size) refreshBoardMarketCount();
 
             if (res.clearedTombstones.length) await db.removeTombstones(res.clearedTombstones);
             if (res.scopeSynced.length) {
@@ -609,6 +637,7 @@ export default function App() {
             storeReady.current = true;
             setAccount(user);
             setProjects(await db.loadProjects());
+            refreshBoardMarketCount();
             const r = routeRef.current;
             setDocs(r.projectId ? await db.listDocs(r.projectId) : []);
             if (sw.adopted) toast(`Đã khôi phục và gắn ${sw.adopted} mục trên máy vào tài khoản`, 'ok');
@@ -684,6 +713,15 @@ export default function App() {
                 : <PhotoEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />;
     } else if (route.screen === 'experience') {
         screen = <ExperienceScreen onBack={goBack} />;
+    } else if (route.screen === 'board-market') {
+        screen = (
+            <BoardMarketScreen
+                docs={boardMarketDocs}
+                projects={projects}
+                onBack={goBack}
+                onOpenBoard={openMarketBoard}
+            />
+        );
     } else if (route.screen !== 'projects' && currentProject) {
         screen = (
             <ProjectScreen
@@ -732,6 +770,8 @@ export default function App() {
                 onOpenTeamAdmin={() => setShowTeamAdmin(true)}
                 onOpenCustomerInbox={() => setShowCustomerInbox(true)}
                 onOpenExperience={() => navigate({ screen: 'experience' })}
+                onOpenBoardMarket={openBoardMarket}
+                boardMarketCount={boardMarketCount}
                 customerInboxCount={customerInboxCount}
                 onLogin={login}
                 onLogout={logout}

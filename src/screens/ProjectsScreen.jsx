@@ -3,7 +3,7 @@ import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
     Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
-    UserPlus,
+    UserPlus, Store,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -26,7 +26,7 @@ export default function ProjectsScreen({
     projects, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
-    onLogin, onLogout, onOpenExperience,
+    onLogin, onLogout, onOpenExperience, onOpenBoardMarket, boardMarketCount = 0,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
@@ -143,6 +143,11 @@ export default function ProjectsScreen({
                         onOK: onCreate,
                     })}>
                     <Plus size={20} /> Dự án khảo sát mới
+                </button>
+
+                <button className="market-entry-btn" onClick={onOpenBoardMarket}>
+                    <span><Store size={19} /> Sàn bán ván</span>
+                    <b>{boardMarketCount} tấm</b>
                 </button>
 
                 {projects.length === 0 ? (

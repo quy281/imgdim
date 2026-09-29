@@ -290,6 +290,187 @@ input, textarea {
     text-overflow: ellipsis;
 }
 
+.market-entry-btn {
+    width: 100%;
+    min-height: 48px;
+    margin: -4px 0 16px;
+    padding: 0 14px;
+    border-radius: var(--r-md);
+    background: var(--ok-soft);
+    border: 1.5px solid rgba(5, 150, 105, .22);
+    color: var(--ok);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-weight: 850;
+}
+.market-entry-btn span {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.market-entry-btn b {
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 5px 9px;
+    font-size: 12px;
+}
+
+.market-hero {
+    display: grid;
+    grid-template-columns: auto repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+    margin-bottom: 12px;
+}
+.market-hero-icon,
+.market-stat {
+    min-height: 68px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+}
+.market-hero-icon {
+    width: 68px;
+    display: grid;
+    place-items: center;
+    color: var(--ok);
+    background: var(--ok-soft);
+}
+.market-stat {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px;
+    min-width: 0;
+}
+.market-stat b {
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.market-stat span {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 750;
+}
+.market-search {
+    height: 46px;
+    margin-bottom: 12px;
+    padding: 0 12px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--muted);
+}
+.market-search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--ink);
+    font-size: 15px;
+}
+.board-market-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 13px;
+}
+.board-market-card {
+    overflow: hidden;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    text-align: left;
+    cursor: pointer;
+}
+.board-market-thumb {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background: #f8fafc;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+}
+.board-market-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+.board-market-status {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 850;
+    background: var(--ok);
+    box-shadow: 0 1px 5px rgba(0, 0, 0, .15);
+}
+.board-market-status.reserved { background: var(--warn); }
+.board-market-status.sold { background: var(--ink-2); }
+.board-market-body { padding: 11px; }
+.board-market-title {
+    font-size: 14px;
+    font-weight: 850;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.board-market-code {
+    margin-top: 2px;
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 850;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.board-market-meta,
+.board-market-project {
+    margin-top: 5px;
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 650;
+}
+.board-market-project {
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.board-market-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+}
+.board-market-footer b {
+    color: var(--red-dark);
+    font-size: 15px;
+    white-space: nowrap;
+}
+
 /* Chips */
 .chip-row { display: flex; gap: 8px; margin-bottom: 13px; }
 
