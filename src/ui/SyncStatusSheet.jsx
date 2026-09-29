@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     CheckCircle2, Clock, AlertCircle, Download, RefreshCw, CloudOff, User, Users, Lock,
+    Trash2,
 } from 'lucide-react';
 import Sheet from './Sheet';
 import * as db from '../lib/db';
@@ -21,6 +22,8 @@ const STATUS_LABEL = {
 
 export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam }) {
     const [loading, setLoading] = useState(false);
+    const [purging, setPurging] = useState(false);
+    const [purgeMsg, setPurgeMsg] = useState('');
     const [status, setStatus] = useState(null);
 
     useEffect(() => {
@@ -85,10 +88,10 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
             const remoteOnly = remote.items
                 .filter(r => r.kind === 'project' && !r.deleted && !localIds.has(r.item_id))
                 .map(r => ({
-                    id: r.item_id, name: r.name, status: 'to_pull', scope: r.scope,
+                    id: r.item_id, kind: 'project', name: r.name, status: 'to_pull', scope: r.scope,
                     mine: r.owner === uid, ownerName: r.ownerName,
                     localDocs: 0, remoteDocs: remote.items.filter(x => x.kind === 'doc' && x.project_id === r.item_id).length,
-                    docsPending: 0,
+                    docsPending: 0, cloudOnly: true,
                 }));
             const orphanDocsByProject = new Map();
             for (const r of remote.items) {
@@ -101,6 +104,7 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
             }
             const orphanRows = [...orphanDocsByProject].map(([pid, docs]) => ({
                 id: pid,
+                kind: 'project',
                 name: `Dự án khôi phục ${pid}`,
                 status: 'to_pull',
                 scope: docs[0]?.scope || pb.SCOPE_DEFAULT,
@@ -110,6 +114,7 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                 remoteDocs: docs.length,
                 docsPending: 0,
                 orphanDocs: true,
+                cloudOnly: true,
             }));
 
             setStatus({
@@ -140,7 +145,26 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
         }
     };
 
+    const purgeCloudRows = async (rows) => {
+        const targets = (rows || []).filter(r => r.cloudOnly).map(r => ({ itemId: r.id, kind: r.kind || 'project' }));
+        if (!targets.length) return;
+        const ok = window.confirm(`Xoá triệt để ${targets.length} mục chỉ còn trên cloud? Thao tác này sẽ xoá cả file con của dự án và ghi dấu xoá để máy khác không kéo lại.`);
+        if (!ok) return;
+        setPurging(true);
+        setPurgeMsg('Đang xoá cloud...');
+        try {
+            const res = await pb.purgeRemoteItems(targets, setPurgeMsg);
+            setPurgeMsg(`Đã xoá ${res.deleted} bản ghi cloud`);
+            await loadStatus();
+        } catch (err) {
+            setPurgeMsg('Không xoá được: ' + err.message);
+        } finally {
+            setPurging(false);
+        }
+    };
+
     const notOk = status?.rows?.filter(r => r.status !== 'synced').length || 0;
+    const cloudOnlyRows = status?.rows?.filter(r => r.cloudOnly) || [];
     const titleSuffix = loading ? '' : status?.error ? ' ⚠' : notOk > 0 ? ` (${notOk} lệch)` : ' ✓';
 
     return (
@@ -245,6 +269,12 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                                         : row.status === 'synced' && row.localDocs > 0 ? ` · ${row.localDocs} file` : ''}
                                 </div>
                             </div>
+                            {row.cloudOnly && (
+                                <button className="icon-btn" disabled={purging} onClick={() => purgeCloudRows([row])}
+                                    title="Xoá triệt để khỏi cloud" style={{ color: '#dc2626', width: 34, height: 34, minWidth: 34 }}>
+                                    <Trash2 size={16} />
+                                </button>
+                            )}
                         </div>
                     ))}
 
@@ -253,6 +283,16 @@ export default function SyncStatusSheet({ open, onClose, onSync, onRepairTeam })
                             <div style={{ fontSize: 13, color: 'var(--warn)', display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <Clock size={13} /> {status.pendingCount} mục đang chờ đẩy lên
                             </div>
+                        )}
+                        {purgeMsg && (
+                            <div style={{ fontSize: 13, color: purging ? 'var(--warn)' : 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {purging && <RefreshCw size={13} className="spin" />} {purgeMsg}
+                            </div>
+                        )}
+                        {cloudOnlyRows.length > 0 && (
+                            <button className="btn btn-danger btn-block" disabled={purging} onClick={() => purgeCloudRows(cloudOnlyRows)}>
+                                <Trash2 size={15} /> Xoá triệt để mục chỉ còn trên cloud
+                            </button>
                         )}
                         <button className="btn btn-primary btn-block" onClick={() => onSync?.({ recoverRemote: true })}>
                             <RefreshCw size={15} /> Kéo cloud về máy này

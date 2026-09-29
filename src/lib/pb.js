@@ -631,6 +631,69 @@ async function putDeletion(itemId, kind, at, by) {
     }
 }
 
+async function recordsForItemIds(itemIds) {
+    const ids = [...new Set((itemIds || []).map(String).filter(Boolean))];
+    if (!ids.length) return [];
+    const out = [];
+    for (let i = 0; i < ids.length; i += 20) {
+        const filters = ids.slice(i, i + 20).map(id => `item_id='${esc(id)}'`).join(' || ');
+        for (let page = 1; ; page++) {
+            const res = await api(`collections/${COL}/records?page=${page}&perPage=500&${q(filters)}&fields=id,item_id,kind,project_id,owner,updated_ms`);
+            out.push(...(res.items || []));
+            if (page >= (res.totalPages || 1)) break;
+        }
+    }
+    return out;
+}
+
+async function recordsForProjects(projectIds) {
+    const ids = [...new Set((projectIds || []).map(String).filter(Boolean))];
+    if (!ids.length) return [];
+    const out = [];
+    for (let i = 0; i < ids.length; i += 20) {
+        const filters = ids.slice(i, i + 20).map(id => `project_id='${esc(id)}'`).join(' || ');
+        for (let page = 1; ; page++) {
+            const res = await api(`collections/${COL}/records?page=${page}&perPage=500&${q(filters)}&fields=id,item_id,kind,project_id,owner,updated_ms`);
+            out.push(...(res.items || []));
+            if (page >= (res.totalPages || 1)) break;
+        }
+    }
+    return out;
+}
+
+export async function purgeRemoteItems(items, onProgress) {
+    if (!isLoggedIn()) throw new PbError('Chưa đăng nhập', 401);
+    if (navigator.onLine === false) throw new PbError('Không có mạng', 0);
+    if (!(await ensureSession())) throw new PbError('Phiên đăng nhập hết hạn — vui lòng đăng nhập lại', 401);
+    if (isCustomer()) throw new PbError('Tài khoản khách không có quyền xoá dữ liệu nội bộ', 403);
+
+    const requested = (items || []).map(x => ({
+        itemId: String(x.itemId || x.item_id || x.id || '').trim(),
+        kind: x.kind || 'project',
+    })).filter(x => x.itemId);
+    if (!requested.length) return { deleted: 0 };
+
+    const projectIds = requested.filter(x => x.kind === 'project').map(x => x.itemId);
+    const directIds = requested.map(x => x.itemId);
+    const [direct, children] = await Promise.all([
+        recordsForItemIds(directIds),
+        recordsForProjects(projectIds),
+    ]);
+    const byRecord = new Map();
+    for (const r of [...direct, ...children]) byRecord.set(r.id, r);
+    const records = [...byRecord.values()];
+    const nowMs = now();
+    let deleted = 0;
+    let done = 0;
+    await mapLimit(records, SYNC_LIMIT, async (rec) => {
+        onProgress?.(`Đang xoá cloud ${++done}/${records.length}...`);
+        await putDeletion(rec.item_id, rec.kind || 'doc', Math.max(nowMs, Number(rec.updated_ms) || 0), ownerName());
+        await api(`collections/${COL}/records/${rec.id}`, { method: 'DELETE' });
+        deleted++;
+    });
+    return { deleted };
+}
+
 /**
  * Chạy song song có giới hạn.
  *
@@ -847,7 +910,6 @@ export async function fullSync(local, onProgress) {
         }
         if (readOnly) return; // Giữ lệnh xoá chờ, không gửi lên backend cũ.
         if (!rec && already) { clearedTombstones.push(t.item_id); return; }  // xong từ trước
-        if (rec && (rec.updated_ms || 0) > t.deletedAt) { clearedTombstones.push(t.item_id); return; } // cloud mới hơn → thắng
         p(`Đang xoá trên cloud ${++delDone}/${local.tombstones.length}...`);
         try {
             if (!already) {
