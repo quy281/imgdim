@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Image as KonvaImage, Arrow, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, Ruler, MessageSquareText,
-    Trash2, X, Pencil, Image as ImageIcon,
+    Trash2, X, Pencil, Image as ImageIcon, MapPin,
 } from 'lucide-react';
 import DimLine from '../photo/DimLine';
 import NoteMarker from '../photo/NoteMarker';
@@ -12,6 +12,7 @@ import TextSheet from '../ui/TextSheet';
 import { toast } from '../ui/Toast';
 import { genId } from '../lib/geometry';
 import { stageToDataURL, downloadDataURL, shareDataURL, stamp } from '../lib/export';
+import { formatLocation, getCurrentLocation, hasLocation, openLocationMap } from '../lib/location';
 
 const MODES = [
     { id: 'measure', icon: Ruler, label: 'Đo' },
@@ -271,6 +272,21 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
         onBack();
     };
 
+    const handleLocation = async () => {
+        const d = docRef.current;
+        if (hasLocation(d)) {
+            openLocationMap(d.location);
+            return;
+        }
+        const location = await getCurrentLocation();
+        if (!location) {
+            toast('Chưa lấy được vị trí. Kiểm tra quyền Location của trình duyệt.', 'err');
+            return;
+        }
+        onChange({ ...d, location, updatedAt: Date.now() });
+        toast('Đã lưu vị trí cho ảnh', 'ok');
+    };
+
     const selLine = sel?.kind === 'line' ? (doc.lines || []).find(l => l.id === sel.id) : null;
     const selNote = sel?.kind === 'note' ? (doc.notes || []).find(n => n.id === sel.id) : null;
 
@@ -284,7 +300,12 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
         <div className="screen">
             <div className="hdr">
                 <button className="icon-btn" onClick={handleBack}><ArrowLeft size={22} /></button>
-                <div className="hdr-title">{doc.name}</div>
+                <button className="editor-title-location" onClick={handleLocation}>
+                    <div className="hdr-title">{doc.name}</div>
+                    <div className={`hdr-sub doc-location ${hasLocation(doc) ? 'on' : ''}`}>
+                        <MapPin size={12} /> {hasLocation(doc) ? formatLocation(doc.location) : 'Lấy vị trí'}
+                    </div>
+                </button>
                 <button className="icon-btn" style={{ opacity: canUndo ? 1 : .3 }} onClick={undo}><Undo2 size={20} /></button>
                 <button className="icon-btn" style={{ opacity: canRedo ? 1 : .3 }} onClick={redo}><Redo2 size={20} /></button>
                 <button className="icon-btn" style={{ color: 'var(--red-dark)' }} onClick={() => setShowExport(true)}><Share2 size={20} /></button>

@@ -21,6 +21,7 @@ import * as pb from './lib/pb';
 import { newProject, newPlanDoc, newPhotoDoc, newBoardDoc } from './lib/planModel';
 import { fileToPhoto, makePlanThumb } from './lib/image';
 import { genId } from './lib/geometry';
+import { getCurrentLocation } from './lib/location';
 
 /** Đọc tham số share từ URL: ?s=<code> (mới) hoặc ?view=<base64> (link cũ đã gửi ra). */
 function readShareParam() {
@@ -425,7 +426,13 @@ export default function App() {
     const createPlanDoc = async () => {
         const projectId = routeRef.current.projectId;
         const count = docsRef.current.filter(d => d.type === 'plan').length + 1;
-        const doc = { ...newPlanDoc(projectId, `Mặt bằng ${count}`), createdAt: pb.now(), updatedAt: pb.now() };
+        const location = await getCurrentLocation();
+        const doc = {
+            ...newPlanDoc(projectId, `Mặt bằng ${count}`),
+            ...(location ? { location } : null),
+            createdAt: pb.now(),
+            updatedAt: pb.now(),
+        };
         await db.putDoc(doc);
         refreshProjectStats();
         setDocs(prev => [...prev, doc]);
@@ -448,11 +455,17 @@ export default function App() {
         const projectId = routeRef.current.projectId;
         let count = docsRef.current.filter(d => d.type === 'photo').length;
         const created = [];
+        const location = await getCurrentLocation();
         for (const f of files) {
             try {
                 const photo = await fileToPhoto(f);
                 count++;
-                const doc = { ...newPhotoDoc(projectId, `Ảnh ${count}`, photo), createdAt: pb.now(), updatedAt: pb.now() };
+                const doc = {
+                    ...newPhotoDoc(projectId, `Ảnh ${count}`, photo),
+                    ...(location ? { location } : null),
+                    createdAt: pb.now(),
+                    updatedAt: pb.now(),
+                };
                 await db.putDoc(doc);
                 created.push(doc);
                 markDirty('doc', doc);

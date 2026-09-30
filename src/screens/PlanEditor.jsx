@@ -4,6 +4,7 @@ import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
     ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
+    MapPin,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -35,6 +36,7 @@ import {
 import { loadTemplates, saveTemplateFromRoom, deleteTemplate } from '../lib/roomTemplates';
 import { generateDxf } from '../lib/dxf';
 import { stageToDataURL, downloadDataURL, downloadText, shareDataURL, stamp } from '../lib/export';
+import { formatLocation, getCurrentLocation, hasLocation, openLocationMap } from '../lib/location';
 
 const MODES = [
     { id: 'draw', icon: BrickWall, label: 'Tường' },
@@ -760,6 +762,21 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         onBack();
     };
 
+    const handleLocation = async () => {
+        const d = docRef.current;
+        if (hasLocation(d)) {
+            openLocationMap(d.location);
+            return;
+        }
+        const location = await getCurrentLocation();
+        if (!location) {
+            toast('Chưa lấy được vị trí. Kiểm tra quyền Location của trình duyệt.', 'err');
+            return;
+        }
+        onChange({ ...d, location, updatedAt: Date.now() });
+        toast('Đã lưu vị trí cho bản vẽ', 'ok');
+    };
+
     // ===== Derived =====
     const settings = doc.settings || {};
     const listening = mode === 'select' || mode === 'editKT' || mode === 'door' || mode === 'window';
@@ -792,7 +809,12 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             {/* Top bar */}
             <div className="hdr">
                 <button className="icon-btn" onClick={handleBack}><ArrowLeft size={22} /></button>
-                <div className="hdr-title">{doc.name}</div>
+                <button className="editor-title-location" onClick={handleLocation}>
+                    <div className="hdr-title">{doc.name}</div>
+                    <div className={`hdr-sub doc-location ${hasLocation(doc) ? 'on' : ''}`}>
+                        <MapPin size={12} /> {hasLocation(doc) ? formatLocation(doc.location) : 'Lấy vị trí'}
+                    </div>
+                </button>
                 <button className="icon-btn" style={{ opacity: canUndo ? 1 : .3 }} onClick={undo}><Undo2 size={20} /></button>
                 <button className="icon-btn" style={{ opacity: canRedo ? 1 : .3 }} onClick={redo}><Redo2 size={20} /></button>
                 <button className="icon-btn" onClick={() => setShowSettings(true)}><Settings2 size={20} /></button>
