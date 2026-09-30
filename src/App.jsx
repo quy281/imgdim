@@ -7,6 +7,7 @@ import BoardEditor from './screens/BoardEditor';
 import BoardInventoryScreen from './screens/BoardInventoryScreen';
 import BoardMarketScreen from './screens/BoardMarketScreen';
 import ExperienceScreen from './screens/ExperienceScreen';
+import LoginScreen from './screens/LoginScreen';
 import CustomerLoginScreen from './screens/CustomerLoginScreen';
 import CustomerHomeScreen from './screens/CustomerHomeScreen';
 import SyncStatusSheet from './ui/SyncStatusSheet';
@@ -77,6 +78,15 @@ export default function App() {
     const nextBackgroundSync = useRef(0);
     const syncFailures = useRef(0);
 
+    const clearProtectedState = () => {
+        setProjects([]);
+        setDocs([]);
+        setBoardMarketDocs([]);
+        setBoardMarketCount(0);
+        setCustomerInboxCount(0);
+        storeReady.current = false;
+    };
+
     const refreshCustomerInboxCount = async () => {
         if (!pb.isLoggedIn() || pb.isCustomer()) { setCustomerInboxCount(0); return; }
         try {
@@ -97,46 +107,46 @@ export default function App() {
         if (share) return; // chế độ xem link chia sẻ: không chạm dữ liệu local
         (async () => {
             try {
-                // Mở store đúng tài khoản TRƯỚC khi đọc bất cứ gì (xem db.js — lớp user).
-                // setAccount tự cứu kho anon còn sót từ những lần login lỗi của bản cũ.
-                const sw = await db.setAccount(pb.myId() || db.lastStoreId(), {
-                    adoptAnon: !customerPortal && !pb.isCustomer(),
-                });
-                setProjects(await db.loadProjects());
-                refreshBoardMarketCount();
-                storeReady.current = true;
-                if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
-                if (!pb.isLoggedIn()) return;
+                if (!pb.isLoggedIn()) {
+                    setAccount(null);
+                    clearProtectedState();
+                    return;
+                }
                 // Xác thực token thật với server trước khi tin là đang đăng nhập — xem
                 // pb.ensureSession(): PocketBase trả 200 rỗng cho token hết hạn, nên nếu chỉ
                 // tin localStorage thì app báo "đã sync" trong khi thực tế là khách.
                 // Phân biệt "đủ 30 ngày" với "token bị thu hồi" — ensureSession đã xoá auth
                 // nên phải đọc cờ TRƯỚC, không thì chỉ báo được thông điệp chung chung.
                 const expired = pb.sessionExpired();
-                if (await pb.ensureSession(true)) {
-                    if (pb.isCustomer()) await pb.refreshCustomerProfile().catch(() => {});
-                    else if (!customerPortal) {
-                        syncAll(true);
-                        refreshCustomerInboxCount();
-                    }
-                }
-                else {
+                if (!(await pb.ensureSession(true))) {
                     setAccount(null);
+                    clearProtectedState();
                     toast(expired
                         ? `Phiên đã dùng đủ ${pb.SESSION_DAYS} ngày — đăng nhập lại bằng PIN`
                         : 'Phiên đăng nhập hết hạn — đăng nhập lại để đồng bộ', 'err');
+                    return;
+                }
+                if (pb.isCustomer()) await pb.refreshCustomerProfile().catch(() => {});
+                setAccount(pb.me());
+                // Mở store đúng tài khoản TRƯỚC khi đọc bất cứ gì (xem db.js — lớp user).
+                // setAccount tự cứu kho anon còn sót từ những lần login lỗi của bản cũ.
+                const sw = await db.setAccount(pb.myId(), {
+                    adoptAnon: !customerPortal && !pb.isCustomer(),
+                });
+                setProjects(await db.loadProjects());
+                refreshBoardMarketCount();
+                storeReady.current = true;
+                if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
+                if (!pb.isCustomer() && !customerPortal) {
+                    syncAll(true);
+                    refreshCustomerInboxCount();
                 }
             } catch (err) {
-                // Fail closed: không sync một kho đang chuyển dở. Dữ liệu anon chưa bị xóa
-                // vì db.js chỉ cleanup sau verify; mở lại kho đó để người dùng vẫn thấy data.
+                // Fail closed: không đọc dữ liệu khi phiên không chắc chắn hợp lệ. Kho cũ
+                // vẫn còn trong IndexedDB và sẽ được mở lại sau khi đăng nhập thành công.
                 pb.logout();
                 setAccount(null);
-                try {
-                    await db.setAccount(null);
-                    setProjects(await db.loadProjects());
-                } catch {
-                    setProjects([]);
-                }
+                clearProtectedState();
                 toast('Chưa gắn được dữ liệu vào tài khoản — bản trên máy vẫn được giữ nguyên. Hãy đăng nhập lại.', 'err');
                 console.warn('boot data recovery:', err);
             }
@@ -702,10 +712,12 @@ export default function App() {
         pb.logout();
         setAccount(null);
         setSyncError(null);
-        setCustomerInboxCount(0);
-        // Giữ nguyên store đang mở — dữ liệu vẫn thấy được trên máy. Chỉ khi một tài
-        // khoản KHÁC đăng nhập thì db.setAccount mới đổi sang store riêng của họ.
-        toast('Đã đăng xuất — dữ liệu vẫn lưu trên máy');
+        setLastSyncAt(null);
+        setSyncMsg(null);
+        clearProtectedState();
+        setRoute({ screen: 'projects' });
+        history.replaceState({ screen: 'projects' }, '');
+        toast('Đã đăng xuất');
     };
 
     // ===== Render =====
@@ -726,6 +738,15 @@ export default function App() {
                     onLogout={logout}
                     onLogin={(identity, pin) => login(identity, pin, { customerOnly: true })}
                 />
+                <ToastHost />
+            </div>
+        );
+    }
+
+    if (!pb.isLoggedIn()) {
+        return (
+            <div className="app">
+                <LoginScreen onLogin={(identity, secret) => login(identity, secret)} />
                 <ToastHost />
             </div>
         );
