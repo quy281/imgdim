@@ -3,7 +3,7 @@ import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
     Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
-    UserPlus, Store, PackageOpen,
+    UserPlus, Store, PackageOpen, Grid2X2, List, Images, PencilRuler,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -23,7 +23,7 @@ const fmtSince = (ts) => {
 };
 
 export default function ProjectsScreen({
-    projects, account, syncBusy, syncMsg, syncError, lastSyncAt,
+    projects, projectStats = {}, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
     onLogin, onLogout, onOpenExperience, onOpenBoardInventory, onOpenBoardMarket, boardMarketCount = 0,
@@ -41,6 +41,7 @@ export default function ProjectsScreen({
     const [signupForm, setSignupForm] = useState({ name: '', email: '', phone: '', note: '' });
     const [pinForm, setPinForm] = useState(null); // { old, next, again }
     const [pinBusy, setPinBusy] = useState(false);
+    const [viewMode, setViewMode] = useState(() => localStorage.getItem('ks_project_view') || 'list');
     // Đội mặc định nằm ở localStorage (không phải state) — cần cờ này để ô chọn vẽ lại.
     const [, setDefaultTick] = useState(0);
 
@@ -106,6 +107,10 @@ export default function ProjectsScreen({
     };
 
     const fmtDate = (ts) => new Date(ts).toLocaleDateString('vi-VN');
+    const setProjectView = (mode) => {
+        setViewMode(mode);
+        localStorage.setItem('ks_project_view', mode);
+    };
     // Không có scope = team (mặc định mới) — xem SCOPE_DEFAULT trong pb.js.
     const isTeam = (p) => (p.scope || pb.SCOPE_DEFAULT) === 'team';
     const isMine = (p) => !p.ownerId || !myId || p.ownerId === myId;
@@ -163,33 +168,59 @@ export default function ProjectsScreen({
                         <p>Tạo dự án đầu tiên để bắt đầu khảo sát công trình</p>
                     </div>
                 ) : (
-                    projects.map(p => (
-                        <div key={p.id} className="card project-card" onClick={() => onOpen(p.id)}>
-                            <div className="project-icon"><FolderOpen size={23} /></div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                                <div className="project-name">{p.name}</div>
-                                {/* Hiện CẢ hai việc: chia sẻ cho đội nào, và của ai. Bản cũ thấy
-                                    dự án của đồng nghiệp thì thay tên đội bằng tên người, nên
-                                    không cách nào biết nó đang chia sẻ tới đâu. */}
-                                <div className="project-meta" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                                    {isTeam(p) ? (
-                                        teamNameOf(p)
-                                            ? <><Users size={11.5} style={{ color: 'var(--blue)' }} />Team {teamNameOf(p)}</>
-                                            : <><Users size={11.5} style={{ color: 'var(--warn)' }} />
-                                                <span style={{ color: 'var(--warn)' }}>chưa gắn đội</span></>
-                                    ) : <><Lock size={11} /> Riêng tư</>}
-                                    {!isMine(p) && <>
-                                        <span style={{ opacity: .5 }}>·</span>
-                                        {p.ownerName || 'Đồng nghiệp'}
-                                    </>}
-                                    <span style={{ opacity: .5 }}>·</span>{fmtDate(p.createdAt)}
-                                </div>
+                    <>
+                        <div className="board-view-row project-view-row">
+                            <span>{projects.length} dự án khảo sát</span>
+                            <div className="segmented-mini">
+                                <button className={viewMode === 'thumb' ? 'on' : ''} onClick={() => setProjectView('thumb')} title="Thumbnail">
+                                    <Grid2X2 size={15} />
+                                </button>
+                                <button className={viewMode === 'list' ? 'on' : ''} onClick={() => setProjectView('list')} title="List">
+                                    <List size={15} />
+                                </button>
                             </div>
-                            <button className="icon-btn" onClick={(e) => { e.stopPropagation(); setMenuFor(p); }}>
-                                <MoreVertical size={19} />
-                            </button>
                         </div>
-                    ))
+                        <div className={viewMode === 'thumb' ? 'project-grid thumb-mode' : 'project-grid list-mode'}>
+                            {projects.map(p => {
+                                const stats = projectStats[p.id] || { photos: 0, plans: 0, total: 0 };
+                                return (
+                                    <div key={p.id} className="card project-card project-card-rich" onClick={() => onOpen(p.id)}>
+                                        <div className={`project-thumb ${stats.thumb ? 'has-thumb' : ''}`}>
+                                            {stats.thumb
+                                                ? <img src={stats.thumb} alt={p.name} />
+                                                : <FolderOpen size={viewMode === 'thumb' ? 34 : 23} />}
+                                        </div>
+                                        <div className="project-main">
+                                            <div className="project-name">{p.name}</div>
+                                            <div className="project-stats">
+                                                <span><PencilRuler size={13} />{stats.plans || 0} bản vẽ</span>
+                                                <span><Images size={13} />{stats.photos || 0} hình</span>
+                                            </div>
+                                            {/* Hiện CẢ hai việc: chia sẻ cho đội nào, và của ai. Bản cũ thấy
+                                                dự án của đồng nghiệp thì thay tên đội bằng tên người, nên
+                                                không cách nào biết nó đang chia sẻ tới đâu. */}
+                                            <div className="project-meta">
+                                                {isTeam(p) ? (
+                                                    teamNameOf(p)
+                                                        ? <><Users size={11.5} style={{ color: 'var(--blue)' }} />Team {teamNameOf(p)}</>
+                                                        : <><Users size={11.5} style={{ color: 'var(--warn)' }} />
+                                                            <span style={{ color: 'var(--warn)' }}>chưa gắn đội</span></>
+                                                ) : <><Lock size={11} /> Riêng tư</>}
+                                                {!isMine(p) && <>
+                                                    <span style={{ opacity: .5 }}>·</span>
+                                                    {p.ownerName || 'Đồng nghiệp'}
+                                                </>}
+                                                <span style={{ opacity: .5 }}>·</span>{fmtDate(p.createdAt)}
+                                            </div>
+                                        </div>
+                                        <button className="icon-btn project-menu-btn" onClick={(e) => { e.stopPropagation(); setMenuFor(p); }}>
+                                            <MoreVertical size={19} />
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </>
                 )}
 
                 <ExperiencePreview onOpenExperience={onOpenExperience} />

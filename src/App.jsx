@@ -43,10 +43,36 @@ const customerPortalRequested = () => new URLSearchParams(window.location.search
 const BOARD_INVENTORY_PROJECT_NAME = 'Kho ván tồn';
 const isInventoryProject = (p) => p?.boardInventory === true || p?.name === BOARD_INVENTORY_PROJECT_NAME;
 
+function buildProjectStats(allDocs) {
+    const stats = {};
+    const thumbScore = {};
+    for (const doc of allDocs) {
+        if (doc.type === 'board') continue;
+        const projectId = String(doc.projectId || '');
+        if (!projectId) continue;
+        const item = stats[projectId] || { photos: 0, plans: 0, total: 0, thumb: null, thumbType: null };
+        if (doc.type === 'photo') item.photos += 1;
+        if (doc.type === 'plan') item.plans += 1;
+        item.total += 1;
+        if (doc.thumb) {
+            const t = Number(doc.updatedAt || doc.createdAt || 0);
+            const score = doc.type === 'photo' ? t + 1_000_000_000_000 : t;
+            if (score >= (thumbScore[projectId] || 0)) {
+                item.thumb = doc.thumb;
+                item.thumbType = doc.type;
+                thumbScore[projectId] = score;
+            }
+        }
+        stats[projectId] = item;
+    }
+    return stats;
+}
+
 export default function App() {
     const [projects, setProjects] = useState(null); // null = đang tải
     const [route, setRoute] = useState({ screen: 'projects' });
     const [docs, setDocs] = useState([]);           // doc của dự án đang mở
+    const [projectStats, setProjectStats] = useState({});
     const [syncBusy, setSyncBusy] = useState(false);
     const [syncMsg, setSyncMsg] = useState(null);
     const [syncError, setSyncError] = useState(null);
@@ -81,6 +107,7 @@ export default function App() {
     const clearProtectedState = () => {
         setProjects([]);
         setDocs([]);
+        setProjectStats({});
         setBoardMarketDocs([]);
         setBoardMarketCount(0);
         setCustomerInboxCount(0);
@@ -100,6 +127,12 @@ export default function App() {
             const all = await db.listAllDocs();
             setBoardMarketCount(all.filter(d => d.type === 'board' && d.board?.market?.listed).length);
         } catch (err) { console.warn('board market count:', err.message); }
+    };
+
+    const refreshProjectStats = async () => {
+        try {
+            setProjectStats(buildProjectStats(await db.listAllDocs()));
+        } catch (err) { console.warn('project stats:', err.message); }
     };
 
     // ===== Boot =====
@@ -135,6 +168,7 @@ export default function App() {
                 });
                 setProjects(await db.loadProjects());
                 refreshBoardMarketCount();
+                refreshProjectStats();
                 storeReady.current = true;
                 if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
                 if (!pb.isCustomer() && !customerPortal) {
@@ -282,6 +316,7 @@ export default function App() {
     const deleteProject = async (id) => {
         const docIds = await db.deleteProjectDocs(id);
         await persistProjects(l => l.filter(p => p.id !== id));
+        refreshProjectStats();
         // Tombstone ghi cho MỌI lần xóa, kể cả offline / chưa đăng nhập — nếu không thì
         // sync sau kéo bản trên cloud về và dự án "hồi sinh".
         const at = pb.now();
@@ -375,6 +410,7 @@ export default function App() {
                 // nuốt, khiến UI có dữ liệu nhưng lần mở sau không còn.
                 await db.putDoc(toSave);
                 if (toSave.type === 'board') refreshBoardMarketCount();
+                else refreshProjectStats();
                 setDocs(prev => prev.map(d => d.id === toSave.id ? toSave : d));
                 markDirty('doc', toSave);
                 if (syncBusyRef.current) syncAgain.current = true;
@@ -391,6 +427,7 @@ export default function App() {
         const count = docsRef.current.filter(d => d.type === 'plan').length + 1;
         const doc = { ...newPlanDoc(projectId, `Mặt bằng ${count}`), createdAt: pb.now(), updatedAt: pb.now() };
         await db.putDoc(doc);
+        refreshProjectStats();
         setDocs(prev => [...prev, doc]);
         markDirty('doc', doc);
         navigate({ screen: 'plan', projectId, docId: doc.id });
@@ -425,6 +462,7 @@ export default function App() {
             }
         }
         if (!created.length) return;
+        refreshProjectStats();
         setDocs(prev => [...prev, ...created]);
         if (created.length === 1) navigate({ screen: 'photo', projectId, docId: created[0].id });
         else toast(`Đã thêm ${created.length} ảnh`, 'ok');
@@ -443,6 +481,7 @@ export default function App() {
         setDocs(prev => prev.filter(d => d.id !== id));
         await db.deleteDoc(id);
         refreshBoardMarketCount();
+        refreshProjectStats();
         await db.addTombstone(String(id), 'doc', pb.now());
         toast('Đã xóa', 'ok');
         if (pb.isLoggedIn() && !pb.isCustomer()) syncAll(true);
@@ -508,6 +547,7 @@ export default function App() {
         await db.markPending(project.id, 'project');
         for (const doc of importedDocs) await db.markPending(doc.id, 'doc');
         setProjects(next);
+        refreshProjectStats();
         await pb.reviewCustomerSubmission(submission.id, 'imported');
         setCustomerInboxCount(n => Math.max(0, n - 1));
         toast(`Đã nhập khảo sát của ${submission.customerName || 'khách hàng'}`, 'ok');
@@ -578,6 +618,7 @@ export default function App() {
             }
             for (const id of delDocSet) await db.deleteDoc(id);
             if (res.pulledDocs.some(d => d.type === 'board') || delDocSet.size) refreshBoardMarketCount();
+            refreshProjectStats();
 
             if (res.clearedTombstones.length) await db.removeTombstones(res.clearedTombstones);
             if (res.scopeSynced.length) {
@@ -687,6 +728,7 @@ export default function App() {
             setAccount(user);
             setProjects(await db.loadProjects());
             refreshBoardMarketCount();
+            refreshProjectStats();
             const r = routeRef.current;
             setDocs(r.projectId ? await db.listDocs(r.projectId) : []);
             if (sw.adopted) toast(`Đã khôi phục và gắn ${sw.adopted} mục trên máy vào tài khoản`, 'ok');
@@ -827,6 +869,7 @@ export default function App() {
         screen = (
             <ProjectsScreen
                 projects={surveyProjects}
+                projectStats={projectStats}
                 account={account}
                 syncBusy={syncBusy}
                 syncMsg={syncMsg}
