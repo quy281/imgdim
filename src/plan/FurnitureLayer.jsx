@@ -1,6 +1,7 @@
 import React from 'react';
 import { Group, Rect, Line, Circle, Ellipse, Text } from 'react-konva';
 import { catalogItem } from '../lib/furnitureCatalog';
+import { isParametricCabinet, resolveParametricConfig } from '../lib/parametricModel';
 
 const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
 const FILL = 'rgba(148,163,184,0.30)';
@@ -12,7 +13,7 @@ const LINE_SEL = '#2563eb';
  * Ký hiệu 2D trong hệ tọa độ local: tâm (0,0), lưng ở y=-d/2, mặt hướng y=+d/2.
  * Chỉ dùng nét — không tô đặc, để không lấn tường khi in.
  */
-function Symbol2D({ sym, w, d, sw, color }) {
+function Symbol2D({ sym, w, d, sw, color, item, cat }) {
     const hw = w / 2, hd = d / 2;
     const common = { stroke: color, strokeWidth: sw, listening: false };
 
@@ -37,9 +38,26 @@ function Symbol2D({ sym, w, d, sw, color }) {
                 </>
             );
         }
-        case 'cab':
-            // tủ: đường chỉ mặt cánh chạy dọc mặt trước
-            return <Line points={[-hw, hd - d * 0.22, hw, hd - d * 0.22]} {...common} />;
+        case 'cab': {
+            // tủ: đường chỉ mặt cánh chạy dọc mặt trước + vạch chia khoang đứng nếu có
+            const bays = item && isParametricCabinet(item.kind) ? resolveParametricConfig(item, cat).bays : null;
+            const totalR = bays ? bays.reduce((s, b) => s + (b.widthRatio || 1), 0) : 1;
+            const divs = [];
+            if (bays && bays.length > 1) {
+                let acc = 0;
+                for (let i = 0; i < bays.length - 1; i++) {
+                    acc += (bays[i].widthRatio || 1) / totalR;
+                    const x = -hw + w * acc;
+                    divs.push(<Line key={i} points={[x, -hd, x, hd]} {...common} dash={[35, 30]} />);
+                }
+            }
+            return (
+                <>
+                    <Line points={[-hw, hd - d * 0.14, hw, hd - d * 0.14]} {...common} />
+                    {divs}
+                </>
+            );
+        }
         case 'sofa': {
             const arm = Math.min(w * 0.12, 220);
             const backD = Math.min(d * 0.22, 220);
@@ -167,7 +185,7 @@ const FurnitureItem = ({ item, scale, isSelected, onSelect, onChange, onRotate }
                 <Line points={[-w / 2, -d / 2, w / 2, -d / 2]}
                     stroke={color} strokeWidth={sw * 3} listening={false} />
             )}
-            <Symbol2D sym={cat?.sym} w={w} d={d} sw={sw} color={color} />
+            <Symbol2D sym={cat?.sym} w={w} d={d} sw={sw} color={color} item={item} cat={cat} />
             {cat && (
                 <Text
                     text={cat.name}

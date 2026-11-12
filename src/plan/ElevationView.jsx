@@ -53,7 +53,7 @@ function PlanKey({ plan, room, frame, size = 74 }) {
  * vẫn hoàn tác được.
  */
 export default function ElevationView({
-    doc, elev, onClose, onPick, onSegmentTap, onOpeningTap, onVerticalTap, onCeilingTap,
+    doc, elev, onClose, onPick, onSegmentTap, onOpeningTap, onVerticalTap, onCeilingTap, onFurnitureTap,
 }) {
     const wrapRef = useRef(null);
     const stageRef = useRef(null);
@@ -149,6 +149,7 @@ export default function ElevationView({
                                 onOpeningTap={(wallId, opId) => { setSelOpId(opId); onOpeningTap?.(wallId, opId); }}
                                 onVerticalTap={onVerticalTap}
                                 onCeilingTap={onCeilingTap}
+                                onFurnitureTap={onFurnitureTap}
                             />
                         </Layer>
                     </Stage>

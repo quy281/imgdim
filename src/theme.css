@@ -1606,3 +1606,184 @@ input, textarea {
         padding-bottom: 2px;
     }
 }
+
+
+/* ============ Bổ kỹ thuật 6 mặt & Phối cảnh 3D (CabinetLayoutView) ============ */
+.cab-layout-screen {
+    z-index: 65;
+}
+.cab-subbar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+}
+.cab-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-2);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.cab-pill.on {
+    background: var(--blue);
+    color: #fff;
+    border-color: var(--blue);
+}
+.cab-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: row;
+    position: relative;
+    overflow: hidden;
+}
+.cab-inspector {
+    width: 310px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border-left: 1px solid var(--line);
+    padding: 10px 12px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.cab-sec-title {
+    font-size: 11.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+    margin-top: 6px;
+}
+.cab-dim-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+.cab-num-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 10px;
+    border-radius: 9px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--ink-2);
+}
+.cab-num-btn strong {
+    font-size: 13px;
+    color: var(--blue);
+}
+.cab-inline-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--ink-2);
+}
+.cab-mini-chip {
+    padding: 4px 9px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    font-weight: 600;
+    background: var(--bg);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+}
+.cab-mini-chip.on {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+}
+.cab-swatch {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+}
+.cab-swatch.on {
+    border-color: var(--blue);
+    background: var(--blue-soft);
+    color: var(--blue);
+}
+.cab-swatch span {
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+    border: 1px solid rgba(0,0,0,0.18);
+}
+.cab-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 2px 4px;
+}
+.cab-stepper button {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--ink);
+}
+.cab-stepper b {
+    min-width: 18px;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--ink);
+}
+.cab-bay-card {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.cab-bay-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+}
+
+@media (max-width: 720px) {
+    .cab-body {
+        flex-direction: column;
+    }
+    .cab-inspector {
+        width: 100%;
+        max-height: 44vh;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+    }
+}

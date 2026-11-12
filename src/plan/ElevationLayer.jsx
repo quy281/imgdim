@@ -3,7 +3,8 @@ import { Group, Line, Rect, Label, Tag, Text } from 'react-konva';
 import {
     wallSegments, openingV, projectItemOnWall, SLAB_DEFAULT,
 } from '../lib/geometry';
-import { catalogItem, defaultSize, resolveZ } from '../lib/furnitureCatalog';
+import { catalogItem, resolveZ } from '../lib/furnitureCatalog';
+import { projectItemDetailOnWall } from '../lib/projectionEngine';
 
 const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
 const INK = '#334155';
@@ -23,7 +24,7 @@ const BLUE = '#2563eb';
  */
 const ElevationLayer = ({
     frame, plan, furniture, settings, H, slabT = SLAB_DEFAULT, scale,
-    selOpId, onSegmentTap, onOpeningTap, onVerticalTap, onCeilingTap,
+    selOpId, onSegmentTap, onOpeningTap, onVerticalTap, onCeilingTap, onFurnitureTap,
 }) => {
     const inv = 1 / scale;
     const { wall, len, toU } = frame;
@@ -41,7 +42,8 @@ const ElevationLayer = ({
             if (!pr) continue;
             const h = it.h ?? cat?.h ?? 800;
             const z = resolveZ(it, cat, H);
-            out.push({ ...pr, id: it.id, name: cat?.name || 'Nội thất', h, z, mount: cat?.mount });
+            const detail = pr.touching ? projectItemDetailOnWall(frame, it, cat, H) : null;
+            out.push({ ...pr, id: it.id, name: cat?.name || 'Nội thất', h, z, mount: cat?.mount, detail });
         }
         // vẽ món cao trước, món thấp sau — đỡ che nhau
         return out.sort((a, b) => (b.z + b.h) - (a.z + a.h));
@@ -141,12 +143,23 @@ const ElevationLayer = ({
             {items.map(it => {
                 const x0 = Math.min(it.u0, it.u1), x1 = Math.max(it.u0, it.u1);
                 const wpx = (x1 - x0) * scale;
+                const hasDetail = it.detail && it.detail.segments.length > 0 && Math.abs((x1 - x0) - it.detail.width) < 40;
+                const tapFurn = onFurnitureTap ? (e) => { e.cancelBubble = true; onFurnitureTap(it.id); } : undefined;
                 return (
-                    <Group key={it.id} listening={false}>
+                    <Group key={it.id} listening={!!onFurnitureTap} onClick={tapFurn} onTap={tapFurn}>
                         <Rect x={x0} y={-(it.z + it.h)} width={x1 - x0} height={it.h}
-                            stroke={FURN} strokeWidth={sw}
+                            stroke={hasDetail ? 'transparent' : FURN} strokeWidth={sw}
                             dash={it.touching ? undefined : [50, 35]}
-                            fill={it.touching ? 'rgba(148,163,184,0.14)' : undefined} />
+                            fill={it.touching ? 'rgba(248,250,252,0.88)' : undefined} />
+                        {hasDetail && it.detail.segments.map((seg, idx) => (
+                            <Line key={idx}
+                                points={[x0 + seg.u1, -(it.z + seg.v1), x0 + seg.u2, -(it.z + seg.v2)]}
+                                stroke={seg.weight === 'swing' ? '#94a3b8' : '#334155'}
+                                strokeWidth={seg.weight === 'outline' ? sw * 1.25 : sw * 0.85}
+                                dash={seg.weight === 'swing' ? [35, 28] : undefined}
+                                listening={false}
+                            />
+                        ))}
                         {/* Nhãn: món nhỏ (ổ điện, công tắc) chỉ cần cao độ — đó là số duy nhất cần */}
                         {wpx > 26 && (
                             <Text
@@ -155,6 +168,7 @@ const ElevationLayer = ({
                                 width={Math.max(x1 - x0, 600)} align="center"
                                 fontSize={9.5 * inv} fontFamily={FONT} fontStyle="600"
                                 fill="#475569"
+                                listening={false}
                             />
                         )}
                     </Group>

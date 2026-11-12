@@ -4,7 +4,7 @@ import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
     ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
-    MapPin,
+    MapPin, Layers,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -13,6 +13,7 @@ import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
 import ColumnPreview from '../plan/ColumnPreview';
 import ElevationView from '../plan/ElevationView';
+import CabinetLayoutView from '../plan/CabinetLayoutView';
 import { GROUPS, FURNITURE, catalogItem, defaultSize } from '../lib/furnitureCatalog';
 import NoteMarker from '../photo/NoteMarker';
 import Sheet from '../ui/Sheet';
@@ -34,7 +35,7 @@ import {
     addOpening, removeOpening, updateOpening, insertTemplate,
 } from '../lib/planModel';
 import { loadTemplates, saveTemplateFromRoom, deleteTemplate } from '../lib/roomTemplates';
-import { generateDxf } from '../lib/dxf';
+import { generateDxf, generateCabinetDxf } from '../lib/dxf';
 import { stageToDataURL, downloadDataURL, downloadText, shareDataURL, stamp } from '../lib/export';
 import { formatLocation, getCurrentLocation, hasLocation, openLocationMap } from '../lib/location';
 
@@ -75,6 +76,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     // Lưu wallId đang xem, KHÔNG lưu chỉ số: danh sách mặt được tính lại sau mỗi commit,
     // chỉ số sẽ trôi và nhảy sang mặt khác giữa chừng.
     const [elev, setElev] = useState(null); // { roomId, faces:[{wallId,len,label}], wallId }
+    const [cabItemId, setCabItemId] = useState(null); // id món nội thất đang mở Bổ kỹ thuật 6 mặt
     const [, bumpHist] = useState(0);
 
     const stageRef = useRef(null);
@@ -142,6 +144,11 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             // giữ đúng mặt đang xem; chỉ rơi về mặt đầu khi tường đó thật sự biến mất
             const stillThere = faces.some(f => f.wallId === e.wallId);
             return { ...e, faces, wallId: stillThere ? e.wallId : faces[0].wallId };
+        });
+        setCabItemId(curId => {
+            if (!curId) return null;
+            if ((furniture || []).some(f => f.id === curId)) return curId;
+            return (furniture || [])[0]?.id || null;
         });
     };
 
@@ -318,6 +325,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const removeFurniture = (id) => {
         commit(undefined, undefined, furnList().filter(f => f.id !== id));
         setSel(null);
+    };
+
+    const updateFurnitureItem = (updated) => {
+        commit(undefined, undefined, furnList().map(f => f.id === updated.id ? updated : f));
     };
 
     const resizeFurniture = (item) => {
@@ -741,6 +752,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             toast('Đã xuất DXF (mm) — mở bằng AutoCAD', 'ok');
             return;
         }
+        if (kind === 'cab_dxf') {
+            const dxfStr = generateCabinetDxf(d, null);
+            if (!dxfStr) { toast('Chưa có món nội thất nào để bổ kỹ thuật', 'err'); return; }
+            downloadText(dxfStr, `BT_${d.name}_${(d.furniture || []).length}Mon_${stamp()}.dxf`, 'application/dxf');
+            toast(`Đã xuất DXF hàng loạt ${(d.furniture || []).length} bản vẽ nội thất`, 'ok');
+            return;
+        }
         const bb = bboxOfPlan(d.plan, d.notes, d.furniture);
         if (!bb) { toast('Chưa có gì để xuất', 'err'); return; }
         await new Promise(r => setTimeout(r, 120));
@@ -838,6 +856,19 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                     onSegmentTap={openSegmentNumPad}
                     onVerticalTap={openVerticalNumPad}
                     onCeilingTap={() => openCeilingNumPad(elev.roomId)}
+                    onFurnitureTap={(id) => setCabItemId(id)}
+                />
+            )}
+
+            {/* Bổ kỹ thuật 6 mặt & Phối cảnh 3D cho từng món / hàng loạt nội thất */}
+            {cabItemId && (
+                <CabinetLayoutView
+                    doc={doc}
+                    itemId={cabItemId}
+                    onSelectItem={(id) => setCabItemId(id)}
+                    onUpdateItem={updateFurnitureItem}
+                    onAskNumPad={(cfg) => setNumpad(cfg)}
+                    onClose={() => setCabItemId(null)}
                 />
             )}
 
@@ -845,6 +876,11 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             <div className={`mode-banner ${mode}`}>
                 <span>{bannerText()}</span>
                 <span className="spacer" />
+                {mode === 'select' && (doc.furniture || []).length > 0 && (
+                    <button className="banner-btn" onClick={() => setCabItemId(selFurn?.id || doc.furniture[0].id)}>
+                        <Layers size={13} /> Bổ 6 mặt ({doc.furniture.length})
+                    </button>
+                )}
                 {mode === 'draw' && (
                     <button className="banner-btn" onClick={openTemplatePicker}>▦ Template</button>
                 )}
@@ -971,6 +1007,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
 
                 {selFurn && mode === 'select' && (
                     <div className="float-bar">
+                        <button className="fb-btn" style={{ color: '#059669' }} onClick={() => setCabItemId(selFurn.id)}>
+                            <Layers size={16} /> Bổ 6 mặt
+                        </button>
+                        <div className="fb-sep" />
                         <button className="fb-btn" style={{ color: 'var(--violet)' }} onClick={() => rotateFurniture(selFurn)}>
                             <RotateCw size={16} /> Quay 90°
                         </button>
@@ -1248,8 +1288,26 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 </button>
                 <button className="sheet-row" onClick={() => doExport('dxf')}>
                     <FileDown size={19} style={{ color: 'var(--violet)' }} />
-                    <div style={{ flex: 1 }}>Xuất DXF<div className="sub">Mở AutoCAD, đơn vị mm</div></div>
+                    <div style={{ flex: 1 }}>Xuất DXF mặt bằng & tường<div className="sub">Mở AutoCAD, đơn vị mm</div></div>
                 </button>
+                {(doc.furniture || []).length > 0 && (
+                    <>
+                        <button className="sheet-row" onClick={() => { setShowExport(false); setCabItemId(doc.furniture[0].id); }}>
+                            <Layers size={19} style={{ color: 'var(--ok)' }} />
+                            <div style={{ flex: 1 }}>
+                                Bổ kỹ thuật 6 mặt & Phối cảnh 3D
+                                <div className="sub">Xem mặt cắt A-A, B-B & chỉnh khoang/đợt ({doc.furniture.length} món)</div>
+                            </div>
+                        </button>
+                        <button className="sheet-row" onClick={() => doExport('cab_dxf')}>
+                            <FileDown size={19} style={{ color: '#059669' }} />
+                            <div style={{ flex: 1 }}>
+                                Xuất DXF Nội thất hàng loạt ({doc.furniture.length} tờ)
+                                <div className="sub">Mỗi món 5 hình chiếu + mặt cắt Hatch + khung tên</div>
+                            </div>
+                        </button>
+                    </>
+                )}
             </Sheet>
 
             {/* Draw settings */}

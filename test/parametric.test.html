@@ -1,0 +1,150 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>parametric & projection selftest</title>
+<pre id="out">running…</pre>
+<script type="module">
+import { GROUPS, FURNITURE, catalogItem } from '/src/lib/furnitureCatalog.js';
+import {
+    isParametricCabinet, resolveParametricConfig, setBayCount, generatePanels,
+} from '/src/lib/parametricModel.js';
+import {
+    subtractIntervals, projectOrthographic, sliceSectionAA, sliceSectionBB,
+    projectAxonometric3D, buildSixViewsBundle, projectItemDetailOnWall,
+} from '/src/lib/projectionEngine.js';
+import { generateDxf, generateCabinetDxf } from '/src/lib/dxf.js';
+import { wallFrame } from '/src/lib/geometry.js';
+import { recomputeRooms } from '/src/lib/planModel.js';
+
+const lines = [];
+let pass = 0, fail = 0;
+const ok = (name, cond) => { cond ? pass++ : fail++; lines.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`); };
+const eq = (name, got, want, tol = 0.5) => {
+    const c = Math.abs(got - want) <= tol;
+    c ? pass++ : fail++;
+    lines.push(`${c ? 'PASS' : 'FAIL'}  ${name}: got ${got}, want ${want}`);
+};
+
+lines.push('--- 1. Sinh Panel3D cho toàn bộ thư viện nội thất ---');
+{
+    let allValid = true;
+    for (const g of GROUPS) {
+        for (const it of FURNITURE[g.key]) {
+            const sample = { id: 'x', kind: it.key, w: it.w, d: it.d, h: it.h, z: it.z ?? 0, rot: 0 };
+            const res = generatePanels(sample, it);
+            if (!res.panels.length || res.panels.some(p => Number.isNaN(p.x) || p.dx <= 0 || p.dy <= 0 || p.dz <= 0)) {
+                allValid = false;
+                lines.push(`  ERR item ${it.key}`);
+            }
+        }
+    }
+    ok('mọi món trong catalog đều sinh được Panel3D hợp lệ', allValid);
+}
+
+lines.push('--- 2. Kiểm tra không giao cắt xuyên thấu giữa các tấm trong Tủ áo ---');
+{
+    const item = { id: 'w1', kind: 'wardrobe', w: 2400, d: 600, h: 2400, z: 0, rot: 0 };
+    const cat = catalogItem('wardrobe');
+    const { panels, baysInfo } = generatePanels(item, cat);
+    eq('tủ áo 2m4 mặc định chia 3 khoang', baysInfo.length, 3);
+
+    let overlapCount = 0;
+    const tol = 0.5;
+    for (let i = 0; i < panels.length; i++) {
+        const A = panels[i];
+        for (let j = i + 1; j < panels.length; j++) {
+            const B = panels[j];
+            const ox = Math.min(A.x + A.dx, B.x + B.dx) - Math.max(A.x, B.x);
+            const oy = Math.min(A.y + A.dy, B.y + B.dy) - Math.max(A.y, B.y);
+            const oz = Math.min(A.z + A.dz, B.z + B.dz) - Math.max(A.z, B.z);
+            if (ox > tol && oy > tol && oz > tol) overlapCount++;
+        }
+    }
+    eq('0 cặp tấm ván đâm xuyên nhau (disjoint AABB)', overlapCount, 0);
+}
+
+lines.push('--- 3. Khử nét khuất HLR: đóng cánh che đợt, ẩn cánh lộ đợt ---');
+{
+    const segs = subtractIntervals(0, 100, [[20, 50], [45, 80]]);
+    eq('subtractIntervals còn 2 đoạn ([0,20] & [80,100])', segs.length, 2);
+
+    const item = { id: 'w1', kind: 'wardrobe', w: 1600, d: 600, h: 2400, z: 0, rot: 0 };
+    const cat = catalogItem('wardrobe');
+    const closed = buildSixViewsBundle(item, cat, { hideDoors: false });
+    const opened = buildSixViewsBundle(item, cat, { hideDoors: true });
+
+    const closedShelfSegs = closed.views.front.segments.filter(s => s.role === 'shelf');
+    const openedShelfSegs = opened.views.front.segments.filter(s => s.role === 'shelf');
+    eq('khi đóng cánh: đợt gỗ bên trong bị che khuất hoàn toàn trên Mặt đứng', closedShelfSegs.length, 0);
+    ok('khi bật Ẩn cánh: các đợt gỗ lộ ra trên Mặt đứng', openedShelfSegs.length > 0);
+    ok('khi đóng cánh: có nét đứt chỉ chiều mở cánh', closed.views.front.segments.some(s => s.weight === 'swing'));
+}
+
+lines.push('--- 4. Mặt cắt A-A & B-B có tiết diện cắt + Hatch + Dim lọt lòng ---');
+{
+    const item = { id: 'k1', kind: 'kitchen24', w: 2400, d: 600, h: 850, z: 0, rot: 0 };
+    const cat = catalogItem('kitchen24');
+    const b = buildSixViewsBundle(item, cat);
+    ok('Mặt cắt A-A có tiết diện cắt đậm', b.views.sectionAA.cutRects.length >= 3);
+    ok('Mặt cắt A-A có đường gạch Hatch 45°', b.views.sectionAA.segments.some(s => s.weight === 'hatch'));
+    ok('Mặt cắt A-A tự tính cao độ lọt lòng ngăn kéo/chân đế', b.views.sectionAA.clearDimsZ.length >= 2);
+    ok('Mặt cắt B-B tự tính chiều rộng lọt lòng các khoang', b.views.sectionBB.clearDimsX.length >= 2);
+}
+
+lines.push('--- 5. Phối cảnh 3D Topological Sort ổn định mọi góc xoay ---');
+{
+    const item = { id: 'w1', kind: 'wardrobe', w: 2400, d: 600, h: 2400, z: 0, rot: 0 };
+    const { panels } = generatePanels(item, catalogItem('wardrobe'));
+    let allAnglesOk = true;
+    for (const yawDeg of [-150, -90, -34, 0, 34, 90, 145]) {
+        const iso = projectAxonometric3D(panels, { yawDeg, pitchDeg: 22 });
+        if (!iso.polygons.length || iso.polygons.some(p => p.pts.some(pt => Number.isNaN(pt.u) || Number.isNaN(pt.v)))) {
+            allAnglesOk = false;
+        }
+    }
+    ok('xoay đủ các góc 360° đều sinh đa giác 3D sạch không NaN', allAnglesOk);
+}
+
+lines.push('--- 6. Xuất DXF hàng loạt nội thất & tương thích mặt đứng phòng ---');
+{
+    const nodes = [
+        { id: 'n0', x: 0, y: 0 }, { id: 'n1', x: 4000, y: 0 },
+        { id: 'n2', x: 4000, y: 3000 }, { id: 'n3', x: 0, y: 3000 },
+    ];
+    let plan = recomputeRooms({
+        nodes,
+        walls: [
+            { id: 'w0', a: 'n0', b: 'n1', thickness: 110, openings: [], elev: true },
+            { id: 'w1', a: 'n1', b: 'n2', thickness: 110, openings: [], elev: true },
+            { id: 'w2', a: 'n2', b: 'n3', thickness: 110, openings: [], elev: true },
+            { id: 'w3', a: 'n3', b: 'n0', thickness: 110, openings: [], elev: true },
+        ],
+        rooms: [],
+    });
+    const doc = {
+        name: 'CanHo_A1',
+        plan,
+        notes: [],
+        settings: { ceilingH: 3000 },
+        furniture: [
+            { id: 'f1', kind: 'wardrobe', x: 2000, y: 355, w: 2400, d: 600, h: 2400, z: 0, rot: 0 },
+            { id: 'f2', kind: 'tvstand', x: 2000, y: 2745, w: 1800, d: 400, h: 450, z: 0, rot: 180 },
+        ],
+    };
+
+    const frTop = wallFrame(plan, 'w0', plan.rooms[0]);
+    const det = projectItemDetailOnWall(frTop, doc.furniture[0], catalogItem('wardrobe'), 3000);
+    ok('chiếu chi tiết tủ áo lên tường phòng nhận đúng Mặt đứng (front)', det?.viewType === 'front' && det.segments.length > 8);
+
+    const planDxf = generateDxf(doc);
+    ok('DXF mặt bằng + tường có layer ELEV-SWING cho cánh tủ', planDxf.includes('ELEV-SWING') && planDxf.trimEnd().endsWith('EOF'));
+
+    const batchCabDxf = generateCabinetDxf(doc, null);
+    eq('DXF hàng loạt xuất đủ 2 tờ cho 2 món (TO: 01/02 & TO: 02/02)', (batchCabDxf.match(/TO: 0[12]\/02/g) || []).length, 2);
+    ok('DXF hàng loạt có đủ 5 hình chiếu kỹ thuật & Hatch', ['MAT DUNG', 'MAT BEN TRAI', 'MAT CAT A-A', 'MAT BANG', 'MAT CAT B-B', 'CAB-HATCH']
+        .every(k => batchCabDxf.includes(k)));
+}
+
+document.getElementById('out').textContent =
+    lines.join('\n') + `\n\n===== ${pass} pass, ${fail} fail =====`;
+document.title = fail === 0 ? 'ALL PASS' : `${fail} FAIL`;
+</script>
