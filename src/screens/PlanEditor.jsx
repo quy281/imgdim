@@ -1,10 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, Suspense, lazy } from 'react';
 import { Stage, Layer, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
     ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
-    MapPin, Layers,
+    MapPin, Box, Move,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -13,8 +13,10 @@ import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
 import ColumnPreview from '../plan/ColumnPreview';
 import ElevationView from '../plan/ElevationView';
-import CabinetLayoutView from '../plan/CabinetLayoutView';
 import { GROUPS, FURNITURE, catalogItem, defaultSize } from '../lib/furnitureCatalog';
+import {
+    snapFurnitureSmart, resizeFurnitureEdge, resizeFurnitureEdgeByValue,
+} from '../lib/magnetSnap';
 import NoteMarker from '../photo/NoteMarker';
 import Sheet from '../ui/Sheet';
 import NumPad from '../ui/NumPad';
@@ -25,8 +27,8 @@ import { toast } from '../ui/Toast';
 import {
     genId, dist, snapToGrid, snapOrtho, findNearbyNode,
     applyWallLength, scaleAllWalls, snapToWall, splitWallAtPoint, bboxOfPlan,
-    applySegmentLength, applyOpeningWidth, wallSegments, snapFurnitureToWall,
-    roomFaces, ceilingHeight, openingV, applyOpeningVertical, applyCeilingHeight,
+    applySegmentLength, applyOpeningWidth, roomFaces, ceilingHeight, openingV,
+    applyOpeningVertical, applyCeilingHeight,
     columnTargetAt, columnSizeFromDrag, insertCornerColumn, insertWallColumn, resolveColumnTarget,
     columnParts, resizeColumn, removeColumn, COLUMN_DEFAULT,
 } from '../lib/geometry';
@@ -35,9 +37,11 @@ import {
     addOpening, removeOpening, updateOpening, insertTemplate,
 } from '../lib/planModel';
 import { loadTemplates, saveTemplateFromRoom, deleteTemplate } from '../lib/roomTemplates';
-import { generateDxf, generateCabinetDxf } from '../lib/dxf';
+import { generateDxf } from '../lib/dxf';
 import { stageToDataURL, downloadDataURL, downloadText, shareDataURL, stamp } from '../lib/export';
 import { formatLocation, getCurrentLocation, hasLocation, openLocationMap } from '../lib/location';
+
+const Room3DView = lazy(() => import('../plan/Room3DView'));
 
 const MODES = [
     { id: 'draw', icon: BrickWall, label: 'Tường' },
@@ -56,7 +60,9 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [mode, setModeRaw] = useState(doc.plan.walls.length ? 'select' : 'draw');
     const [chain, setChain] = useState(null);
     const [preview, setPreview] = useState(null);
-    const [sel, setSel] = useState(null); // {kind:'wall'|'opening'|'note', id, wallId?}
+    const [sel, setSel] = useState(null); // {kind:'wall'|'opening'|'note'|'furniture'|'column', id, wallId?}
+    const [furnEditId, setFurnEditId] = useState(null); // id món nội thất đang bật chế độ Scale 4 chiều
+    const [snapGuides, setSnapGuides] = useState([]); // đường gióng magnet trực quan khi đang kéo
     const [view, setView] = useState(doc.view || null);
     const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
     const [numpad, setNumpad] = useState(null);
@@ -64,25 +70,30 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const [checklistSheet, setChecklistSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const [openingSheet, setOpeningSheet] = useState(null); // {wallId, openingId}
-    const [colDrag, setColDrag] = useState(null); // {target, a, b} — chỉ để vẽ preview
+    const [colDrag, setColDrag] = useState(null); // {target, a, b}
     const [showExport, setShowExport] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [showNotes, setShowNotes] = useState(false);
     const [showFurnPicker, setShowFurnPicker] = useState(false);
     const [furnGroup, setFurnGroup] = useState('bedroom');
     const [showFurnSizes, setShowFurnSizes] = useState(false);
-    const [templates, setTemplates] = useState(null); // null = chưa mở picker
+    const [templates, setTemplates] = useState(null);
     const [roomMenu, setRoomMenu] = useState(null);
-    // Lưu wallId đang xem, KHÔNG lưu chỉ số: danh sách mặt được tính lại sau mỗi commit,
-    // chỉ số sẽ trôi và nhảy sang mặt khác giữa chừng.
     const [elev, setElev] = useState(null); // { roomId, faces:[{wallId,len,label}], wallId }
-    const [cabItemId, setCabItemId] = useState(null); // id món nội thất đang mở Bổ kỹ thuật 6 mặt
+    const [room3dTarget, setRoom3dTarget] = useState(null); // null | 'all' | roomId
     const [, bumpHist] = useState(0);
 
     const stageRef = useRef(null);
     const wrapRef = useRef(null);
     const gestureRef = useRef(null);
     const historyRef = useRef({ stack: [{ plan: doc.plan, notes: doc.notes || [], furniture: doc.furniture || [] }], i: 0 });
+
+    // Tự tắt chế độ sửa 4 chiều nếu bỏ chọn hoặc chọn sang đối tượng khác
+    useEffect(() => {
+        if (furnEditId && (sel?.kind !== 'furniture' || sel.id !== furnEditId)) {
+            setFurnEditId(null);
+        }
+    }, [sel, furnEditId]);
 
     // ===== Stage sizing =====
     useEffect(() => {
@@ -133,22 +144,14 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             if (s.kind === 'furniture' && !(furniture || []).some(f => f.id === s.id)) return null;
             return s;
         });
-        // Mặt đứng đang mở mà tường/phòng của nó biến mất (undo, xóa tường) → đóng lại,
-        // không thì overlay treo màn trắng. Tường còn nhưng đổi hình thì cập nhật độ dài.
         setElev(e => {
             if (!e) return e;
             const room = (plan.rooms || []).find(r => r.id === e.roomId);
             if (!room) return null;
             const faces = roomFaces(plan, room);
             if (!faces.length) return null;
-            // giữ đúng mặt đang xem; chỉ rơi về mặt đầu khi tường đó thật sự biến mất
             const stillThere = faces.some(f => f.wallId === e.wallId);
             return { ...e, faces, wallId: stillThere ? e.wallId : faces[0].wallId };
-        });
-        setCabItemId(curId => {
-            if (!curId) return null;
-            if ((furniture || []).some(f => f.id === curId)) return curId;
-            return (furniture || [])[0]?.id || null;
         });
     };
 
@@ -174,6 +177,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         syncEphemeral(s.plan, s.notes, f);
         setPreview(null);
         setOpeningSheet(null);
+        setSnapGuides([]);
         bumpHist(v => v + 1);
     };
 
@@ -186,12 +190,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const setMode = (m) => {
         setModeRaw(m);
         setSel(null);
+        setFurnEditId(null);
+        setSnapGuides([]);
         setPreview(null);
         setOpeningSheet(null);
         setColDrag(null);
         if (m === 'furniture') { setChain(null); setShowFurnPicker(true); return; }
         if (m === 'draw') {
-            // resume from the end of the last wall so the next segment continues the outline
             const plan = docRef.current.plan;
             if (plan.walls.length) {
                 const lw = plan.walls[plan.walls.length - 1];
@@ -250,8 +255,6 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         });
     };
 
-    // ===== NumPad cho đoạn tường giữa các cửa =====
-    // Tổng tường giữ nguyên — cửa kề bù chênh lệch.
     const openSegmentNumPad = (wallId, segIdx, curLen) => {
         const plan = docRef.current.plan;
         const wall = plan.walls.find(w => w.id === wallId);
@@ -272,49 +275,49 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         });
     };
 
-    // ===== Nội thất =====
+    // ===== Nội thất: Magnet thông minh + Scale 4 chiều =====
     const furnList = () => docRef.current.furniture || [];
 
-    // Magnet tường: chỉ áp dụng cho món có mặt lưng; ngoài ngưỡng thì bắt lưới.
     const placeFurniture = (item, doCommit, node) => {
-        const cat = catalogItem(item.kind);
-        let next;
-        if (cat?.back) {
-            const tol = Math.max(280, 46 / (view?.scale || 1));
-            const hit = snapFurnitureToWall(docRef.current.plan, item, item.d, tol);
-            next = hit ? { ...item, ...hit } : { ...item, ...snapFn({ x: item.x, y: item.y }) };
-        } else {
-            next = { ...item, ...snapFn({ x: item.x, y: item.y }) };
-        }
-        // kéo node Konva về đúng chỗ đã snap để thấy hiệu ứng hút ngay khi đang kéo
+        const all = furnList();
+        const res = snapFurnitureSmart(docRef.current.plan, all, item, {
+            scale: view?.scale || 0.1,
+            fallbackSnap: snapFn,
+        });
+        const next = { ...item, x: res.x, y: res.y, rot: res.rot };
         if (node) {
             node.x(next.x);
             node.y(next.y);
             node.rotation(next.rot || 0);
         }
-        const list = furnList().map(f => f.id === next.id ? next : f);
-        if (doCommit) commit(undefined, undefined, list);
-        else onChange({ ...docRef.current, furniture: list });
+        const list = all.map(f => f.id === next.id ? next : f);
+        if (doCommit) {
+            setSnapGuides([]);
+            commit(undefined, undefined, list);
+        } else {
+            setSnapGuides(res.guides || []);
+            onChange({ ...docRef.current, furniture: list });
+        }
         return next;
     };
 
     const addFurniture = (key) => {
         const { w, d, h, z } = defaultSize(key, docRef.current.settings);
-        // đặt vào giữa vùng đang xem
         const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
         const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
-        const item = { id: genId('f'), kind: key, x: Math.round(cx), y: Math.round(cy), w, d, h, z, rot: 0 };
+        const raw = { id: genId('f'), kind: key, x: Math.round(cx), y: Math.round(cy), w, d, h, z, rot: 0 };
         const cat = catalogItem(key);
-        let placed = item;
-        if (cat?.back) {
-            const hit = snapFurnitureToWall(docRef.current.plan, item, d, Math.max(900, 120 / (view?.scale || 1)));
-            if (hit) placed = { ...item, ...hit };
-        }
+        const res = snapFurnitureSmart(docRef.current.plan, furnList(), raw, {
+            scale: view?.scale || 0.1,
+            wallTol: Math.max(850, 110 / (view?.scale || 1)),
+            fallbackSnap: snapFn,
+        });
+        const placed = { ...raw, x: res.x, y: res.y, rot: res.rot };
         commit(undefined, undefined, [...furnList(), placed]);
         setShowFurnPicker(false);
         setModeRaw('select');
         setSel({ kind: 'furniture', id: placed.id });
-        toast(`${cat?.name || 'Nội thất'} — kéo để đặt, chạm 2 lần để quay`, 'ok');
+        toast(`${cat?.name || 'Nội thất'} — kéo để magnet, bấm "Chỉnh sửa" để co giãn 4 chiều`, 'ok');
     };
 
     const rotateFurniture = (item) => {
@@ -325,30 +328,69 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const removeFurniture = (id) => {
         commit(undefined, undefined, furnList().filter(f => f.id !== id));
         setSel(null);
+        setFurnEditId(null);
+        setSnapGuides([]);
     };
 
-    const updateFurnitureItem = (updated) => {
-        commit(undefined, undefined, furnList().map(f => f.id === updated.id ? updated : f));
+    // Kéo cạnh để scale 4 chiều (giữ cố định cạnh đối diện + magnet cạnh đang kéo)
+    const handleScaleFurnitureEdge = (startItem, edge, worldPt, doCommit) => {
+        const all = furnList();
+        const { item: next, guides } = resizeFurnitureEdge(
+            startItem, edge, worldPt, docRef.current.plan, all, { scale: view?.scale || 0.1 }
+        );
+        const list = all.map(f => f.id === next.id ? next : f);
+        if (doCommit) {
+            setSnapGuides([]);
+            commit(undefined, undefined, list);
+        } else {
+            setSnapGuides(guides || []);
+            onChange({ ...docRef.current, furniture: list });
+        }
+        return next;
+    };
+
+    // Chạm vào 1 trong 4 tay cầm để nhập số chính xác theo đúng hướng đó
+    const handleTapFurnitureEdge = (item, edge) => {
+        const META = {
+            left: { title: 'Kéo về bên Trái — Chiều rộng mới', hint: 'Cạnh Phải giữ nguyên cố định', cur: item.w },
+            right: { title: 'Kéo về bên Phải — Chiều rộng mới', hint: 'Cạnh Trái giữ nguyên cố định', cur: item.w },
+            front: { title: 'Kéo mặt Trước — Chiều sâu mới', hint: 'Mặt Lưng (áp tường) giữ nguyên cố định', cur: item.d },
+            back: { title: 'Kéo mặt Lưng — Chiều sâu mới', hint: 'Mặt Trước giữ nguyên cố định', cur: item.d },
+        };
+        const m = META[edge];
+        if (!m) return;
+        setNumpad({
+            title: m.title,
+            initial: Math.round(m.cur),
+            hint: m.hint,
+            onOK: (val) => {
+                const next = resizeFurnitureEdgeByValue(item, edge, val);
+                commit(undefined, undefined, furnList().map(f => f.id === next.id ? next : f));
+            },
+        });
     };
 
     const resizeFurniture = (item) => {
+        const cat = catalogItem(item.kind);
         setNumpad({
             title: 'Chiều rộng (mm)',
-            initial: item.w,
+            initial: Math.round(item.w),
             onOK: (wv) => setNumpad({
                 title: 'Chiều sâu (mm)',
-                initial: item.d,
-                onOK: (dv) => {
-                    const upd = { ...item, w: wv, d: dv };
-                    const list = furnList().map(f => f.id === item.id ? upd : f);
-                    commit(undefined, undefined, list);
-                },
+                initial: Math.round(item.d),
+                onOK: (dv) => setNumpad({
+                    title: 'Chiều cao (mm)',
+                    initial: Math.round(item.h ?? cat?.h ?? 800),
+                    onOK: (hv) => {
+                        const upd = { ...item, w: wv, d: dv, h: hv };
+                        commit(undefined, undefined, furnList().map(f => f.id === item.id ? upd : f));
+                    },
+                }),
             }),
         });
     };
 
     // ===== Cột =====
-    // Cột chỉ ghi vào plan khi THẢ TAY. Kéo qua kéo lại không đẩy gì vào lịch sử undo.
     const commitColumn = (target, a, b) => {
         const plan = docRef.current.plan;
         const r = target.kind === 'corner'
@@ -393,7 +435,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     });
 
     // ===== Mặt đứng (khai triển tường) =====
-    const openCeilingNumPad = (roomId, opts = {}) => {
+    const openCeilingNumPad = (roomId) => {
         const plan = docRef.current.plan;
         const room = (plan.rooms || []).find(r => r.id === roomId);
         if (!room) return;
@@ -401,7 +443,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         setNumpad({
             title: `Chiều cao thông thủy${room.name ? ` — ${room.name}` : ''}`,
             initial: Math.round(cur),
-            hint: 'Đo một lần, áp cho cả 4 mặt của phòng',
+            hint: 'Đo một lần, áp cho cả 4 mặt của phòng & góc 3D',
             onOK: (val) => {
                 const p = docRef.current.plan;
                 const { plan: next, warning } = applyCeilingHeight(p, roomId, val, docRef.current.settings);
@@ -421,14 +463,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (!faces.length) { toast('Phòng chưa khép kín — chưa dựng được mặt đứng', 'err'); return; }
         setSel(null);
         setElev({ roomId: room.id, faces, wallId: faces[0].wallId });
-        // Đánh dấu 4 mặt của phòng là "đã dựng" — DXF chỉ xuất mặt KTS đã ngó tới,
-        // không tự đoán hộ những tường chưa ai xem.
         const ids = new Set(faces.map(f => f.wallId));
         if (plan.walls.some(w => ids.has(w.id) && !w.elev)) {
             commit({ ...plan, walls: plan.walls.map(w => ids.has(w.id) ? { ...w, elev: true } : w) }, undefined);
         }
-        // Chưa đo trần thì hỏi luôn — phát laser đầu tiên khi bước vào phòng.
-        // Mở màn hình TRƯỚC rồi mới hỏi: bấm Hủy vẫn xem được với số mặc định.
         if (!Number.isFinite(room.h)) openCeilingNumPad(room.id);
     };
 
@@ -473,7 +511,6 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     };
 
     const insertTpl = (tpl) => {
-        // đặt template vào giữa vùng đang xem, bắt lưới góc trên-trái
         const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
         const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
         const at = snapFn({ x: cx - tpl.w / 2, y: cy - tpl.d / 2 });
@@ -523,7 +560,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             }
             const anchorPt = { x: chain.anchor.x, y: chain.anchor.y };
             let end = resolvePoint(w, anchorPt);
-            if (dist(anchorPt, end) < 50) return; // accidental double tap
+            if (dist(anchorPt, end) < 50) return;
             let plan = docRef.current.plan;
             if (!end.nodeId) {
                 const hit = snapToWall(plan, end, 20 / view.scale);
@@ -563,6 +600,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         }
         if (mode === 'select' || mode === 'column') {
             setSel(null);
+            setFurnEditId(null);
             setOpeningSheet(null);
         }
     };
@@ -581,8 +619,6 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             setOpeningSheet({ wallId, openingId });
             return;
         }
-        // Chạm vào một cạnh của cột thì chọn CẢ CỘT, không phải một cạnh rời — sửa lẻ
-        // từng cạnh là cách chắc chắn nhất để làm cột hết vuông.
         const w = docRef.current.plan.walls.find(x => x.id === wallId);
         setSel(w?.column ? { kind: 'column', id: w.column } : { kind: 'wall', id: wallId });
         setOpeningSheet(null);
@@ -613,7 +649,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         commit(undefined, notes);
     };
 
-    // ===== Pointer / gesture handling (tap-end pattern: drag pans, clean tap acts) =====
+    // ===== Pointer / gesture handling =====
     const getPos = (e) => {
         const stage = stageRef.current;
         if (!stage) return null;
@@ -643,13 +679,11 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             gestureRef.current = { type: 'pinch', lastDist: touchDist(e.evt.touches), lastCenter: touchCenter(e.evt.touches, rect) };
             return;
         }
-        if (e.target.name?.() === 'handle') return;
+        if (e.target.name?.() === 'handle' || e.target.parent?.name?.() === 'handle') return;
         if (e.evt?.cancelable) e.evt.preventDefault();
         const p = getPos(e);
         if (!p) return;
         if (mode === 'column') {
-            // Bắt chỗ neo ngay lúc đặt ngón xuống — kéo sau đó chỉ còn quyết định kích thước,
-            // nên ngón có trượt bao nhiêu cũng không làm cột lệch khỏi góc/tường.
             const target = columnTargetAt(docRef.current.plan, toWorld(p), 24 / view.scale);
             if (target) {
                 gestureRef.current = { type: 'column', sx: p.x, sy: p.y, target };
@@ -682,9 +716,6 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (g?.type === 'column') {
             if (e.evt?.cancelable) e.evt.preventDefault();
             const s = columnSizeFromDrag(g.target, toWorld(p));
-            // Kéo tới sát đầu tường thì mục tiêu tự đổi thành GÓC. Phải đổi ngay ở đây
-            // chứ không đợi lúc thả tay, nếu không preview vẽ bướu giữa tường mà kết quả
-            // lại ra cột góc — người đo nhìn một đằng ra một nẻo.
             const eff = resolveColumnTarget(docRef.current.plan, g.target, s.a, s.b);
             g.size = s;
             g.effective = eff;
@@ -709,10 +740,8 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         gestureRef.current = null;
         if (g?.type === 'column') {
             setColDrag(null);
-            // Chạm mà không kéo = cột tiết diện mặc định; ai cũng đo lại số thật sau.
             const { a, b } = g.size || { a: COLUMN_DEFAULT, b: COLUMN_DEFAULT };
             const ea = a || COLUMN_DEFAULT, eb = b || COLUMN_DEFAULT;
-            // Chốt bằng ĐÚNG mục tiêu preview đang vẽ, không tính lại từ đầu.
             const eff = g.effective && g.effective.a === ea && g.effective.b === eb
                 ? g.effective
                 : resolveColumnTarget(docRef.current.plan, g.target, ea, eb);
@@ -720,7 +749,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             return;
         }
         if (!g || g.type !== 'tap') return;
-        if (e.evt?.touches?.length > 0) return; // another finger still down
+        if (e.evt?.touches?.length > 0) return;
         const t = e.target;
         const isEmpty = t === t.getStage?.() || t.name?.() === 'plan-grid';
         if (!isEmpty) return;
@@ -743,6 +772,8 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const doExport = async (kind) => {
         setShowExport(false);
         setSel(null);
+        setFurnEditId(null);
+        setSnapGuides([]);
         setChain(null);
         setPreview(null);
         setOpeningSheet(null);
@@ -750,13 +781,6 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (kind === 'dxf') {
             downloadText(generateDxf(d), `KS_${d.name}_${stamp()}.dxf`, 'application/dxf');
             toast('Đã xuất DXF (mm) — mở bằng AutoCAD', 'ok');
-            return;
-        }
-        if (kind === 'cab_dxf') {
-            const dxfStr = generateCabinetDxf(d, null);
-            if (!dxfStr) { toast('Chưa có món nội thất nào để bổ kỹ thuật', 'err'); return; }
-            downloadText(dxfStr, `BT_${d.name}_${(d.furniture || []).length}Mon_${stamp()}.dxf`, 'application/dxf');
-            toast(`Đã xuất DXF hàng loạt ${(d.furniture || []).length} bản vẽ nội thất`, 'ok');
             return;
         }
         const bb = bboxOfPlan(d.plan, d.notes, d.furniture);
@@ -804,8 +828,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
     const selNote = sel?.kind === 'note' ? (doc.notes || []).find(n => n.id === sel.id) : null;
     const selCol = sel?.kind === 'column' && !elev ? columnParts(doc.plan, sel.id) : null;
     const selFurn = sel?.kind === 'furniture' ? (doc.furniture || []).find(f => f.id === sel.id) : null;
+    const has3DContent = doc.plan.walls.length > 0 || (doc.furniture || []).length > 0;
+    const isEditingFurn = !!(selFurn && furnEditId === selFurn.id);
 
     const bannerText = () => {
+        if (isEditingFurn) {
+            return 'Kéo 4 nút xanh Trái · Phải · Trước · Sau để scale (cạnh đối diện cố định) · Chạm nút để nhập số';
+        }
         if (mode === 'draw') return chain
             ? 'Chạm điểm tiếp theo · chạm vào điểm cũ để khép phòng'
             : 'Chạm để đặt điểm bắt đầu tường';
@@ -815,10 +844,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
         if (mode === 'column') return colDrag
             ? 'Kéo để chỉnh hai cạnh · thả tay là xong'
             : 'Chạm vào góc phòng hoặc giữa tường rồi kéo ra';
-        if (mode === 'furniture') return 'Chọn món trong danh sách để thêm vào mặt bằng';
+        if (mode === 'furniture') return 'Chọn món trong thư viện để đặt vào phòng';
         if (mode === 'note') return 'Chạm vào vị trí cần ghi chú';
         return doc.plan.walls.length
-            ? 'Chạm đối tượng để chọn · kéo để di chuyển · véo để zoom'
+            ? 'Chạm đối tượng để chọn · kéo nội thất tự magnet tường & đồ kề'
             : 'Bấm "Tường" bên dưới để bắt đầu vẽ mặt bằng';
     };
 
@@ -847,7 +876,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="icon-btn" style={{ color: 'var(--red-dark)' }} onClick={() => setShowExport(true)}><Share2 size={20} /></button>
             </div>
 
-            {/* Mặt đứng — overlay trong chính màn hình này để dùng chung undo/history */}
+            {/* Mặt đứng — overlay trong chính màn hình này */}
             {elev && (
                 <ElevationView
                     doc={doc} elev={elev}
@@ -856,29 +885,32 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                     onSegmentTap={openSegmentNumPad}
                     onVerticalTap={openVerticalNumPad}
                     onCeilingTap={() => openCeilingNumPad(elev.roomId)}
-                    onFurnitureTap={(id) => setCabItemId(id)}
                 />
             )}
 
-            {/* Bổ kỹ thuật 6 mặt & Phối cảnh 3D cho từng món / hàng loạt nội thất */}
-            {cabItemId && (
-                <CabinetLayoutView
-                    doc={doc}
-                    itemId={cabItemId}
-                    onSelectItem={(id) => setCabItemId(id)}
-                    onUpdateItem={updateFurnitureItem}
-                    onAskNumPad={(cfg) => setNumpad(cfg)}
-                    onClose={() => setCabItemId(null)}
-                />
+            {/* Góc 3D sơ bộ của Phòng / Toàn mặt bằng (lazy-load Three.js) */}
+            {room3dTarget && (
+                <Suspense fallback={
+                    <div className="elev-screen" style={{ alignItems: 'center', justifyContent: 'center' }}>
+                        <div className="loading-spinner" />
+                        <div style={{ marginTop: 10, fontSize: 13, color: 'var(--ink-2)', fontWeight: 600 }}>Đang dựng không gian 3D phòng…</div>
+                    </div>
+                }>
+                    <Room3DView
+                        doc={doc}
+                        initialRoomId={room3dTarget}
+                        onClose={() => setRoom3dTarget(null)}
+                    />
+                </Suspense>
             )}
 
             {/* Mode banner */}
-            <div className={`mode-banner ${mode}`}>
+            <div className={`mode-banner ${isEditingFurn ? 'furn-edit' : mode}`}>
                 <span>{bannerText()}</span>
                 <span className="spacer" />
-                {mode === 'select' && (doc.furniture || []).length > 0 && (
-                    <button className="banner-btn" onClick={() => setCabItemId(selFurn?.id || doc.furniture[0].id)}>
-                        <Layers size={13} /> Bổ 6 mặt ({doc.furniture.length})
+                {mode === 'select' && has3DContent && (
+                    <button className="banner-btn solid-emerald" onClick={() => setRoom3dTarget('all')}>
+                        <Box size={14} /> 3D Phòng
                     </button>
                 )}
                 {mode === 'draw' && (
@@ -922,10 +954,17 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                             <RoomLabels plan={doc.plan} scale={view.scale} listening={mode === 'select'} onTap={onRoomTap} />
                             <FurnitureLayer
                                 items={doc.furniture} scale={view.scale} sel={sel}
+                                editItemId={mode === 'select' ? furnEditId : null}
+                                snapGuides={snapGuides}
                                 listening={mode === 'select'}
-                                onSelect={(id) => { setSel({ kind: 'furniture', id }); setOpeningSheet(null); }}
-                                onChange={(item, doCommit) => placeFurniture(item, doCommit)}
+                                onSelect={(id) => {
+                                    setSel({ kind: 'furniture', id });
+                                    setOpeningSheet(null);
+                                }}
+                                onChange={(item, doCommit, node) => placeFurniture(item, doCommit, node)}
                                 onRotate={rotateFurniture}
+                                onScaleEdge={handleScaleFurnitureEdge}
+                                onTapEdge={handleTapFurnitureEdge}
                             />
                             <Group listening={mode === 'select'}>
                                 {(doc.notes || []).map(n => (
@@ -1007,8 +1046,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
 
                 {selFurn && mode === 'select' && (
                     <div className="float-bar">
-                        <button className="fb-btn" style={{ color: '#059669' }} onClick={() => setCabItemId(selFurn.id)}>
-                            <Layers size={16} /> Bổ 6 mặt
+                        <button
+                            className={`fb-btn${isEditingFurn ? ' fb-btn-active' : ''}`}
+                            style={isEditingFurn ? { background: '#059669', color: '#fff', borderRadius: 9, padding: '6px 11px' } : { color: '#059669' }}
+                            onClick={() => setFurnEditId(id => id === selFurn.id ? null : selFurn.id)}
+                        >
+                            {isEditingFurn ? <Move size={15} /> : <Pencil size={15} />}
+                            {isEditingFurn ? 'Xong 4 chiều' : 'Chỉnh sửa'}
                         </button>
                         <div className="fb-sep" />
                         <button className="fb-btn" style={{ color: 'var(--violet)' }} onClick={() => rotateFurniture(selFurn)}>
@@ -1016,14 +1060,14 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                         </button>
                         <div className="fb-sep" />
                         <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => resizeFurniture(selFurn)}>
-                            <Maximize2 size={16} /> {selFurn.w}×{selFurn.d}
+                            <Maximize2 size={15} /> {Math.round(selFurn.w)}×{Math.round(selFurn.d)}
                         </button>
                         <div className="fb-sep" />
                         <button className="fb-btn" style={{ color: '#dc2626' }} onClick={() => removeFurniture(selFurn.id)}>
                             <Trash2 size={16} />
                         </button>
                         <div className="fb-sep" />
-                        <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
+                        <button className="fb-btn" onClick={() => { setSel(null); setFurnEditId(null); }}><X size={16} /></button>
                     </div>
                 )}
 
@@ -1094,14 +1138,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="sheet-row" onClick={() => {
                     const r = roomMenu;
                     setRoomMenu(null);
-                    setTextSheet({
-                        title: 'Tên phòng',
-                        initial: r.name,
-                        onOK: (name) => commit(renameRoom(docRef.current.plan, r.id, name), undefined),
-                    });
+                    setRoom3dTarget(r.id);
                 }}>
-                    <Pencil size={19} style={{ color: 'var(--blue)' }} />
-                    <div style={{ flex: 1 }}>Đổi tên phòng</div>
+                    <Box size={19} style={{ color: 'var(--ok)' }} />
+                    <div style={{ flex: 1 }}>
+                        Xem góc 3D sơ bộ phòng này
+                        <div className="sub">Xoay 360° tường, cửa & đồ nội thất trong phòng</div>
+                    </div>
                 </button>
                 <button className="sheet-row" onClick={() => {
                     const r = roomMenu;
@@ -1117,6 +1160,18 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                                 : 'Sẽ hỏi chiều cao trần một lần'}
                         </div>
                     </div>
+                </button>
+                <button className="sheet-row" onClick={() => {
+                    const r = roomMenu;
+                    setRoomMenu(null);
+                    setTextSheet({
+                        title: 'Tên phòng',
+                        initial: r.name,
+                        onOK: (name) => commit(renameRoom(docRef.current.plan, r.id, name), undefined),
+                    });
+                }}>
+                    <Pencil size={19} style={{ color: 'var(--blue)' }} />
+                    <div style={{ flex: 1 }}>Đổi tên phòng</div>
                 </button>
                 <button className="sheet-row" onClick={() => {
                     const r = roomMenu;
@@ -1158,7 +1213,8 @@ export default function PlanEditor({ doc, onChange, onBack }) {
 
             {/* Furniture picker */}
             <Sheet open={showFurnPicker} onClose={() => { setShowFurnPicker(false); setModeRaw('select'); }}
-                title="Thêm nội thất" sub="Món có mặt lưng sẽ tự hút vào tường khi kéo gần">
+                title="Thư viện nội thất 2D/3D"
+                sub="Tự động magnet vào tường, góc cột & đồ gần nhau · Bấm Chỉnh sửa để scale 4 chiều">
                 <div className="chip-row" style={{ marginBottom: 6 }}>
                     {GROUPS.map(g => (
                         <button key={g.key} className={`chip ${furnGroup === g.key ? 'on' : ''}`}
@@ -1172,10 +1228,12 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                         const sz = defaultSize(it.key, settings);
                         return (
                             <button key={it.key} className="sheet-row" onClick={() => addFurniture(it.key)}>
-                                <Sofa size={18} style={{ color: it.back ? 'var(--blue)' : 'var(--muted)' }} />
+                                <Sofa size={18} style={{ color: it.back ? 'var(--blue)' : 'var(--ok)' }} />
                                 <div style={{ flex: 1 }}>
                                     {it.name}
-                                    <div className="sub">{sz.w} × {sz.d} mm{it.back ? ' · hút tường' : ''}</div>
+                                    <div className="sub">
+                                        {sz.w} × {sz.d} × {sz.h} mm{it.back ? ' · magnet tường & đồ kề' : ' · magnet căn tim/cạnh'}
+                                    </div>
                                 </div>
                             </button>
                         );
@@ -1273,41 +1331,32 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             </Sheet>
 
             {/* Export */}
-            <Sheet open={showExport} onClose={() => setShowExport(false)} title="Xuất mặt bằng">
+            <Sheet open={showExport} onClose={() => setShowExport(false)} title="Xuất mặt bằng & Phối cảnh">
+                {has3DContent && (
+                    <button className="sheet-row" onClick={() => { setShowExport(false); setRoom3dTarget('all'); }}>
+                        <Box size={19} style={{ color: 'var(--ok)' }} />
+                        <div style={{ flex: 1 }}>
+                            Xem & Xuất ảnh góc 3D sơ bộ
+                            <div className="sub">Phối cảnh 3D phòng + tường, cửa & nội thất</div>
+                        </div>
+                    </button>
+                )}
                 <button className="sheet-row" onClick={() => doExport('share')}>
                     <Share2 size={19} style={{ color: 'var(--blue)' }} />
-                    <div style={{ flex: 1 }}>Chia sẻ ảnh<div className="sub">Zalo, Messenger, Email...</div></div>
+                    <div style={{ flex: 1 }}>Chia sẻ ảnh 2D<div className="sub">Zalo, Messenger, Email...</div></div>
                 </button>
                 <button className="sheet-row" onClick={() => doExport('png')}>
                     <ImageIcon size={19} style={{ color: 'var(--ok)' }} />
-                    <div style={{ flex: 1 }}>Tải PNG<div className="sub">Nét cao, nền trắng</div></div>
+                    <div style={{ flex: 1 }}>Tải PNG mặt bằng<div className="sub">Nét cao, nền trắng</div></div>
                 </button>
                 <button className="sheet-row" onClick={() => doExport('jpg')}>
                     <ImageIcon size={19} style={{ color: 'var(--warn)' }} />
-                    <div style={{ flex: 1 }}>Tải JPG<div className="sub">Nhẹ, gửi nhanh</div></div>
+                    <div style={{ flex: 1 }}>Tải JPG mặt bằng<div className="sub">Nhẹ, gửi nhanh</div></div>
                 </button>
                 <button className="sheet-row" onClick={() => doExport('dxf')}>
                     <FileDown size={19} style={{ color: 'var(--violet)' }} />
-                    <div style={{ flex: 1 }}>Xuất DXF mặt bằng & tường<div className="sub">Mở AutoCAD, đơn vị mm</div></div>
+                    <div style={{ flex: 1 }}>Xuất AutoCAD DXF<div className="sub">Mặt bằng CAD chi tiết + Khai triển tường (mm)</div></div>
                 </button>
-                {(doc.furniture || []).length > 0 && (
-                    <>
-                        <button className="sheet-row" onClick={() => { setShowExport(false); setCabItemId(doc.furniture[0].id); }}>
-                            <Layers size={19} style={{ color: 'var(--ok)' }} />
-                            <div style={{ flex: 1 }}>
-                                Bổ kỹ thuật 6 mặt & Phối cảnh 3D
-                                <div className="sub">Xem mặt cắt A-A, B-B & chỉnh khoang/đợt ({doc.furniture.length} món)</div>
-                            </div>
-                        </button>
-                        <button className="sheet-row" onClick={() => doExport('cab_dxf')}>
-                            <FileDown size={19} style={{ color: '#059669' }} />
-                            <div style={{ flex: 1 }}>
-                                Xuất DXF Nội thất hàng loạt ({doc.furniture.length} tờ)
-                                <div className="sub">Mỗi món 5 hình chiếu + mặt cắt Hatch + khung tên</div>
-                            </div>
-                        </button>
-                    </>
-                )}
             </Sheet>
 
             {/* Draw settings */}

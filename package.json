@@ -15,7 +15,8 @@
     "pocketbase": "^0.27.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-konva": "^19.2.2"
+    "react-konva": "^19.2.2",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.1.1",

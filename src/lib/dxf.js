@@ -6,7 +6,7 @@ import {
     roomFaces, projectItemOnWall, SLAB_DEFAULT,
 } from './geometry';
 import { catalogItem, resolveZ } from './furnitureCatalog';
-import { buildSixViewsBundle, projectItemDetailOnWall } from './projectionEngine';
+import { projectItemDetailOnWall } from './projectionEngine';
 
 const LAYERS = [
     { name: 'WALL', color: 7 },
@@ -16,6 +16,7 @@ const LAYERS = [
     { name: 'DOOR', color: 1 },
     { name: 'WINDOW', color: 5 },
     { name: 'FURNITURE', color: 8 },
+    { name: 'FURN-DETAIL', color: 9 },
     { name: 'ELEV', color: 7 },
     { name: 'ELEV-DOOR', color: 1 },
     { name: 'ELEV-WINDOW', color: 5 },
@@ -26,20 +27,6 @@ const LAYERS = [
     { name: 'ELEV-TEXT', color: 2 },
 ];
 
-const CAB_LAYERS = [
-    { name: 'CAB-FRAME', color: 7 },
-    { name: 'CAB-OUTLINE', color: 7 },
-    { name: 'CAB-PROJ', color: 8 },
-    { name: 'CAB-CUT', color: 4 },
-    { name: 'CAB-HATCH', color: 9 },
-    { name: 'CAB-SWING', color: 1 },
-    { name: 'CAB-DIM', color: 3 },
-    { name: 'CAB-TEXT', color: 2 },
-];
-
-// Bỏ dấu tiếng Việt cho chữ trong DXF. `dxfEscape` đã sinh \U+XXXX đúng chuẩn
-// AutoCAD, nhưng BricsCAD và các viewer cũ hay ra ô vuông — theo đúng lối đã
-// dùng sẵn trong file này ('Don vi: mm').
 export function asciiFold(str) {
     return String(str)
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -48,7 +35,6 @@ export function asciiFold(str) {
 
 /**
  * Các mặt đứng cần xuất: chỉ tường KTS đã thật sự dựng (wall.elev), gom theo phòng.
- * Trả về đủ dữ liệu để vẽ, không cần đụng lại plan.
  */
 export function elevationFaces(doc) {
     const plan = doc?.plan;
@@ -60,7 +46,7 @@ export function elevationFaces(doc) {
         const H = ceilingHeight(room, settings);
         for (const f of roomFaces(plan, room)) {
             const wall = plan.walls.find(w => w.id === f.wallId);
-            if (!wall?.elev) continue; // chưa dựng thì không đoán hộ
+            if (!wall?.elev) continue;
             const frame = wallFrame(plan, f.wallId, room);
             if (!frame) continue;
             const items = [];
@@ -106,14 +92,121 @@ function dxfEscape(str) {
 
 const normDeg = (d) => ((d % 360) + 360) % 360;
 
+/** Vẽ chi tiết CAD 2D nội thất trên mặt bằng xuất AutoCAD DXF */
+function emitFurniture2DCad(sym, w, d, pt, closedPolyline, line, circle) {
+    const hw = w / 2, hd = d / 2;
+    const rectPts = (x0, y0, rw, rh) => [pt(x0, y0), pt(x0 + rw, y0), pt(x0 + rw, y0 + rh), pt(x0, y0 + rh)];
+
+    if (sym === 'sofaL') {
+        const mainD = Math.min(d * 0.52, 920);
+        const chaiseW = Math.min(w * 0.37, 980);
+        const chaiseX = hw - chaiseW;
+        closedPolyline('FURNITURE', [
+            pt(-hw, -hd), pt(hw, -hd), pt(hw, hd),
+            pt(chaiseX, hd), pt(chaiseX, -hd + mainD), pt(-hw, -hd + mainD),
+        ]);
+        const backD = Math.min(d * 0.13, 210);
+        line('FURN-DETAIL', pt(-hw, -hd + backD), pt(hw, -hd + backD));
+        line('FURN-DETAIL', pt(chaiseX, -hd + backD), pt(chaiseX, -hd + mainD));
+        return;
+    }
+
+    closedPolyline('FURNITURE', rectPts(-hw, -hd, w, d));
+
+    switch (sym) {
+        case 'bed': {
+            const hb = Math.min(70, d * 0.045);
+            const pilD = Math.min(d * 0.19, 320);
+            const gap = Math.min(w * 0.045, 65);
+            line('FURN-DETAIL', pt(-hw, -hd + hb), pt(hw, -hd + hb));
+            if (w > 1300) {
+                const pw = (w - gap * 3) / 2;
+                closedPolyline('FURN-DETAIL', rectPts(-hw + gap, -hd + hb + gap * 0.7, pw, pilD));
+                closedPolyline('FURN-DETAIL', rectPts(gap / 2, -hd + hb + gap * 0.7, pw, pilD));
+            } else {
+                closedPolyline('FURN-DETAIL', rectPts(-hw + gap, -hd + hb + gap * 0.7, w - gap * 2, pilD));
+            }
+            const sy = -hd + hb + pilD + gap * 1.8;
+            line('FURN-DETAIL', pt(-hw, sy), pt(hw, sy));
+            line('FURN-DETAIL', pt(-hw, sy + 180), pt(hw - 220, sy + 180));
+            line('FURN-DETAIL', pt(hw - 220, sy + 180), pt(hw, sy));
+            break;
+        }
+        case 'wardrobe':
+        case 'wardrobe_slide': {
+            const doorBand = sym === 'wardrobe_slide' ? 85 : 40;
+            line('FURN-DETAIL', pt(-hw, hd - doorBand), pt(hw, hd - doorBand));
+            line('FURN-DETAIL', pt(-hw + 30, 0), pt(hw - 30, 0));
+            const nBays = Math.max(2, Math.round(w / (sym === 'wardrobe_slide' ? 950 : 580)));
+            for (let i = 1; i < nBays; i++) {
+                const bx = -hw + (w / nBays) * i;
+                line('FURN-DETAIL', pt(bx, -hd), pt(bx, hd - doorBand));
+            }
+            break;
+        }
+        case 'sofa':
+        case 'armchair': {
+            const arm = Math.min(w * 0.12, 200);
+            const back = Math.min(d * 0.24, 220);
+            line('FURN-DETAIL', pt(-hw, -hd + back), pt(hw, -hd + back));
+            line('FURN-DETAIL', pt(-hw + arm, -hd + back), pt(-hw + arm, hd));
+            line('FURN-DETAIL', pt(hw - arm, -hd + back), pt(hw - arm, hd));
+            break;
+        }
+        case 'table': {
+            const cw = Math.min(420, Math.min(w, d) * 0.44);
+            const cd = cw * 0.55;
+            const n = Math.max(2, Math.round(w / 650));
+            for (let i = 0; i < n; i++) {
+                const cx = -hw + (w / n) * (i + 0.5);
+                closedPolyline('FURN-DETAIL', rectPts(cx - cw / 2, -hd - cd, cw, cd));
+                closedPolyline('FURN-DETAIL', rectPts(cx - cw / 2, hd, cw, cd));
+            }
+            break;
+        }
+        case 'toilet': {
+            line('FURN-DETAIL', pt(-hw, -hd + d * 0.28), pt(hw, -hd + d * 0.28));
+            circle('FURN-DETAIL', pt(0, d * 0.14), Math.min(hw * 0.75, d * 0.28));
+            break;
+        }
+        case 'basin':
+        case 'sink':
+        case 'sink2': {
+            const n = w >= 780 ? 2 : 1;
+            const spanW = sym === 'sink2' ? w * 0.66 : w;
+            for (let i = 0; i < n; i++) {
+                const cx = -hw + (spanW / n) * (i + 0.5);
+                circle('FURN-DETAIL', pt(cx, 0), Math.min((spanW / n) * 0.34, d * 0.32));
+            }
+            break;
+        }
+        case 'hob': {
+            const r = Math.min(w, d) * 0.17;
+            circle('FURN-DETAIL', pt(-w * 0.22, 0), r);
+            circle('FURN-DETAIL', pt(w * 0.22, 0), r * 0.85);
+            break;
+        }
+        case 'shower': {
+            line('FURN-DETAIL', pt(-hw, -hd), pt(hw, hd));
+            line('FURN-DETAIL', pt(hw, -hd), pt(-hw, hd));
+            circle('FURN-DETAIL', pt(0, 0), 45);
+            break;
+        }
+        case 'tub': {
+            closedPolyline('FURN-DETAIL', rectPts(-hw + w * 0.07, -hd + d * 0.11, w * 0.86, d * 0.78));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 export function generateDxf(doc) {
     const t = [];
     const tag = (code, value) => { t.push(String(code), String(value)); };
 
     const bb = bboxOfPlan(doc.plan, doc.notes, doc.furniture) || { x: 0, y: 0, width: 10000, height: 8000 };
 
-    // Khung bản vẽ phải bao CẢ mặt đứng — thiếu thì Zoom Extents trong AutoCAD
-    // bỏ sót, KTS mở file tưởng chưa xuất mặt đứng.
     const faces = elevationFaces(doc);
     const GAP = 3500, PITCH = 2500;
     const baseY = bb.y + bb.height + GAP;
@@ -153,6 +246,11 @@ export function generateDxf(doc) {
         tag(10, num(p1.x)); tag(20, num(-p1.y)); tag(30, '0.0');
         tag(11, num(p2.x)); tag(21, num(-p2.y)); tag(31, '0.0');
     };
+    const circle = (layer, center, r) => {
+        tag(0, 'CIRCLE'); tag(8, layer);
+        tag(10, num(center.x)); tag(20, num(-center.y)); tag(30, '0.0');
+        tag(40, num(r));
+    };
     const text = (layer, p, height, content) => {
         tag(0, 'TEXT'); tag(8, layer);
         tag(10, num(p.x)); tag(20, num(-p.y)); tag(30, '0.0');
@@ -188,7 +286,6 @@ export function generateDxf(doc) {
                 const mid = { x: (a.x + b.x) / 2 + nx * off, y: (a.y + b.y) / 2 + ny * off };
                 text('DIM', mid, 150, String(Math.round(len)));
 
-                // Openings: span line + symbol
                 const ux = (b.x - a.x) / len;
                 const uy = (b.y - a.y) / len;
                 const thetaScreenDeg = Math.atan2(uy, ux) * 180 / Math.PI;
@@ -219,7 +316,7 @@ export function generateDxf(doc) {
             text('ROOM', { x: r.cx, y: r.cy + 350 }, 180, `${(r.area / 1e6).toFixed(1)} m2 - ${(r.perimeter / 1000).toFixed(1)} m`);
         }
     }
-    // Nội thất: hình chữ nhật đã quay + tên (layer FURNITURE để KTS tắt/mở riêng)
+
     for (const f of (doc.furniture || [])) {
         const cat = catalogItem(f.kind);
         const w = f.w || cat?.w || 600;
@@ -228,9 +325,9 @@ export function generateDxf(doc) {
         const cos = Math.cos(th), sin = Math.sin(th);
         const pt = (lx, ly) => ({ x: f.x + lx * cos - ly * sin, y: f.y + lx * sin + ly * cos });
         const hw = w / 2, hd = d / 2;
-        closedPolyline('FURNITURE', [pt(-hw, -hd), pt(hw, -hd), pt(hw, hd), pt(-hw, hd)]);
+        emitFurniture2DCad(cat?.sym, w, d, pt, closedPolyline, line, circle);
         if (cat?.back) line('FURNITURE', pt(-hw, -hd), pt(hw, -hd));
-        if (cat?.name) text('FURNITURE', { x: f.x - hw * 0.8, y: f.y }, 110, asciiFold(cat.name));
+        if (cat?.name) text('FURNITURE', { x: f.x - hw * 0.7, y: f.y }, 105, asciiFold(cat.name));
     }
 
     // ===== Khai triển tường (mặt đứng) =====
@@ -274,7 +371,6 @@ export function generateDxf(doc) {
                 text('ELEV-FURN', E(x0 + 60, it.z + it.h + 50), 100, `${asciiFold(it.name)} +${Math.round(it.z)}`);
             }
 
-            // chuỗi kích thước ngang
             for (const s of wallSegments(wall, len)) {
                 if (s.len < 1) continue;
                 const ua = frame.toU(s.from), ub = frame.toU(s.to);
@@ -297,177 +393,6 @@ export function generateDxf(doc) {
         });
     }
     text('TEXT', { x: bb.x, y: bb.y - 300 }, 200, 'Don vi: mm (MKG Khao Sat)');
-
-    tag(0, 'ENDSEC');
-    tag(0, 'EOF');
-    return t.join('\r\n') + '\r\n';
-}
-
-/**
- * Xuất DXF Bổ Kỹ Thuật Nội Thất (1 món hoặc Hàng loạt tất cả món trong mặt bằng).
- * Mỗi món sinh 1 khung bản vẽ chuẩn tỉ lệ 1:1 (mm) gồm 5 hình chiếu vector căn gióng:
- *   Hàng trên: MẶT ĐỨNG | MẶT BÊN TRÁI | MẶT CẮT A-A (có Hatch & dim tầng đợt)
- *   Hàng dưới: MẶT BẰNG | MẶT CẮT B-B (có Hatch & dim khoang) + Khung tên MKG bên phải.
- */
-export function generateCabinetDxf(doc, onlyItemId = null) {
-    const allItems = (doc?.furniture || []).filter(it => !onlyItemId || it.id === onlyItemId);
-    if (!allItems.length) return '';
-
-    const t = [];
-    const tag = (code, value) => { t.push(String(code), String(value)); };
-
-    // Dựng trước toàn bộ bundle để biết chính xác khổ bao $EXTMIN/$EXTMAX
-    const sheets = allItems.map((it, idx) => {
-        const cat = catalogItem(it.kind);
-        const bundle = buildSixViewsBundle(it, cat);
-        const { w, d, h } = bundle.config;
-        const colGap = Math.max(550, w * 0.25);
-        const rowGap = Math.max(650, h * 0.28);
-        const pad = 550;
-        const titleBlockW = Math.max(900, Math.round((w + d * 2) * 0.24));
-        const contentW = w + colGap + d + colGap + d;
-        const contentH = h + rowGap + d;
-        const sheetW = pad + contentW + pad + titleBlockW;
-        const sheetH = pad + contentH + pad + 350;
-        return { it, cat, bundle, idx, colGap, rowGap, pad, titleBlockW, sheetW, sheetH };
-    });
-
-    const SHEET_GAP = 900;
-    const totalW = sheets.reduce((s, sh) => s + sh.sheetW + SHEET_GAP, 0);
-    const maxH = sheets.reduce((m, sh) => Math.max(m, sh.sheetH), 3000);
-
-    tag(0, 'SECTION'); tag(2, 'HEADER');
-    tag(9, '$ACADVER'); tag(1, 'AC1009');
-    tag(9, '$EXTMIN'); tag(10, '0'); tag(20, '0'); tag(30, '0.0');
-    tag(9, '$EXTMAX'); tag(10, num(totalW)); tag(20, num(maxH)); tag(30, '0.0');
-    tag(0, 'ENDSEC');
-
-    tag(0, 'SECTION'); tag(2, 'TABLES');
-    tag(0, 'TABLE'); tag(2, 'LTYPE'); tag(70, 1);
-    tag(0, 'LTYPE'); tag(2, 'CONTINUOUS'); tag(70, 0); tag(3, 'Solid line'); tag(72, 65); tag(73, 0); tag(40, '0.0');
-    tag(0, 'ENDTAB');
-    tag(0, 'TABLE'); tag(2, 'LAYER'); tag(70, CAB_LAYERS.length);
-    for (const l of CAB_LAYERS) {
-        tag(0, 'LAYER'); tag(2, l.name); tag(70, 0); tag(62, l.color); tag(6, 'CONTINUOUS');
-    }
-    tag(0, 'ENDTAB');
-    tag(0, 'ENDSEC');
-
-    tag(0, 'SECTION'); tag(2, 'ENTITIES');
-
-    // Ở hàm này dùng toạ độ CAD chuẩn (X sang phải, Y hướng lên)
-    const line = (layer, x1, y1, x2, y2) => {
-        tag(0, 'LINE'); tag(8, layer);
-        tag(10, num(x1)); tag(20, num(y1)); tag(30, '0.0');
-        tag(11, num(x2)); tag(21, num(y2)); tag(31, '0.0');
-    };
-    const rect = (layer, x, y, w, h) => {
-        tag(0, 'POLYLINE'); tag(8, layer); tag(66, 1); tag(70, 1);
-        for (const [px, py] of [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) {
-            tag(0, 'VERTEX'); tag(8, layer);
-            tag(10, num(px)); tag(20, num(py)); tag(30, '0.0');
-        }
-        tag(0, 'SEQEND');
-    };
-    const text = (layer, x, y, height, content) => {
-        tag(0, 'TEXT'); tag(8, layer);
-        tag(10, num(x)); tag(20, num(y)); tag(30, '0.0');
-        tag(40, num(height)); tag(1, dxfEscape(asciiFold(content)));
-    };
-    const dimH = (x1, x2, yRef, yDim, label) => {
-        line('CAB-DIM', x1, yRef, x1, yDim);
-        line('CAB-DIM', x2, yRef, x2, yDim);
-        line('CAB-DIM', x1 - 25, yDim, x2 + 25, yDim);
-        text('CAB-DIM', (x1 + x2) / 2 - 90, yDim + 35, 75, String(Math.round(label ?? Math.abs(x2 - x1))));
-    };
-    const dimV = (y1, y2, xRef, xDim, label) => {
-        line('CAB-DIM', xRef, y1, xDim, y1);
-        line('CAB-DIM', xRef, y2, xDim, y2);
-        line('CAB-DIM', xDim, y1 - 25, xDim, y2 + 25);
-        text('CAB-DIM', xDim + (xDim < xRef ? -180 : 40), (y1 + y2) / 2 - 35, 75, String(Math.round(label ?? Math.abs(y2 - y1))));
-    };
-    const emitView = (view, ox, oy, title) => {
-        for (const seg of view.segments) {
-            let lyr = 'CAB-PROJ';
-            if (seg.weight === 'cut') lyr = 'CAB-CUT';
-            else if (seg.weight === 'hatch') lyr = 'CAB-HATCH';
-            else if (seg.weight === 'swing') lyr = 'CAB-SWING';
-            else if (seg.weight === 'outline') lyr = 'CAB-OUTLINE';
-            line(lyr, ox + seg.u1, oy + seg.v1, ox + seg.u2, oy + seg.v2);
-        }
-        text('CAB-TEXT', ox + view.width * 0.2, oy - 260, 95, title);
-    };
-
-    let sheetX = 0;
-    for (const sh of sheets) {
-        const { it, cat, bundle, idx, colGap, rowGap, pad, titleBlockW, sheetW, sheetH } = sh;
-        const { w, d, h } = bundle.config;
-        const { front, left, sectionAA, plan, sectionBB } = bundle.views;
-
-        // Khung bản vẽ & Khung tên bên phải (giống bố cục Betagon Layout)
-        rect('CAB-FRAME', sheetX, 0, sheetW, sheetH);
-        const tbX = sheetX + sheetW - titleBlockW;
-        line('CAB-FRAME', tbX, 0, tbX, sheetH);
-        const rows = [0.14, 0.28, 0.44, 0.68, 0.85];
-        for (const r of rows) line('CAB-FRAME', tbX, sheetH * r, tbX + titleBlockW, sheetH * r);
-
-        const itemName = cat?.name || it.kind || 'NOI THAT';
-        text('CAB-TEXT', tbX + 60, sheetH * 0.91, 120, 'MKG NOI THAT');
-        text('CAB-TEXT', tbX + 60, sheetH * 0.75, 90, `DU AN: ${doc.name || 'Khao sat'}`);
-        text('CAB-TEXT', tbX + 60, sheetH * 0.54, 115, `${itemName.toUpperCase()} #${idx + 1}`);
-        text('CAB-TEXT', tbX + 60, sheetH * 0.47, 85, `KT: ${Math.round(w)} x ${Math.round(d)} x ${Math.round(h)} mm`);
-        text('CAB-TEXT', tbX + 60, sheetH * 0.34, 85, `VAN: ${bundle.config.boardT}mm - HAU: ${bundle.config.backT}mm`);
-        text('CAB-TEXT', tbX + 60, sheetH * 0.20, 85, `TY LE: 1:1 (mm)`);
-        text('CAB-TEXT', tbX + 60, sheetH * 0.05, 110, `TO: ${String(idx + 1).padStart(2, '0')}/${String(sheets.length).padStart(2, '0')}`);
-
-        // Tọa độ gốc các khung nhìn (Hàng dưới: Mặt bằng & Cắt B-B; Hàng trên: Mặt đứng, Mặt bên, Cắt A-A)
-        const rowBottomY = pad + 180;
-        const rowTopY = rowBottomY + d + rowGap;
-        const col1X = sheetX + pad;
-        const col2X = col1X + w + colGap;
-        const col3X = col2X + d + colGap;
-
-        // 1. MẶT ĐỨNG + ký hiệu cắt A-A, B-B + Dim bao
-        emitView(front, col1X, rowTopY, 'MAT DUNG');
-        dimH(col1X, col1X + w, rowTopY + h, rowTopY + h + 150, w);
-        dimV(rowTopY, rowTopY + h, col1X, col1X - 160, h);
-        // Đường cắt A-A (dọc) & B-B (ngang) trên Mặt đứng
-        line('CAB-SWING', col1X + bundle.xCut, rowTopY - 90, col1X + bundle.xCut, rowTopY + h + 90);
-        text('CAB-SWING', col1X + bundle.xCut + 25, rowTopY + h + 95, 85, 'A');
-        text('CAB-SWING', col1X + bundle.xCut + 25, rowTopY - 120, 85, 'A');
-        line('CAB-SWING', col1X - 90, rowTopY + bundle.zCut, col1X + w + 90, rowTopY + bundle.zCut);
-        text('CAB-SWING', col1X - 170, rowTopY + bundle.zCut + 20, 85, 'B');
-        text('CAB-SWING', col1X + w + 105, rowTopY + bundle.zCut + 20, 85, 'B');
-
-        // 2. MẶT BÊN TRÁI
-        emitView(left, col2X, rowTopY, 'MAT BEN TRAI');
-        dimH(col2X, col2X + d, rowTopY, rowTopY - 130, d);
-        dimV(rowTopY, rowTopY + h, col2X + d, col2X + d + 140, h);
-
-        // 3. MẶT CẮT A-A + chuỗi dim cao độ tầng đợt bên trong
-        emitView(sectionAA, col3X, rowTopY, 'MAT CAT A-A');
-        dimH(col3X, col3X + d, rowTopY, rowTopY - 130, d);
-        for (const cz of sectionAA.clearDimsZ) {
-            dimV(rowTopY + cz.v0, rowTopY + cz.v1, col3X + d, col3X + d + 130, cz.val);
-        }
-        dimV(rowTopY, rowTopY + h, col3X + d, col3X + d + 290, h);
-
-        // 4. MẶT BẰNG (căn thẳng cột với MẶT ĐỨNG)
-        emitView(plan, col1X, rowBottomY, 'MAT BANG');
-        dimH(col1X, col1X + w, rowBottomY + d, rowBottomY + d + 130, w);
-        dimV(rowBottomY, rowBottomY + d, col1X, col1X - 160, d);
-
-        // 5. MẶT CẮT B-B + chuỗi dim lọt lòng từng khoang đứng
-        const bbX = col2X;
-        emitView(sectionBB, bbX, rowBottomY, 'MAT CAT B-B');
-        for (const cx of sectionBB.clearDimsX) {
-            dimH(bbX + cx.u0, bbX + cx.u1, rowBottomY + d, rowBottomY + d + 120, cx.val);
-        }
-        dimH(bbX, bbX + w, rowBottomY + d, rowBottomY + d + 260, w);
-        dimV(rowBottomY, rowBottomY + d, bbX + w, bbX + w + 140, d);
-
-        sheetX += sheetW + SHEET_GAP;
-    }
 
     tag(0, 'ENDSEC');
     tag(0, 'EOF');
