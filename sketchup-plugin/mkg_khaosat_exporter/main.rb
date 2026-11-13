@@ -20,7 +20,7 @@ module MKG
       { 'key' => 'wc',      'name' => 'WC' },
       { 'key' => 'elec',    'name' => 'Điện & TB' },
       { 'key' => 'other',   'name' => 'Khác' }
-    ].freeze
+    ].freeze unless defined?(GROUPS)
 
     def plugin_dir
       __dir__
@@ -200,9 +200,9 @@ module MKG
       vx = Geom::Point3d.new(1, 0, 0).transform(tr) - origin
       vy = Geom::Point3d.new(0, 1, 0).transform(tr) - origin
       vz = Geom::Point3d.new(0, 0, 1).transform(tr) - origin
-      sx = vx.length
-      sy = vy.length
-      sz = vz.length
+      sx = vx.length.to_f
+      sy = vy.length.to_f
+      sz = vz.length.to_f
       sx = 1.0 if sx < 1e-6
       sy = 1.0 if sy < 1e-6
       sz = 1.0 if sz < 1e-6
@@ -265,8 +265,8 @@ module MKG
           if !keep && faces.length == 2
             n1 = faces[0].normal.transform(tr)
             n2 = faces[1].normal.transform(tr)
-            n1.normalize! if n1.length > 1e-6
-            n2.normalize! if n2.length > 1e-6
+            n1.normalize! if n1.length.to_f > 1e-6
+            n2.normalize! if n2.length.to_f > 1e-6
             # Đường bao chân trời khi nhìn từ trên xuống (+Z / -Z đổi dấu qua ngưỡng)
             keep = (n1.z >= 0.05 && n2.z < 0.05) || (n2.z >= 0.05 && n1.z < 0.05) ||
                    (n1.z <= -0.05 && n2.z > -0.05) || (n2.z <= -0.05 && n1.z > -0.05)
@@ -304,7 +304,7 @@ module MKG
         qy2 = (sy2 / 2.0).round * 2
         next if qx1 == qx2 && qy1 == qy2
 
-        key = if [qx1, qy1] <= [qx2, qy2]
+        key = if (qx1 < qx2) || (qx1 == qx2 && qy1 <= qy2)
                 "#{qx1},#{qy1}:#{qx2},#{qy2}"
               else
                 "#{qx2},#{qy2}:#{qx1},#{qy1}"
@@ -418,7 +418,7 @@ module MKG
           (1..mesh.count_points).each do |pi|
             pt = mesh.point_at(pi).transform(tr)
             nm = mesh.normal_at(pi).transform(tr)
-            nm.normalize! if nm.length > 1e-6
+            nm.normalize! if nm.length.to_f > 1e-6
             b[:positions].push(pt.x.to_m.round(5), pt.y.to_m.round(5), pt.z.to_m.round(5))
             b[:normals].push(nm.x.round(4), nm.y.round(4), nm.z.round(4))
           end
@@ -452,12 +452,12 @@ module MKG
       collect_mesh_triangles(entities, Geom::Transformation.new, root_mat, buckets)
       return nil if buckets.empty?
 
-      effects_xml = +''
-      mats_xml = +''
-      bind_mats_xml = +''
+      effects_xml = String.new
+      mats_xml = String.new
+      bind_mats_xml = String.new
       positions = []
       normals = []
-      triangles_xml = +''
+      triangles_xml = String.new
       vert_offset = 0
 
       buckets.values.each_with_index do |b, idx|
@@ -566,6 +566,7 @@ module MKG
     def export_single_target(model, target, options)
       tmp_dir = Dir.mktmpdir('mkg_skp_')
       dae_path = File.join(tmp_dir, 'model.dae')
+      export_dae_path = File::ALT_SEPARATOR ? dae_path.tr('/', File::ALT_SEPARATOR) : dae_path
       include_svg = options['include_svg'] != false
       include_textures = options['include_textures'] != false
       front_axis = options['front_axis'] || '-Y'
@@ -577,11 +578,13 @@ module MKG
       svg2d = ''
       dae_xml = nil
 
+      # Thoát active editing context trước start_operation theo khuyến nghị SketchUp API
+      while model.active_path && !model.active_path.empty?
+        break unless model.close_active
+      end
+
       model.start_operation('MKG Temp Export', true)
       begin
-        # Thoát active editing context nếu đang mở sâu bên trong group
-        model.close_active while model.active_path && !model.active_path.empty?
-
         model.selection.clear
 
         if ent
@@ -597,8 +600,10 @@ module MKG
           sx, sy, sz = extract_local_scales(ent.transformation)
           rot_rad = front_axis_radians(front_axis, ent.transformation)
 
-          inst_tr = Geom::Transformation.rotation(ORIGIN, Z_AXIS, rot_rad) *
-                    Geom::Transformation.scaling(ORIGIN, sx, sy, sz)
+          origin_pt = Geom::Point3d.new(0, 0, 0)
+          z_vec = Geom::Vector3d.new(0, 0, 1)
+          inst_tr = Geom::Transformation.rotation(origin_pt, z_vec, rot_rad) *
+                    Geom::Transformation.scaling(origin_pt, sx, sy, sz)
           temp_inst = temp_grp.entities.add_instance(defn, inst_tr)
           if ent.respond_to?(:material) && ent.material
             temp_inst.material = ent.material
@@ -610,7 +615,8 @@ module MKG
           cx = (bb.min.x + bb.max.x) / 2.0
           cy = (bb.min.y + bb.max.y) / 2.0
           mz = bb.min.z
-          temp_grp.transform!(Geom::Transformation.translation(Geom::Vector3d.new(-cx, -cy, -mz)))
+          shift_tr = Geom::Transformation.translation(Geom::Vector3d.new(-cx, -cy, -mz))
+          temp_grp.entities.transform_entities(shift_tr, [temp_inst])
 
           bb = compute_entities_bbox(temp_grp.entities)
           bb = temp_grp.bounds if bb.empty?
@@ -633,9 +639,9 @@ module MKG
             :texture_maps        => include_textures,
             :selectionset_only   => true
           }
-          ok = model.export(dae_path, export_opts)
+          ok = model.export(export_dae_path, export_opts)
           if ok && File.exist?(dae_path) && File.size(dae_path) > 100
-            raw_xml = File.read(dae_path, encoding: 'UTF-8')
+            raw_xml = File.binread(dae_path).force_encoding('UTF-8').scrub('')
             dae_xml = include_textures ? embed_dae_textures(raw_xml, tmp_dir) : raw_xml
           else
             dae_xml = build_pure_ruby_dae(temp_grp.entities, ent.respond_to?(:material) ? ent.material : nil)
@@ -661,9 +667,9 @@ module MKG
             :texture_maps        => include_textures,
             :selectionset_only   => false
           }
-          ok = model.export(dae_path, export_opts)
+          ok = model.export(export_dae_path, export_opts)
           if ok && File.exist?(dae_path) && File.size(dae_path) > 100
-            raw_xml = File.read(dae_path, encoding: 'UTF-8')
+            raw_xml = File.binread(dae_path).force_encoding('UTF-8').scrub('')
             dae_xml = include_textures ? embed_dae_textures(raw_xml, tmp_dir) : raw_xml
           else
             dae_xml = build_pure_ruby_dae(model.entities)
@@ -726,6 +732,7 @@ module MKG
 
       out_path = "#{out_path}.mkglib.json" unless out_path.downcase.end_with?('.json')
 
+      orig_selection = model.selection.to_a
       exported_items = chosen_targets.map do |t|
         res = export_single_target(model, t, payload)
         res.delete('daeXml')
@@ -740,7 +747,7 @@ module MKG
         'items'      => exported_items
       }
 
-      File.write(out_path, JSON.pretty_generate(pkg), encoding: 'UTF-8')
+      File.binwrite(out_path, JSON.pretty_generate(pkg).encode('UTF-8'))
       UI.messagebox(
         "Đã xuất thành công #{exported_items.length} món nội thất!\n\n" \
         "File: #{out_path}\n\n" \
@@ -748,8 +755,15 @@ module MKG
       )
       true
     rescue StandardError => e
-      UI.messagebox("Lỗi khi xuất thư viện MKG:\n#{e.message}")
+      loc = e.backtrace && !e.backtrace.empty? ? "\n(#{e.backtrace[0]})" : ''
+      UI.messagebox("Lỗi khi xuất thư viện MKG:\n#{e.message}#{loc}")
       false
+    ensure
+      if model && orig_selection
+        model.selection.clear
+        valid_sel = orig_selection.select(&:valid?)
+        model.selection.add(valid_sel) unless valid_sel.empty?
+      end
     end
 
     def quick_export_dae
@@ -769,7 +783,7 @@ module MKG
 
       out_path = "#{out_path}.dae" unless out_path.downcase.end_with?('.dae')
       res = export_single_target(model, target, { 'include_svg' => false, 'include_textures' => true, 'front_axis' => '-Y' })
-      File.write(out_path, res['daeXml'], encoding: 'UTF-8')
+      File.binwrite(out_path, res['daeXml'].encode('UTF-8'))
       UI.messagebox("Đã xuất file .DAE chuẩn trục (#{res['w']}×#{res['d']}×#{res['h']} mm):\n#{out_path}")
     rescue StandardError => e
       UI.messagebox("Lỗi xuất .DAE: #{e.message}")
@@ -831,7 +845,7 @@ module MKG
       }
 
       dlg = UI::HtmlDialog.new(
-        dialog_title: 'MKG Khảo Sát — Xuất Thư Viện 2D & 3D',
+        dialog_title: "MKG Khảo Sát v#{PLUGIN_VERSION} — Xuất Thư Viện 2D & 3D",
         preferences_key: 'com.mkg.khaosat.exporter',
         scrollable: true,
         resizable: true,
@@ -844,7 +858,7 @@ module MKG
       dlg.add_action_callback('exportMkg') do |_ctx, json_str|
         payload = JSON.parse(json_str.to_s)
         dlg.close
-        perform_export_mkglib(model, targets, payload)
+        UI.start_timer(0.05, false) { perform_export_mkglib(model, targets, payload) }
       end
 
       dlg.add_action_callback('cancelDialog') do |_ctx|
