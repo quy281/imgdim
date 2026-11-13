@@ -7,7 +7,7 @@ import { parseSvgSymbol, svgToNormalizedPolylines } from '/src/lib/svgSymbol.js'
 import {
     GROUPS, FURNITURE, catalogItem, defaultSize, getItemGlbSource,
     saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
-    exportCatalogSnapshot, importCatalogSnapshot,
+    exportCatalogSnapshot, importCatalogSnapshot, isSketchUpPackage, importSketchUpPackage,
 } from '/src/lib/furnitureCatalog.js';
 import {
     buildFurniture3D, detect3DFormat, inspect3DModelBounds, extractTopViewSvgFrom3D,
@@ -214,6 +214,116 @@ lines.push('--- 4. Tinh toan Layout Mat Bang & Bang Thong Ke Kich Thuoc ---');
 
     const sc = pickArchitecturalScale(6000, 4000, 260, 180);
     ok('pickArchitecturalScale tra ve ty le chuan hop le', STANDARD_SCALES.includes(sc) && sc >= 20);
+}
+
+lines.push('--- 5. Nhap goi .mkglib.json xuat tu Plugin SketchUp ---');
+{
+    resetAllCatalog();
+    // Khối hộp COLLADA chuẩn Z_UP xuất bởi plugin (1.6m rộng X × 0.8m sâu Y × 0.75m cao Z)
+    const daeSample = `<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/08/collada_schema" version="1.4.1">
+  <asset><unit name="meter" meter="1" /><up_axis>Z_UP</up_axis></asset>
+  <library_effects>
+    <effect id="fx_0"><profile_COMMON><technique sid="common"><lambert><diffuse><color>0.75 0.6 0.45 1</color></diffuse></lambert></technique></profile_COMMON></effect>
+  </library_effects>
+  <library_materials>
+    <material id="mat_0" name="GoSoi"><instance_effect url="#fx_0" /></material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="mesh-geom" name="MKGMesh">
+      <mesh>
+        <source id="mesh-pos">
+          <float_array id="mesh-pos-arr" count="24">-0.8 -0.4 0 0.8 -0.4 0 0.8 0.4 0 -0.8 0.4 0 -0.8 -0.4 0.75 0.8 -0.4 0.75 0.8 0.4 0.75 -0.8 0.4 0.75</float_array>
+          <technique_common><accessor source="#mesh-pos-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <source id="mesh-norms">
+          <float_array id="mesh-norms-arr" count="24">0 0 -1 0 0 -1 0 0 -1 0 0 -1 0 0 1 0 0 1 0 0 1 0 0 1</float_array>
+          <technique_common><accessor source="#mesh-norms-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="mesh-verts"><input semantic="POSITION" source="#mesh-pos" /></vertices>
+        <triangles count="4" material="mat_0">
+          <input semantic="VERTEX" source="#mesh-verts" offset="0" />
+          <input semantic="NORMAL" source="#mesh-norms" offset="1" />
+          <p>0 0 1 1 2 2 0 0 2 2 3 3 4 4 5 5 6 6 4 4 6 6 7 7</p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene" name="Scene">
+      <node id="MKGModel" name="MKGModel" type="NODE">
+        <instance_geometry url="#mesh-geom">
+          <bind_material><technique_common><instance_material symbol="mat_0" target="#mat_0" /></technique_common></bind_material>
+        </instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene" /></scene>
+</COLLADA>`;
+    const daeDataUrl = 'data:model/vnd.collada+xml;base64,' + btoa(daeSample);
+    const pkg = {
+        app: 'MKG_SKETCHUP_EXPORT',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        exporter: 'mkg_khaosat_exporter/1.0.0',
+        items: [
+            {
+                name: 'Bàn ăn SketchUp Test',
+                group: 'living',
+                sym: 'table',
+                w: 1600,
+                d: 800,
+                h: 750,
+                z: 0,
+                mount: 'floor',
+                back: false,
+                svg2d: '<svg viewBox="0 0 1600 800"><line x1="0" y1="0" x2="1600" y2="0"/><line x1="1600" y1="0" x2="1600" y2="800"/><line x1="1600" y1="800" x2="0" y2="800"/><line x1="0" y1="800" x2="0" y2="0"/></svg>',
+                modelFormat: 'dae',
+                glbFileName: 'ban_an_skp.dae',
+                glbData: daeDataUrl,
+            },
+            {
+                name: 'Tủ treo bếp SketchUp Test',
+                group: 'kitchen',
+                sym: 'cab_wall',
+                w: 1200,
+                d: 350,
+                h: 700,
+                z: 1450,
+                mount: 'wall',
+                back: true,
+                svg2d: '<svg viewBox="0 0 1200 350"><line x1="0" y1="0" x2="1200" y2="0"/><line x1="0" y1="350" x2="1200" y2="350"/></svg>',
+                modelFormat: 'dae',
+                glbFileName: 'tu_treo_bep.dae',
+                glbData: daeDataUrl,
+            },
+        ],
+    };
+
+    ok('isSketchUpPackage nhan dien goi MKG_SKETCHUP_EXPORT', isSketchUpPackage(pkg));
+    const res = importSketchUpPackage(JSON.stringify(pkg));
+    eq('importSketchUpPackage nhap du 2 mon', res.count, 2);
+    const it0 = res.items[0];
+    const it1 = res.items[1];
+    ok('Mon 1 giu dung format DAE va z=0', it0.modelFormat === 'dae' && it0.z === 0 && it0.back === false);
+    ok('Mon 2 giu dung mount=wall va z=1450', it1.mount === 'wall' && it1.z === 1450 && it1.back === true);
+    ok('getItemGlbSource doc duoc glbData COLLADA cua mon 1', getItemGlbSource(it0.key) === daeDataUrl);
+    ok('parseSvgSymbol doc duoc SVG chieu bang tu SketchUp', (parseSvgSymbol(it0.svg2d)?.elements?.length || 0) === 4);
+
+    const decodedDae = atob(getItemGlbSource(it0.key).split(',')[1]);
+    ok('COLLADA .dae co khai bao chuan <up_axis>Z_UP</up_axis> & unit meter', decodedDae.includes('<up_axis>Z_UP</up_axis>') && decodedDae.includes('meter="1"'));
+
+    if (typeof DOMParser !== 'undefined') {
+        const daeBounds = await inspect3DModelBounds(daeDataUrl, { format: 'dae', fileName: 'ban_an_skp.dae' });
+        eq('ColladaLoader doc dung W=1600mm (Z_UP)', daeBounds.wMm, 1600, 3);
+        eq('ColladaLoader doc dung D=800mm (Z_UP)', daeBounds.dMm, 800, 3);
+        eq('ColladaLoader doc dung H=750mm (Z_UP)', daeBounds.hMm, 750, 3);
+    }
+
+    const snapCount = await importCatalogSnapshot(JSON.stringify(pkg));
+    eq('importCatalogSnapshot tu chuyen tiep goi .mkglib.json', snapCount, 2);
+
+    resetAllCatalog();
 }
 
 lines.push(`\n===== ${pass} pass, ${fail} fail =====`);

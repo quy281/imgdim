@@ -608,12 +608,66 @@ export function exportCatalogSnapshot({ includeGlb = false } = {}) {
     return JSON.stringify(snap, null, 2);
 }
 
+export function isSketchUpPackage(obj) {
+    return !!(obj && typeof obj === 'object' && obj.app === 'MKG_SKETCHUP_EXPORT' && Array.isArray(obj.items));
+}
+
+/**
+ * Nhập 1 hoặc nhiều món nội thất từ gói `.mkglib.json` xuất bởi Plugin SketchUp MKG.
+ * Trả về { count, items }.
+ */
+export function importSketchUpPackage(jsonStringOrObj) {
+    const obj = typeof jsonStringOrObj === 'string'
+        ? JSON.parse(jsonStringOrObj)
+        : jsonStringOrObj;
+    if (!isSketchUpPackage(obj)) {
+        throw new Error('Không phải gói .mkglib.json xuất từ Plugin SketchUp MKG');
+    }
+    if (!obj.items.length) {
+        throw new Error('Gói SketchUp không chứa món nội thất nào');
+    }
+    const savedItems = [];
+    for (const raw of obj.items) {
+        if (!raw || typeof raw !== 'object') continue;
+        const rawKey = typeof raw.key === 'string' ? raw.key.trim() : '';
+        const glbData = raw.glbData || raw.modelDataUrl || '';
+        const saved = saveCatalogItem({
+            key: rawKey.startsWith('custom_') ? rawKey : '',
+            name: String(raw.name || 'Mẫu SketchUp').trim() || 'Mẫu SketchUp',
+            group: raw.group || 'other',
+            w: Number(raw.w) || 1000,
+            d: Number(raw.d) || 600,
+            h: Number(raw.h) || 800,
+            z: Number(raw.z) || 0,
+            mount: raw.mount || 'floor',
+            back: raw.back !== undefined ? !!raw.back : true,
+            noSnapContact: !!raw.noSnapContact,
+            sym: raw.sym || 'cab',
+            svg2d: typeof raw.svg2d === 'string' ? raw.svg2d : '',
+            glbFileName: raw.glbFileName || (rawKey ? `${rawKey}.dae` : 'sketchup_model.dae'),
+            modelFormat: raw.modelFormat || (glbData ? 'dae' : ''),
+            glbRotX: Number(raw.glbRotX) || 0,
+            glbRotY: Number(raw.glbRotY) || 0,
+            hasLocalGlb: !!glbData,
+        }, glbData ? { glbData } : {});
+        if (saved) savedItems.push(saved);
+    }
+    if (!savedItems.length) {
+        throw new Error('Không đọc được dữ liệu món hợp lệ trong gói SketchUp');
+    }
+    return { count: savedItems.length, items: savedItems };
+}
+
 export function importCatalogSnapshot(jsonStringOrObj) {
     const obj = typeof jsonStringOrObj === 'string'
         ? JSON.parse(jsonStringOrObj)
         : jsonStringOrObj;
     if (!obj || typeof obj !== 'object') {
         throw new Error('File cấu hình thư viện không hợp lệ');
+    }
+    if (isSketchUpPackage(obj)) {
+        const res = importSketchUpPackage(obj);
+        return res.count;
     }
     if (!obj.overrides && !obj.customItems) {
         throw new Error('Thiếu dữ liệu overrides / customItems');

@@ -250,6 +250,14 @@ function decorateSketchUpMeshes(root) {
         obj.receiveShadow = true;
         if (!obj.material) {
             obj.material = MATS.whiteMatte;
+        } else if (Array.isArray(obj.material)) {
+            obj.material = obj.material.map((m) => {
+                if (!m) return MATS.whiteMatte;
+                m.side = THREE.DoubleSide;
+                return m;
+            });
+        } else {
+            obj.material.side = THREE.DoubleSide;
         }
         const hasLineChild = obj.children?.some(c => c.isLineSegments);
         if (!hasLineChild && obj.geometry && obj.geometry.attributes?.position?.count < 24000) {

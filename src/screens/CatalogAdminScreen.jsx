@@ -5,15 +5,15 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
     ArrowLeft, Plus, Upload, Download, CloudUpload, RotateCcw,
     Save, Copy, Trash2, Search, Eye, EyeOff, Box, Shapes, Sliders,
-    Monitor, RotateCw, Sparkles,
+    Monitor, RotateCw, Sparkles, Plug, HelpCircle,
 } from 'lucide-react';
 import {
     GROUPS, SYM_2D_OPTIONS, SYM_3D_OPTIONS, MAT_3D_OPTIONS, groupName,
     listAdminCatalogItems, getBuiltinItem, getItemGlbSource,
     saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
     getCatalogSyncPayload, applyCatalogSyncPayload,
-    exportCatalogSnapshot, importCatalogSnapshot, subscribeCatalog,
-    isDesktopCatalogSupported,
+    exportCatalogSnapshot, importCatalogSnapshot, isSketchUpPackage, importSketchUpPackage,
+    subscribeCatalog, isDesktopCatalogSupported,
 } from '../lib/furnitureCatalog';
 import { Symbol2D, itemFill } from '../plan/FurnitureLayer';
 import {
@@ -315,6 +315,8 @@ export default function CatalogAdminScreen({ onBack }) {
     const [skpGuide, setSkpGuide] = useState('');
     const [sketchupInfo, setSketchupInfo] = useState(null);
     const [extractBusy, setExtractBusy] = useState(false);
+    const [showPluginHelp, setShowPluginHelp] = useState(false);
+    const [dragOver, setDragOver] = useState(false);
 
     const jsonInputRef = useRef(null);
     const svgInputRef = useRef(null);
@@ -456,16 +458,29 @@ export default function CatalogAdminScreen({ onBack }) {
         toast('Đã xuất file JSON thư viện 2D & 3D', 'ok');
     };
 
+    const importFromJsonText = (text) => {
+        const parsed = JSON.parse(text);
+        if (isSketchUpPackage(parsed)) {
+            const res = importSketchUpPackage(parsed);
+            setGroupFilter('all');
+            if (res.items[0]) selectItem(res.items[0]);
+            setTab('3d');
+            toast(`Đã nhập ${res.count} món nội thất (2D + 3D) từ Plugin SketchUp!`, 'ok');
+            return;
+        }
+        importCatalogSnapshot(parsed);
+        const cur = listAdminCatalogItems().find(i => i.key === selectedKey) || listAdminCatalogItems()[0];
+        if (cur) selectItem(cur);
+        toast('Đã nhập thư viện JSON thành công', 'ok');
+    };
+
     const handleImportJson = async (e) => {
         const file = e.target.files?.[0];
         e.target.value = '';
         if (!file) return;
         try {
             const text = await file.text();
-            await importCatalogSnapshot(text);
-            const cur = listAdminCatalogItems().find(i => i.key === selectedKey) || listAdminCatalogItems()[0];
-            if (cur) selectItem(cur);
-            toast('Đã nhập thư viện JSON thành công', 'ok');
+            importFromJsonText(text);
         } catch (err) {
             toast('File JSON không hợp lệ: ' + err.message, 'err');
         }
@@ -484,22 +499,30 @@ export default function CatalogAdminScreen({ onBack }) {
         }
     };
 
-    const handleUploadGlb = (e) => {
-        const file = e.target.files?.[0];
-        e.target.value = '';
+    const processSketchUpOr3DFile = async (file) => {
         if (!file) return;
         const lower = file.name.toLowerCase();
-        if (lower.endsWith('.skp')) {
-            setSkpGuide(
-                `File "${file.name}" đang ở định dạng .skp nhị phân của Trimble SketchUp. `
-                + 'Trong SketchUp (Free hoặc Pro), chọn File → Export → 3D Model… → chọn COLLADA (*.dae), KMZ (*.kmz) hoặc GLB (*.glb) rồi tải lại vào đây (giữ nguyên hình khối, màu vật liệu và tỷ lệ).'
-            );
-            setTab('3d');
-            toast('Vui lòng xuất từ SketchUp sang .DAE / .KMZ / .GLB (mất 3 giây)', 'err');
+        if (lower.endsWith('.json')) {
+            try {
+                const text = await file.text();
+                importFromJsonText(text);
+            } catch (err) {
+                toast('Không đọc được gói .mkglib.json: ' + err.message, 'err');
+            }
             return;
         }
-        if (file.size > 25 * 1024 * 1024) {
-            toast('File 3D quá lớn (>25MB), vui lòng giảm lưới trong SketchUp trước khi tải lên', 'err');
+        if (lower.endsWith('.skp')) {
+            setSkpGuide(
+                `File "${file.name}" đang ở định dạng .skp nhị phân của SketchUp. `
+                + 'Hãy cài Plugin MKG (.rbz) vào SketchUp (Extensions → Extension Manager → Install Extension) rồi chọn món đồ và bấm Xuất .mkglib.json (đủ cả 2D SVG + 3D + mm), hoặc File → Export → 3D Model (.DAE / .KMZ / .GLB).'
+            );
+            setShowPluginHelp(true);
+            setTab('3d');
+            toast('Hãy xuất từ SketchUp bằng Plugin MKG (.mkglib.json) hoặc .DAE/.KMZ/.GLB', 'err');
+            return;
+        }
+        if (file.size > 35 * 1024 * 1024) {
+            toast('File 3D quá lớn (>35MB), vui lòng giảm lưới trong SketchUp trước khi tải lên', 'err');
             return;
         }
         const fmt = detect3DFormat('', file.name);
@@ -526,6 +549,12 @@ export default function CatalogAdminScreen({ onBack }) {
         };
         reader.onerror = () => toast('Không đọc được file SketchUp / 3D', 'err');
         reader.readAsDataURL(file);
+    };
+
+    const handleUploadGlb = (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (file) processSketchUpOr3DFile(file);
     };
 
     const handleExtract2DFromSketchUp = async () => {
@@ -617,7 +646,26 @@ export default function CatalogAdminScreen({ onBack }) {
     }
 
     return (
-        <div className="cat-admin-page">
+        <div
+            className={`cat-admin-page ${dragOver ? 'drag-over' : ''}`}
+            onDragOver={(e) => {
+                if (e.dataTransfer?.types?.includes('Files')) {
+                    e.preventDefault();
+                    if (!dragOver) setDragOver(true);
+                }
+            }}
+            onDragLeave={(e) => {
+                if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget)) {
+                    setDragOver(false);
+                }
+            }}
+            onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const f = e.dataTransfer?.files?.[0];
+                if (f) processSketchUpOr3DFile(f);
+            }}
+        >
             <header className="cat-admin-header">
                 <div className="cat-admin-title-row">
                     <button className="icon-btn" onClick={onBack} title="Quay lại ứng dụng">
@@ -626,7 +674,7 @@ export default function CatalogAdminScreen({ onBack }) {
                     <div>
                         <h1>Backend Quản Trị Thư Viện 2D &amp; 3D (PC)</h1>
                         <div className="cat-admin-sub">
-                            {items.length} mẫu nội thất · {modifiedCount} mẫu đang tuỳ chỉnh · Hỗ trợ nhập từ SketchUp (.DAE, .KMZ, .GLB, .OBJ, .STL, .3DS)
+                            {items.length} mẫu nội thất · {modifiedCount} mẫu đang tuỳ chỉnh · Hỗ trợ Plugin SketchUp (<b>.mkglib.json</b>) &amp; .DAE/.KMZ/.GLB/.OBJ/.STL/.3DS
                         </div>
                     </div>
                 </div>
@@ -635,7 +683,15 @@ export default function CatalogAdminScreen({ onBack }) {
                     <button className="cat-btn primary" onClick={handleCreateNew}>
                         <Plus size={15} /> Thêm món mới
                     </button>
-                    <button className="cat-btn" onClick={() => glbInputRef.current?.click()} title="Nạp mô hình xuất từ SketchUp">
+                    <a
+                        className="cat-btn"
+                        href="/mkg_khaosat_exporter.rbz"
+                        download="mkg_khaosat_exporter.rbz"
+                        title="Tải Extension MKG cài vào SketchUp 2017–2026"
+                    >
+                        <Plug size={15} /> Plugin SketchUp (.RBZ)
+                    </a>
+                    <button className="cat-btn" onClick={() => glbInputRef.current?.click()} title="Nạp gói .mkglib.json hoặc file 3D xuất từ SketchUp">
                         <Box size={15} /> Nhập từ SketchUp
                     </button>
                     <button className="cat-btn" onClick={() => jsonInputRef.current?.click()}>
@@ -650,7 +706,7 @@ export default function CatalogAdminScreen({ onBack }) {
                     <button className="cat-btn danger" onClick={handleResetAll}>
                         <RotateCcw size={15} /> Khôi phục gốc
                     </button>
-                    <input ref={jsonInputRef} type="file" accept=".json,application/json" hidden onChange={handleImportJson} />
+                    <input ref={jsonInputRef} type="file" accept=".json,.mkglib.json,application/json" hidden onChange={handleImportJson} />
                 </div>
             </header>
 
@@ -983,10 +1039,10 @@ export default function CatalogAdminScreen({ onBack }) {
 
                                         <div className="cat-sketchup-box">
                                             <div className="cat-label-row">
-                                                <label>Nhập mô hình từ SketchUp / 3D CAD</label>
+                                                <label>Nhập từ Plugin SketchUp / 3D CAD</label>
                                                 <div className="cat-label-actions">
                                                     <button type="button" className="cat-mini-btn" onClick={() => glbInputRef.current?.click()}>
-                                                        <Upload size={12} /> Chọn file SketchUp (.DAE/.GLB/.OBJ…)
+                                                        <Upload size={12} /> Chọn .mkglib.json / .DAE / .GLB…
                                                     </button>
                                                     {(draft.hasLocalGlb || draft.glbUrl || pendingGlbData) && (
                                                         <button
@@ -1007,15 +1063,54 @@ export default function CatalogAdminScreen({ onBack }) {
                                             <input
                                                 ref={glbInputRef}
                                                 type="file"
-                                                accept=".dae,.kmz,.glb,.gltf,.obj,.stl,.3ds,.skp,model/gltf-binary,model/gltf+json,model/vnd.collada+xml"
+                                                accept=".mkglib.json,.json,.dae,.kmz,.glb,.gltf,.obj,.stl,.3ds,.skp,application/json,model/gltf-binary,model/gltf+json,model/vnd.collada+xml"
                                                 hidden
                                                 onChange={handleUploadGlb}
                                             />
                                             <div style={{ fontSize: 11.5, color: '#1e3a8a', lineHeight: 1.45 }}>
-                                                Hỗ trợ trực tiếp file xuất từ SketchUp: <b>COLLADA (.dae)</b>, <b>.kmz</b>, <b>.glb/.gltf</b>, <b>.obj</b>, <b>.stl</b>, <b>.3ds</b>.
+                                                Kéo-thả hoặc chọn gói <b>.mkglib.json</b> (xuất từ Plugin MKG trong SketchUp) để nhận cùng lúc <b>1 hoặc hàng loạt món</b> đủ 2D SVG + 3D + kích thước mm, hoặc file 3D lẻ <b>.DAE / .KMZ / .GLB / .OBJ / .STL / .3DS</b>.
                                             </div>
+                                            <div className="cat-sketchup-actions">
+                                                <a
+                                                    href="/mkg_khaosat_exporter.rbz"
+                                                    download="mkg_khaosat_exporter.rbz"
+                                                    className="cat-mini-btn"
+                                                    style={{ textDecoration: 'none', fontWeight: 700, color: '#1d4ed8' }}
+                                                >
+                                                    <Download size={12} /> Tải Plugin SketchUp (.RBZ)
+                                                </a>
+                                                <button
+                                                    type="button"
+                                                    className="cat-mini-btn"
+                                                    onClick={() => setShowPluginHelp(v => !v)}
+                                                >
+                                                    <HelpCircle size={12} /> {showPluginHelp ? 'Ẩn hướng dẫn cài' : 'Hướng dẫn cài 3 bước'}
+                                                </button>
+                                            </div>
+                                            {showPluginHelp && (
+                                                <div className="cat-plugin-steps">
+                                                    <b>Cài đặt Plugin MKG trong SketchUp (2017–2026):</b>
+                                                    <ol>
+                                                        <li>Bấm <b>Tải Plugin SketchUp (.RBZ)</b> ở trên về máy tính.</li>
+                                                        <li>Trong SketchUp chọn <b>Extensions → Extension Manager → Install Extension…</b> và chọn file <code>mkg_khaosat_exporter.rbz</code>.</li>
+                                                        <li>Chọn 1 hoặc nhiều Group/Component đồ nội thất → chuột phải hoặc vào <b>Extensions → MKG Khảo Sát</b> → xuất ra <code>.mkglib.json</code> rồi kéo thả thẳng vào cửa sổ này!</li>
+                                                    </ol>
+                                                </div>
+                                            )}
                                             {skpGuide && (
-                                                <div className="cat-sketchup-guide">{skpGuide}</div>
+                                                <div className="cat-sketchup-guide">
+                                                    {skpGuide}
+                                                    <div style={{ marginTop: 6 }}>
+                                                        <a
+                                                            href="/mkg_khaosat_exporter.rbz"
+                                                            download="mkg_khaosat_exporter.rbz"
+                                                            className="cat-mini-btn"
+                                                            style={{ display: 'inline-flex', textDecoration: 'none', fontWeight: 700 }}
+                                                        >
+                                                            <Download size={12} /> Tải ngay Plugin SketchUp (.RBZ)
+                                                        </a>
+                                                    </div>
+                                                </div>
                                             )}
                                             {(draft.glbFileName || (draft.hasLocalGlb && pendingGlbData !== '') || draft.glbUrl) && (
                                                 <>
