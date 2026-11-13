@@ -149,8 +149,8 @@ export default function ProjectsScreen({
                         <Store size={15} /> Sàn trao đổi ván dư
                         {!!boardMarketCount && <b>{boardMarketCount}</b>}
                     </button>
-                    <button className="module-tab" onClick={onOpenCatalogAdmin}>
-                        <Boxes size={15} /> Thư viện 2D/3D
+                    <button className="module-tab desktop-only" onClick={onOpenCatalogAdmin}>
+                        <Boxes size={15} /> Thư viện 2D/3D (PC)
                     </button>
                 </div>
 
@@ -422,11 +422,11 @@ export default function ProjectsScreen({
                                 </div>
                             </button>
                         )}
-                        <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenCatalogAdmin?.(); }}>
+                        <button className="sheet-row desktop-only" onClick={() => { setShowSettings(false); onOpenCatalogAdmin?.(); }}>
                             <Boxes size={19} style={{ color: 'var(--violet)' }} />
                             <div style={{ flex: 1 }}>
-                                Quản trị thư viện 2D &amp; 3D (Backend)
-                                <div className="sub">Sửa ký hiệu 2D/SVG, kích thước mặc định, chất liệu 3D &amp; file .glb</div>
+                                Quản trị thư viện 2D &amp; 3D (PC)
+                                <div className="sub">Sửa ký hiệu 2D/SVG, chất liệu 3D &amp; nhập từ SketchUp trên máy tính</div>
                             </div>
                         </button>
                         {pinForm && (

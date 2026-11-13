@@ -4,10 +4,10 @@
 <pre id="out">running…</pre>
 <script type="module">
 import {
-    wallSegments, applySegmentLength, applyOpeningWidth,
+    wallSegments, wallOutwardNormal, applySegmentLength, applyOpeningWidth,
     applyWallLength, snapFurnitureToWall,
 } from '/src/lib/geometry.js';
-import { insertTemplate } from '/src/lib/planModel.js';
+import { insertTemplate, recomputeRooms, addOpening, removeOpening } from '/src/lib/planModel.js';
 
 const lines = [];
 let pass = 0, fail = 0;
@@ -34,32 +34,44 @@ eq('seg0', ch[0].len, 1550);
 eq('op', ch[1].len, 900);
 eq('seg1', ch[2].len, 1550);
 
-// Sửa seg0 1550 -> 1200: cửa phải bù thành 1250, tổng vẫn 4000
+// Quy tac moi: Nhap 1 canh -> giu nguyen cua (900), don cua sang phan canh con lai!
+// Sau do nhap canh thu 2 -> giu nguyen canh da nhap, don kich thuoc cua lai!
 {
-    const { plan, warning } = applySegmentLength(plan1, 'w1', 0, 1200);
-    ok('seg edit no warning', !warning);
-    const c = wallSegments(plan.walls[0], 4000);
-    eq('after: seg0', c[0].len, 1200);
-    eq('after: op width', c[1].len, 1250);
-    eq('after: seg1 giữ nguyên', c[2].len, 1550);
-    eq('after: tổng', c[0].len + c[1].len + c[2].len, 4000);
+    // Buoc 1: sua seg0 1550 -> 1200 -> op giu 900, seg1 thanh 1900, segLocks[0] = true
+    const r1 = applySegmentLength(plan1, 'w1', 0, 1200);
+    ok('buoc 1 (nhap 1 canh): no warning', !r1.warning);
+    const c1 = wallSegments(r1.plan.walls[0], 4000);
+    eq('buoc 1: seg0 -> 1200', c1[0].len, 1200);
+    eq('buoc 1: op giu nguyen 900', c1[1].len, 900);
+    eq('buoc 1: seg1 don thanh 1900', c1[2].len, 1900);
+    ok('buoc 1: segLocks[0] = true', !!r1.plan.walls[0].segLocks?.[0]);
+
+    // Buoc 2: nhap tiep seg1 (1900 -> 1600) -> giu nguyen seg0 = 1200, op co gian thanh 1200!
+    const r2 = applySegmentLength(r1.plan, 'w1', 1, 1600);
+    ok('buoc 2 (nhap 2 canh): no warning', !r2.warning);
+    const c2 = wallSegments(r2.plan.walls[0], 4000);
+    eq('buoc 2: seg0 giu nguyen 1200', c2[0].len, 1200);
+    eq('buoc 2: op don kich thuoc thanh 1200', c2[1].len, 1200);
+    eq('buoc 2: seg1 -> 1600', c2[2].len, 1600);
+    eq('buoc 2: tong giu 4000', c2[0].len + c2[1].len + c2[2].len, 4000);
 }
 
-// Sửa seg1 (đoạn cuối) -> cửa cũng bù (fallback trái)
+// Nhap canh seg1 (doan cuoi) truoc -> don cua sang seg0, van giu cua 900
 {
     const { plan, warning } = applySegmentLength(plan1, 'w1', 1, 1000);
-    ok('seg1 edit no warning', !warning);
+    ok('seg1 edit truoc no warning', !warning);
     const c = wallSegments(plan.walls[0], 4000);
     eq('seg1 -> 1000', c[2].len, 1000);
-    eq('op bù -> 1450', c[1].len, 1450);
-    eq('seg0 giữ', c[0].len, 1550);
+    eq('op van giu 900', c[1].len, 900);
+    eq('seg0 don thanh 2100', c[0].len, 2100);
 }
 
-// Guard: cửa sẽ nhỏ hơn 300 -> chặn, plan không đổi
+// Guard: nhap canh 1 + canh 2 lam cua nho hon 300 -> chan, plan khong doi
 {
-    const { plan, warning } = applySegmentLength(plan1, 'w1', 0, 2300);
-    ok('guard min cửa: có warning', !!warning);
-    ok('guard min cửa: plan không đổi', plan === plan1);
+    const r1 = applySegmentLength(plan1, 'w1', 0, 1550);
+    const { plan, warning } = applySegmentLength(r1.plan, 'w1', 1, 2250);
+    ok('guard min cua: co warning', !!warning);
+    ok('guard min cua: plan khong doi', plan === r1.plan);
 }
 
 // Sửa bề rộng cửa 900 -> 1200: đoạn phải bù
@@ -80,7 +92,7 @@ eq('seg1', ch[2].len, 1550);
     ok('không cửa -> hướng dẫn dùng nhãn tổng', !!warning && warning.includes('nhãn tổng'));
 }
 
-// 2 cửa: sửa seg giữa -> chỉ cửa kề PHẢI bù
+// 2 cửa: nhap 1 canh giua -> don cua phai & seg2 (khong doi be rong cua)
 {
     const p = mk([
         { id: 'o1', type: 'door', t: 800 / 4000, width: 900 },
@@ -88,17 +100,42 @@ eq('seg1', ch[2].len, 1550);
     ]);
     const c0 = wallSegments(p.walls[0], 4000);
     eq('2 cửa: chain', c0.length, 5);
-    // o1: 350..1250 (w900) · o2: 2200..3400 (w1200) → seg giữa = 1250..2200 = 950
     eq('2 cửa: seg1 giữa', c0[2].len, 950);
     eq('2 cửa: seg2 cuối', c0[4].len, 600);
     const { plan } = applySegmentLength(p, 'w1', 1, 1000);
     const c = wallSegments(plan.walls[0], 4000);
     eq('seg1 -> 1000', c[2].len, 1000);
-    eq('cửa PHẢI bù -> 1150', c[3].len, 1150);
-    eq('seg2 cuối giữ 600', c[4].len, 600);
+    eq('cửa PHẢI giữ nguyên 1200', c[3].len, 1200);
+    eq('seg2 cuối dồn thành 550', c[4].len, 550);
     eq('cửa TRÁI giữ 900', c[1].len, 900);
     eq('seg0 giữ 350', c[0].len, 350);
     eq('tổng giữ', c.reduce((s, x) => s + x.len, 0), 4000);
+}
+
+// Phap tuyen huong ra ngoai phong cho kich thuoc 2 tang ngoai tuong
+{
+    const rectPlan = recomputeRooms({
+        nodes: [
+            { id: 'n0', x: 0, y: 0 }, { id: 'n1', x: 4000, y: 0 },
+            { id: 'n2', x: 4000, y: 3000 }, { id: 'n3', x: 0, y: 3000 },
+        ],
+        walls: [
+            { id: 'w1', a: 'n0', b: 'n1', thickness: 110, openings: [] },
+            { id: 'w2', a: 'n1', b: 'n2', thickness: 110, openings: [] },
+            { id: 'w3', a: 'n2', b: 'n3', thickness: 110, openings: [] },
+            { id: 'w4', a: 'n3', b: 'n0', thickness: 110, openings: [] },
+        ],
+        rooms: [],
+    });
+    const room = rectPlan.rooms[0];
+    let allOutward = true;
+    for (const w of rectPlan.walls) {
+        const out = wallOutwardNormal(rectPlan, w);
+        const mx = (out.a.x + out.b.x) / 2;
+        const my = (out.a.y + out.b.y) / 2;
+        if ((mx - room.cx) * out.nx + (my - room.cy) * out.ny <= 0) allOutward = false;
+    }
+    ok('wallOutwardNormal ca 4 tuong phong chu nhat deu huong ra ngoai', allOutward);
 }
 
 // applyWallLength: guard tường co nhỏ hơn tổng cửa

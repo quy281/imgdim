@@ -94,6 +94,40 @@ export function computePlanOuterDimensions(plan) {
     const xChain = filterAxis(rawXs, minX, maxX);
     const yChain = filterAxis(rawYs, minY, maxY);
 
+    // Tạo chuỗi kích thước Tầng 1 cho 4 cạnh biên ngoài (bao gồm các ô cửa trên tường biên)
+    const tolEdge = 500;
+    const topPts = [...rawXs], botPts = [...rawXs], leftPts = [...rawYs], rightPts = [...rawYs];
+    let hasBotOps = false, hasRightOps = false;
+    for (const w of walls) {
+        const a = nodeById.get(w.a), b = nodeById.get(w.b);
+        if (!a || !b || !(w.openings || []).length) continue;
+        const len = dist(a, b);
+        if (len < 10) continue;
+        const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+        const horizontal = Math.abs(b.y - a.y) < Math.abs(b.x - a.x) * 0.4;
+        const vertical = Math.abs(b.x - a.x) < Math.abs(b.y - a.y) * 0.4;
+        const segs = wallSegments(w, len);
+        for (const s of segs) {
+            if (s.kind !== 'op') continue;
+            const px1 = a.x + ux * s.from, py1 = a.y + uy * s.from;
+            const px2 = a.x + ux * s.to, py2 = a.y + uy * s.to;
+            if (horizontal) {
+                const avgY = (a.y + b.y) / 2;
+                if (Math.abs(avgY - minY) <= tolEdge) topPts.push(px1, px2);
+                else if (Math.abs(avgY - maxY) <= tolEdge) { botPts.push(px1, px2); hasBotOps = true; }
+            } else if (vertical) {
+                const avgX = (a.x + b.x) / 2;
+                if (Math.abs(avgX - minX) <= tolEdge) leftPts.push(py1, py2);
+                else if (Math.abs(avgX - maxX) <= tolEdge) { rightPts.push(py1, py2); hasRightOps = true; }
+            }
+        }
+    }
+
+    const topChain = filterAxis(topPts, minX, maxX);
+    const bottomChain = hasBotOps ? filterAxis(botPts, minX, maxX) : [];
+    const leftChain = filterAxis(leftPts, minY, maxY);
+    const rightChain = hasRightOps ? filterAxis(rightPts, minY, maxY) : [];
+
     return {
         minX,
         minY,
@@ -103,6 +137,10 @@ export function computePlanOuterDimensions(plan) {
         totalH: Math.round(maxY - minY),
         xChain,
         yChain,
+        topChain,
+        bottomChain,
+        leftChain,
+        rightChain,
     };
 }
 
@@ -501,11 +539,13 @@ export async function renderPlanLayoutCanvas(doc, opts = {}) {
     const spanW_mm = Math.max(800, maxX - minX);
     const spanH_mm = Math.max(800, maxY - minY);
 
-    // Vùng chừa cho 2 hàng đường kích thước phủ bì trên/trái + thước tỷ lệ dưới
-    const padLeft = showOuterDims ? 115 : 55;
-    const padTop = showOuterDims ? 110 : 55;
-    const padRight = 55;
-    const padBottom = 88;
+    // Vùng chừa cho kích thước 2 tầng bên ngoài (trên/trái + phải/dưới khi có cửa biên) + thước tỷ lệ
+    const hasBottomExt = showOuterDims && showWallDims && outer.bottomChain?.length > 1;
+    const hasRightExt = showOuterDims && showWallDims && outer.rightChain?.length > 1;
+    const padLeft = showOuterDims ? 118 : 55;
+    const padTop = showOuterDims ? 112 : 55;
+    const padRight = hasRightExt ? 84 : 55;
+    const padBottom = hasBottomExt ? 110 : 88;
     const drawW = Math.max(200, mainW - padLeft - padRight);
     const drawH = Math.max(200, mainH - padTop - padBottom);
 
@@ -605,17 +645,6 @@ export async function renderPlanLayoutCanvas(doc, opts = {}) {
                 ctx.strokeStyle = '#0f172a';
                 ctx.lineWidth = 1.6;
                 ctx.stroke();
-
-                if (showWallDims && s.to - s.from >= 220) {
-                    drawArchDimLine(
-                        ctx,
-                        toX(pA.x), toY(pA.y),
-                        toX(pB.x), toY(pB.y),
-                        `${Math.round(s.to - s.from)}`,
-                        Math.max(16, (th / 2) * pxPerMm + 14),
-                        { color: '#334155', fontSize: 10, tickPx: 4, extPx: 6 }
-                    );
-                }
             } else {
                 const op = (w.openings || []).find(o => o.id === s.opId);
                 if (!op) continue;
@@ -709,44 +738,72 @@ export async function renderPlanLayoutCanvas(doc, opts = {}) {
         ctx.restore();
     }
 
-    // 6. Hệ kích thước phủ bì tầng 2 & tầng 3 (chuỗi trục + tổng phủ bì)
+    // 6. Hệ kích thước 2 tầng bên ngoài mặt bằng (Tầng 1 chi tiết cạnh & cửa + Tầng 2 tổng phủ bì)
     if (showOuterDims && outer.totalW > 0 && outer.totalH > 0) {
-        const topBaseY = toY(minY);
-        const leftBaseX = toX(minX);
+        const topBaseY = toY(outer.minY);
+        const botBaseY = toY(outer.maxY);
+        const leftBaseX = toX(outer.minX);
+        const rightBaseX = toX(outer.maxX);
 
-        // Tầng 2: Chuỗi kích thước từng khoảng trục ngang & đứng
-        if (outer.xChain.length > 1) {
-            for (const seg of outer.xChain) {
+        // Tầng 1: Chuỗi kích thước chi tiết các đoạn tường & cửa phóng ra ngoài (trên / trái / dưới / phải)
+        const topSegs = (showWallDims && outer.topChain?.length > 1) ? outer.topChain : outer.xChain;
+        if (topSegs.length > 1) {
+            for (const seg of topSegs) {
                 drawArchDimLine(
                     ctx,
                     toX(seg.from), topBaseY,
                     toX(seg.to), topBaseY,
                     `${seg.len}`,
-                    -36,
+                    -34,
                     { color: '#0f766e', fontSize: 10.5 }
                 );
             }
         }
-        if (outer.yChain.length > 1) {
-            for (const seg of outer.yChain) {
+        const leftSegs = (showWallDims && outer.leftChain?.length > 1) ? outer.leftChain : outer.yChain;
+        if (leftSegs.length > 1) {
+            for (const seg of leftSegs) {
                 drawArchDimLine(
                     ctx,
                     leftBaseX, toY(seg.from),
                     leftBaseX, toY(seg.to),
                     `${seg.len}`,
-                    36,
+                    34,
                     { color: '#0f766e', fontSize: 10.5 }
                 );
             }
         }
+        if (showWallDims && outer.bottomChain?.length > 1) {
+            for (const seg of outer.bottomChain) {
+                drawArchDimLine(
+                    ctx,
+                    toX(seg.from), botBaseY,
+                    toX(seg.to), botBaseY,
+                    `${seg.len}`,
+                    34,
+                    { color: '#0f766e', fontSize: 10 }
+                );
+            }
+        }
+        if (showWallDims && outer.rightChain?.length > 1) {
+            for (const seg of outer.rightChain) {
+                drawArchDimLine(
+                    ctx,
+                    rightBaseX, toY(seg.from),
+                    rightBaseX, toY(seg.to),
+                    `${seg.len}`,
+                    -34,
+                    { color: '#0f766e', fontSize: 10 }
+                );
+            }
+        }
 
-        // Tầng 3: Kích thước tổng phủ bì ngoài cùng
+        // Tầng 2: Kích thước tổng phủ bì ngoài cùng
         drawArchDimLine(
             ctx,
             toX(outer.minX), topBaseY,
             toX(outer.maxX), topBaseY,
             `${outer.totalW} mm`,
-            -68,
+            -64,
             { color: '#0f172a', fontSize: 12, lineWidth: 1.4 }
         );
         drawArchDimLine(
@@ -754,7 +811,7 @@ export async function renderPlanLayoutCanvas(doc, opts = {}) {
             leftBaseX, toY(outer.minY),
             leftBaseX, toY(outer.maxY),
             `${outer.totalH} mm`,
-            68,
+            64,
             { color: '#0f172a', fontSize: 12, lineWidth: 1.4 }
         );
     }

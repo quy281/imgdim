@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Group } from 'react-konva';
-import { ExternalLink, AlertCircle, RefreshCw } from 'lucide-react';
+import { ExternalLink, AlertCircle, RefreshCw, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
@@ -63,17 +63,88 @@ function PlanCanvas({ doc }) {
 }
 
 function PhotoGallery({ photos }) {
+    const [activeIdx, setActiveIdx] = useState(-1);
+    const touchRef = useRef(null);
+
+    useEffect(() => {
+        if (activeIdx < 0) return;
+        const onKey = (e) => {
+            if (e.key === 'Escape') setActiveIdx(-1);
+            else if (e.key === 'ArrowLeft') setActiveIdx(i => Math.max(0, i - 1));
+            else if (e.key === 'ArrowRight') setActiveIdx(i => Math.min(photos.length - 1, i + 1));
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [activeIdx, photos.length]);
+
+    const cur = activeIdx >= 0 ? photos[activeIdx] : null;
+
     return (
         <div className="scroll-body">
             <div className="doc-grid">
-                {photos.map(p => (
-                    <a key={p.id} className="doc-card" href={p.thumb} target="_blank" rel="noreferrer"
-                        style={{ textDecoration: 'none' }}>
-                        <img className="doc-thumb" src={p.thumb} alt={p.name} />
+                {photos.map((p, idx) => (
+                    <button
+                        key={p.id}
+                        type="button"
+                        className="doc-card"
+                        style={{ textAlign: 'left', border: 'none', padding: 0 }}
+                        onClick={() => setActiveIdx(idx)}
+                    >
+                        <img className="doc-thumb" src={p.thumb || p.img} alt={p.name} />
                         <div className="doc-card-name">{p.name}</div>
-                    </a>
+                    </button>
                 ))}
             </div>
+
+            {cur && (
+                <div
+                    className="album-lightbox"
+                    onTouchStart={(e) => {
+                        if (e.touches.length === 1) touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                    }}
+                    onTouchEnd={(e) => {
+                        const s = touchRef.current;
+                        touchRef.current = null;
+                        if (!s || !e.changedTouches.length) return;
+                        const dx = e.changedTouches[0].clientX - s.x;
+                        const dy = e.changedTouches[0].clientY - s.y;
+                        if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+                            if (dx < 0) setActiveIdx(i => Math.min(photos.length - 1, i + 1));
+                            else setActiveIdx(i => Math.max(0, i - 1));
+                        }
+                    }}
+                >
+                    <div className="album-lightbox-head">
+                        <span>{cur.name} · {activeIdx + 1} / {photos.length}</span>
+                        <button type="button" className="icon-btn" style={{ color: '#fff' }} onClick={() => setActiveIdx(-1)}>
+                            <X size={22} />
+                        </button>
+                    </div>
+                    <div className="album-lightbox-stage">
+                        {photos.length > 1 && (
+                            <button
+                                type="button"
+                                className="album-nav-btn prev"
+                                disabled={activeIdx <= 0}
+                                onClick={() => setActiveIdx(i => Math.max(0, i - 1))}
+                            >
+                                <ChevronLeft size={26} />
+                            </button>
+                        )}
+                        <img src={cur.img || cur.thumb} alt={cur.name} />
+                        {photos.length > 1 && (
+                            <button
+                                type="button"
+                                className="album-nav-btn next"
+                                disabled={activeIdx >= photos.length - 1}
+                                onClick={() => setActiveIdx(i => Math.min(photos.length - 1, i + 1))}
+                            >
+                                <ChevronRight size={26} />
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

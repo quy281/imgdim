@@ -266,10 +266,22 @@ function sanitizePatch(raw, base = null) {
     if (raw.matAccent !== undefined) out.matAccent = validStr(raw.matAccent);
     if (raw.glbUrl !== undefined) out.glbUrl = validStr(raw.glbUrl);
     if (raw.glbFileName !== undefined) out.glbFileName = validStr(raw.glbFileName);
+    if (raw.modelFormat !== undefined) out.modelFormat = validStr(raw.modelFormat).toLowerCase();
+    if (raw.glbRotX != null && Number.isFinite(Number(raw.glbRotX))) out.glbRotX = Number(raw.glbRotX) % 360;
     if (raw.glbRotY != null && Number.isFinite(Number(raw.glbRotY))) out.glbRotY = Number(raw.glbRotY) % 360;
     if (raw.hasLocalGlb !== undefined) out.hasLocalGlb = !!raw.hasLocalGlb;
     if (raw.hidden !== undefined) out.hidden = !!raw.hidden;
     return out;
+}
+
+export function isDesktopCatalogSupported() {
+    if (typeof window === 'undefined') return true;
+    const w = window.innerWidth || 0;
+    if (w < 900) return false;
+    try {
+        if (window.matchMedia?.('(pointer: coarse)').matches && w < 1024) return false;
+    } catch { /* ignore */ }
+    return true;
 }
 
 function rebuildCatalog() {
@@ -431,14 +443,17 @@ export function saveCatalogItem(itemPatch, opts = {}) {
     const requestedKey = String(itemPatch?.key || '').trim();
     const builtin = requestedKey ? BUILTIN_BY_KEY.get(requestedKey) : null;
     let finalKey = requestedKey;
+    const glbIncoming = opts.glbDataUrl !== undefined ? opts.glbDataUrl : opts.glbData;
+    const isClearGlb = !!opts.clearGlb || glbIncoming === '';
 
     if (builtin) {
         const clean = sanitizePatch(itemPatch, builtin);
-        if (opts.clearGlb) {
+        if (isClearGlb) {
             clean.hasLocalGlb = false;
             clean.glbFileName = '';
+            clean.modelFormat = '';
             clean.glbUrl = '';
-        } else if (opts.glbDataUrl) {
+        } else if (glbIncoming) {
             clean.hasLocalGlb = true;
         }
         const nextOv = { ...(catalogState.overrides?.[finalKey] || {}), ...clean };
@@ -454,11 +469,12 @@ export function saveCatalogItem(itemPatch, opts = {}) {
         const existingIdx = (catalogState.customItems || []).findIndex(x => x.key === finalKey);
         const existing = existingIdx >= 0 ? catalogState.customItems[existingIdx] : null;
         const clean = sanitizePatch(itemPatch, existing);
-        if (opts.clearGlb) {
+        if (isClearGlb) {
             clean.hasLocalGlb = false;
             clean.glbFileName = '';
+            clean.modelFormat = '';
             clean.glbUrl = '';
-        } else if (opts.glbDataUrl) {
+        } else if (glbIncoming) {
             clean.hasLocalGlb = true;
         }
         const nextItem = {
@@ -486,12 +502,12 @@ export function saveCatalogItem(itemPatch, opts = {}) {
     }
 
     const st = getAssetStore();
-    if (opts.clearGlb) {
+    if (isClearGlb) {
         GLB_MEM_CACHE.delete(finalKey);
         if (st) st.removeItem(`${GLB_PREFIX}${finalKey}`).catch(() => {});
-    } else if (opts.glbDataUrl) {
-        GLB_MEM_CACHE.set(finalKey, opts.glbDataUrl);
-        if (st) st.setItem(`${GLB_PREFIX}${finalKey}`, opts.glbDataUrl).catch(() => {});
+    } else if (glbIncoming) {
+        GLB_MEM_CACHE.set(finalKey, glbIncoming);
+        if (st) st.setItem(`${GLB_PREFIX}${finalKey}`, glbIncoming).catch(() => {});
     }
 
     persistState(true);

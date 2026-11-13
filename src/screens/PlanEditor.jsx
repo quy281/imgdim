@@ -27,14 +27,14 @@ import { toast } from '../ui/Toast';
 import {
     genId, dist, snapToGrid, snapOrtho, findNearbyNode,
     applyWallLength, scaleAllWalls, snapToWall, splitWallAtPoint, bboxOfPlan,
-    applySegmentLength, applyOpeningWidth, roomFaces, ceilingHeight, openingV,
+    wallSegments, applySegmentLength, applyOpeningWidth, roomFaces, ceilingHeight, openingV,
     applyOpeningVertical, applyCeilingHeight,
     columnTargetAt, columnSizeFromDrag, insertCornerColumn, insertWallColumn, resolveColumnTarget,
     columnParts, resizeColumn, removeColumn, COLUMN_DEFAULT,
 } from '../lib/geometry';
 import {
     addWallSegment, deleteWall, moveNode, renameRoom, recomputeRooms,
-    addOpening, removeOpening, updateOpening, insertTemplate,
+    addOpening, removeOpening, updateOpening, insertTemplate, unlockWallSegments,
 } from '../lib/planModel';
 import { loadTemplates, saveTemplateFromRoom, deleteTemplate } from '../lib/roomTemplates';
 import { generateDxf } from '../lib/dxf';
@@ -263,13 +263,19 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         const plan = docRef.current.plan;
         const wall = plan.walls.find(w => w.id === wallId);
         if (!wall) return;
-        const nOps = (wall.openings || []).length;
+        const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
+        const a = nodeById.get(wall.a);
+        const b = nodeById.get(wall.b);
+        const wallLen = a && b ? dist(a, b) : 0;
+        const chain = wallLen > 0 ? wallSegments(wall, wallLen) : [];
+        const locks = wall.segLocks || {};
+        const hasOtherUnlocked = chain.some(s => s.kind === 'seg' && s.idx !== segIdx && !locks[s.idx]);
         setNumpad({
-            title: 'Đoạn tường',
+            title: 'Cạnh tường',
             initial: curLen,
-            hint: nOps === 1
-                ? 'Tổng tường giữ nguyên — bề rộng cửa tự bù theo'
-                : 'Tổng tường giữ nguyên — cửa kề bên phải tự bù',
+            hint: hasOtherUnlocked
+                ? 'Nhập 1 cạnh: giữ nguyên rộng cửa, tự dồn cửa sang phần cạnh còn lại'
+                : 'Đã khoá cạnh kia: tự dồn lại kích thước cửa để khớp tổng tường',
             onOK: (val) => {
                 const p = docRef.current.plan;
                 const { plan: next, warning } = applySegmentLength(p, wallId, segIdx, val);
@@ -1013,22 +1019,37 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                 )}
 
                 {/* Selection action bar */}
-                {sel?.kind === 'wall' && mode === 'select' && (
-                    <div className="float-bar">
-                        <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => openWallNumPad(sel.id)}>
-                            <Ruler size={16} /> Sửa KT
-                        </button>
-                        <div className="fb-sep" />
-                        <button className="fb-btn" style={{ color: '#dc2626' }} onClick={() => setConfirm({
-                            title: 'Xóa tường này?', actionLabel: 'Xóa tường',
-                            onOK: () => { commit(recomputeRooms(deleteWall(docRef.current.plan, sel.id)), undefined); setSel(null); },
-                        })}>
-                            <Trash2 size={16} /> Xóa
-                        </button>
-                        <div className="fb-sep" />
-                        <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
-                    </div>
-                )}
+                {sel?.kind === 'wall' && mode === 'select' && (() => {
+                    const selW = doc.plan.walls.find(w => w.id === sel.id);
+                    const hasSegLocks = !!(selW?.segLocks && Object.keys(selW.segLocks).length > 0);
+                    return (
+                        <div className="float-bar">
+                            <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => openWallNumPad(sel.id)}>
+                                <Ruler size={16} /> Sửa KT
+                            </button>
+                            {hasSegLocks && (
+                                <>
+                                    <div className="fb-sep" />
+                                    <button className="fb-btn" style={{ color: '#059669' }} onClick={() => {
+                                        commit(unlockWallSegments(docRef.current.plan, sel.id), undefined);
+                                        toast('Đã mở khoá cạnh tường — lần nhập tiếp theo sẽ dồn vị trí cửa', 'ok');
+                                    }}>
+                                        Mở khoá cạnh
+                                    </button>
+                                </>
+                            )}
+                            <div className="fb-sep" />
+                            <button className="fb-btn" style={{ color: '#dc2626' }} onClick={() => setConfirm({
+                                title: 'Xóa tường này?', actionLabel: 'Xóa tường',
+                                onOK: () => { commit(recomputeRooms(deleteWall(docRef.current.plan, sel.id)), undefined); setSel(null); },
+                            })}>
+                                <Trash2 size={16} /> Xóa
+                            </button>
+                            <div className="fb-sep" />
+                            <button className="fb-btn" onClick={() => setSel(null)}><X size={16} /></button>
+                        </div>
+                    );
+                })()}
                 {selCol && (
                     <div className="float-bar">
                         <button className="fb-btn" style={{ color: 'var(--violet)' }}
@@ -1262,10 +1283,10 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                     <div style={{ flex: 1 }}>Sửa kích thước mặc định<div className="sub">Áp dụng cho món thêm sau</div></div>
                 </button>
                 {onOpenCatalogAdmin && (
-                    <button className="sheet-row"
+                    <button className="sheet-row desktop-only"
                         onClick={() => { setShowFurnPicker(false); onOpenCatalogAdmin(); }}>
                         <Boxes size={18} style={{ color: 'var(--violet)' }} />
-                        <div style={{ flex: 1 }}>Mở Backend sửa thư viện 2D &amp; 3D<div className="sub">Sửa ký hiệu SVG 2D, màu, chất liệu &amp; file 3D GLB</div></div>
+                        <div style={{ flex: 1 }}>Mở Backend sửa thư viện 2D &amp; 3D (PC)<div className="sub">Sửa ký hiệu SVG 2D, màu, chất liệu &amp; nhập từ SketchUp</div></div>
                     </button>
                 )}
             </Sheet>

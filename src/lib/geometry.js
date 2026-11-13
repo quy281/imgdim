@@ -409,10 +409,60 @@ function rebuildChain(wall, wallLen, chain, newLens) {
 }
 
 /**
- * Sửa chiều dài 1 đoạn tường (giữa 2 cửa, hoặc từ góc tới cửa).
- * Tổng tường không đổi — cửa kề bên phải bù, không có thì cửa kề bên trái.
+ * Tính vector pháp tuyến (nx, ny) hướng RA BÊN NGOÀI phòng/mặt bằng cho bức tường.
+ * Nếu tường bao 1 phòng -> luôn hướng ra phía ngoài phòng; nếu mặt bằng chưa khép kín -> hướng ra ngoài trọng tâm.
+ */
+export function wallOutwardNormal(plan, wall) {
+    const nodes = plan?.nodes || [];
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const a = nodeById.get(wall?.a);
+    const b = nodeById.get(wall?.b);
+    if (!a || !b) return { nx: 0, ny: -1, ux: 1, uy: 0, a, b, len: 0 };
+    const len = dist(a, b);
+    if (len <= 0) return { nx: 0, ny: -1, ux: 1, uy: 0, a, b, len: 0 };
+    const ux = (b.x - a.x) / len;
+    const uy = (b.y - a.y) / len;
+    let nx = -uy, ny = ux;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+
+    const hasWallEdge = (room) => {
+        const ids = room?.nodeIds || [];
+        for (let i = 0; i < ids.length; i++) {
+            const u = ids[i];
+            const v = ids[(i + 1) % ids.length];
+            if ((u === wall.a && v === wall.b) || (u === wall.b && v === wall.a)) return true;
+        }
+        return false;
+    };
+
+    const containingRooms = (plan?.rooms || []).filter(hasWallEdge);
+    if (containingRooms.length === 1 && Number.isFinite(containingRooms[0].cx) && Number.isFinite(containingRooms[0].cy)) {
+        const r = containingRooms[0];
+        if ((mx - r.cx) * nx + (my - r.cy) * ny < 0) {
+            nx = -nx;
+            ny = -ny;
+        }
+    } else if (containingRooms.length === 0 && nodes.length >= 3) {
+        const cx = nodes.reduce((s, n) => s + n.x, 0) / nodes.length;
+        const cy = nodes.reduce((s, n) => s + n.y, 0) / nodes.length;
+        if ((mx - cx) * nx + (my - cy) * ny < 0) {
+            nx = -nx;
+            ny = -ny;
+        }
+    }
+    return { nx, ny, ux, uy, a, b, len };
+}
+
+/**
+ * Sửa chiều dài 1 đoạn tường theo quy tắc thông minh 2 bước:
+ *   - Nhập 1 cạnh tường (khi cạnh còn lại chưa khoá trong wall.segLocks):
+ *       Giữ nguyên chiều rộng ô cửa, dồn vị trí cửa sang phần cạnh tường còn lại.
+ *   - Nhập cạnh tường thứ 2 (khi cạnh kia ĐÃ được nhập trước đó):
+ *       Giữ nguyên cạnh đã khoá trước, dồn chênh lệch vào kích thước ô cửa kề.
  */
 export function applySegmentLength(plan, wallId, segIdx, newLen) {
+    if (!Number.isFinite(newLen) || newLen < 0) return { plan, warning: null };
     const wall = plan.walls.find(w => w.id === wallId);
     if (!wall) return { plan, warning: null };
     const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
@@ -420,33 +470,76 @@ export function applySegmentLength(plan, wallId, segIdx, newLen) {
     const b = nodeById.get(wall.b);
     if (!a || !b) return { plan, warning: null };
     const wallLen = dist(a, b);
-    if (wallLen <= 0 || newLen < 0) return { plan, warning: null };
+    if (wallLen <= 0) return { plan, warning: null };
 
     const chain = wallSegments(wall, wallLen);
     const pos = chain.findIndex(s => s.kind === 'seg' && s.idx === segIdx);
     if (pos < 0) return { plan, warning: null };
-    const delta = newLen - chain[pos].len;
-    if (Math.abs(delta) < 0.5) return { plan, warning: null };
-
-    // Cửa kề phải bù trước; không có thì cửa kề trái
-    const absorbPos = chain[pos + 1]?.kind === 'op' ? pos + 1
-        : chain[pos - 1]?.kind === 'op' ? pos - 1 : -1;
-    if (absorbPos < 0) {
+    if (!(wall.openings || []).length) {
         return { plan, warning: 'Tường chưa có cửa — chạm nhãn tổng để sửa chiều dài tường' };
     }
 
+    const segLocks = { ...(wall.segLocks || {}) };
+    const delta = newLen - chain[pos].len;
+    if (Math.abs(delta) < 0.5) {
+        segLocks[segIdx] = true;
+        const walls = plan.walls.map(w => w.id === wallId ? { ...w, segLocks } : w);
+        return { plan: { ...plan, walls }, warning: null };
+    }
+
+    // Tìm cạnh tường còn lại chưa khoá (ưu tiên bên phải, rồi bên trái)
+    let unlockedSegPos = -1;
+    for (let p = pos + 1; p < chain.length; p++) {
+        if (chain[p].kind === 'seg' && chain[p].idx !== segIdx && !segLocks[chain[p].idx]) {
+            unlockedSegPos = p;
+            break;
+        }
+    }
+    if (unlockedSegPos < 0) {
+        for (let p = pos - 1; p >= 0; p--) {
+            if (chain[p].kind === 'seg' && chain[p].idx !== segIdx && !segLocks[chain[p].idx]) {
+                unlockedSegPos = p;
+                break;
+            }
+        }
+    }
+
+    const adjOpPos = chain[pos + 1]?.kind === 'op' ? pos + 1
+        : chain[pos - 1]?.kind === 'op' ? pos - 1 : -1;
+
     const newLens = chain.map(s => s.len);
     newLens[pos] = newLen;
-    newLens[absorbPos] = chain[absorbPos].len - delta;
+
+    if (unlockedSegPos >= 0) {
+        // Bước 1: còn cạnh chưa nhập → giữ nguyên chiều rộng cửa, dồn cửa sang cạnh kia
+        const remainOther = chain[unlockedSegPos].len - delta;
+        if (remainOther >= -0.5) {
+            newLens[unlockedSegPos] = Math.max(0, remainOther);
+        } else if (adjOpPos >= 0) {
+            // Má kia đã dồn về 0 mà vẫn thiếu chỗ -> phần dư dồn tiếp vào cửa kề
+            newLens[unlockedSegPos] = 0;
+            const excess = -remainOther;
+            newLens[adjOpPos] = chain[adjOpPos].len - excess;
+        } else {
+            return { plan, warning: 'Số đo vượt quá chiều dài tường' };
+        }
+    } else {
+        // Bước 2: cạnh kia đã được nhập/khoá → giữ cạnh đã nhập, dồn chênh lệch vào kích thước cửa kề
+        if (adjOpPos < 0) {
+            return { plan, warning: 'Tường chưa có cửa — chạm nhãn tổng để sửa chiều dài tường' };
+        }
+        newLens[adjOpPos] = chain[adjOpPos].len - delta;
+    }
 
     const res = rebuildChain(wall, wallLen, chain, newLens);
     if (res.error) return { plan, warning: res.error };
-    const walls = plan.walls.map(w => w.id === wallId ? { ...w, openings: res.openings } : w);
+    segLocks[segIdx] = true;
+    const walls = plan.walls.map(w => w.id === wallId ? { ...w, openings: res.openings, segLocks } : w);
     return { plan: { ...plan, walls }, warning: null };
 }
 
 /**
- * Sửa bề rộng cửa. Tổng tường không đổi — đoạn kề phải bù, không đủ thì đoạn kề trái.
+ * Sửa bề rộng cửa. Tổng tường không đổi — ưu tiên đoạn kề chưa khoá bù, không đủ thì đoạn kề còn lại.
  */
 export function applyOpeningWidth(plan, wallId, opId, newWidth) {
     const wall = plan.walls.find(w => w.id === wallId);
@@ -465,20 +558,22 @@ export function applyOpeningWidth(plan, wallId, opId, newWidth) {
     const delta = newWidth - chain[pos].len;
     if (Math.abs(delta) < 0.5) return { plan, warning: null };
 
-    const newLens = chain.map(s => s.len);
-    newLens[pos] = newWidth;
-    // đoạn kề phải bù; nếu âm thì thử đoạn kề trái
-    if (chain[pos + 1] && chain[pos + 1].len - delta >= -0.5) {
-        newLens[pos + 1] = chain[pos + 1].len - delta;
-    } else if (chain[pos - 1] && chain[pos - 1].len - delta >= -0.5) {
-        newLens[pos - 1] = chain[pos - 1].len - delta;
-    } else {
+    const segLocks = { ...(wall.segLocks || {}) };
+    const candidates = [pos + 1, pos - 1].filter(idx => chain[idx] && chain[idx].len - delta >= -0.5);
+    const unlockedFirst = candidates.find(idx => chain[idx].kind === 'seg' && !segLocks[chain[idx].idx]);
+    const absorbIdx = unlockedFirst !== undefined ? unlockedFirst : candidates[0];
+    if (absorbIdx === undefined) {
         return { plan, warning: 'Không đủ chỗ trên tường cho bề rộng này' };
     }
 
+    const newLens = chain.map(s => s.len);
+    newLens[pos] = newWidth;
+    newLens[absorbIdx] = Math.max(0, chain[absorbIdx].len - delta);
+    if (chain[absorbIdx].kind === 'seg') delete segLocks[chain[absorbIdx].idx];
+
     const res = rebuildChain(wall, wallLen, chain, newLens);
     if (res.error) return { plan, warning: res.error };
-    const walls = plan.walls.map(w => w.id === wallId ? { ...w, openings: res.openings } : w);
+    const walls = plan.walls.map(w => w.id === wallId ? { ...w, openings: res.openings, segLocks } : w);
     return { plan: { ...plan, walls }, warning: null };
 }
 

@@ -833,6 +833,15 @@ export default function App() {
     const currentDoc = route.docId ? docs.find(d => d.id === route.docId) : null;
     const surveyProjects = projects.filter(p => !isInventoryProject(p));
     const surveyDocs = docs.filter(d => d.type !== 'board');
+    const projectPhotos = surveyDocs.filter(
+        d => d.type === 'photo' && String(d.projectId) === String(currentDoc?.projectId || route.projectId || '')
+    );
+    const switchPhotoDoc = (nextDoc) => {
+        if (!nextDoc || nextDoc.id === currentDoc?.id) return;
+        const nextRoute = { screen: 'photo', projectId: nextDoc.projectId, docId: nextDoc.id };
+        history.replaceState(nextRoute, '');
+        setRoute(nextRoute);
+    };
 
     let screen;
     if ((route.screen === 'plan' || route.screen === 'photo' || route.screen === 'board') && currentDoc) {
@@ -840,7 +849,7 @@ export default function App() {
             ? <PlanEditor key={currentDoc.id} doc={currentDoc} projectName={currentProject?.name || ''} onChange={updateDoc} onBack={goBack} onOpenCatalogAdmin={() => navigate({ screen: 'catalog-admin' })} />
             : route.screen === 'board'
                 ? <BoardEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />
-                : <PhotoEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />;
+                : <PhotoEditor key={currentDoc.projectId || 'photo-album'} doc={currentDoc} photos={projectPhotos} onSwitchPhoto={switchPhotoDoc} onChange={updateDoc} onBack={goBack} />;
     } else if (route.screen === 'catalog-admin') {
         screen = (
             <Suspense fallback={<div className="loading-screen"><div className="loading-spinner" /><div>Đang mở Backend thư viện…</div></div>}>

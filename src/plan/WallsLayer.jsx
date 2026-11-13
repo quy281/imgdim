@@ -1,6 +1,6 @@
 import React from 'react';
 import { Group, Line, Arc, Circle, Label, Tag, Text } from 'react-konva';
-import { wallQuad, dist, wallSegments } from '../lib/geometry';
+import { wallQuad, dist, wallSegments, wallOutwardNormal } from '../lib/geometry';
 
 const WALL_FILL = '#334155';
 const WALL_SELECTED = '#2563eb';
@@ -121,15 +121,6 @@ const WallsLayer = ({
                                                 stroke={opColor} strokeWidth={1 * inv} dash={[4 * inv, 3 * inv]} listening={false} />
                                         </>
                                     )}
-                                    <Label
-                                        x={cx + nx * (h + 16 * inv)}
-                                        y={cy + ny * (h + 16 * inv)}
-                                        offsetX={((String(op.width).length * 6 + 14) / 2) * inv}
-                                        offsetY={11 * inv}
-                                        listening={false}>
-                                        <Tag fill={isSelOp ? 'rgba(37,99,235,0.92)' : 'rgba(100,116,139,0.88)'} cornerRadius={6 * inv} />
-                                        <Text text={String(op.width)} fill="#fff" fontSize={10 * inv} padding={4.5 * inv} fontFamily={FONT} fontStyle="700" />
-                                    </Label>
                                 </Group>
                             );
                         })}
@@ -143,34 +134,146 @@ const WallsLayer = ({
                     fill={selNodeIds.includes(n.id) ? WALL_SELECTED : WALL_FILL} listening={false} />
             ) : null)}
 
-            {/* dimension labels: nhãn tổng tường + nhãn từng đoạn giữa các cửa */}
+            {/* Kích thước để ngoài thành kích thước 2 tầng: Tầng 1 chuỗi cạnh tường + cửa, Tầng 2 tổng chiều dài tường */}
             {plan.walls.map(w => {
-                // Cạnh cột không có nhãn riêng: ba nhãn 220 chen nhau thì rối hình, mà sửa
-                // lẻ một cạnh lại làm cột hết vuông. Kích thước cột nằm ở chip khi chọn cột.
                 if (w.column) return null;
-                const a = nodeById.get(w.a);
-                const b = nodeById.get(w.b);
-                if (!a || !b) return null;
-                const len = dist(a, b);
-                if (len <= 0) return null;
-                const ux = (b.x - a.x) / len;
-                const uy = (b.y - a.y) / len;
-                const nx = -uy, ny = ux;
+                const { nx, ny, ux, uy, a, b, len } = wallOutwardNormal(plan, w);
+                if (!a || !b || len <= 0) return null;
                 const isSel = w.id === selWallId;
                 const hasOps = (w.openings || []).length > 0;
-                // Có cửa → nhãn tổng đẩy ra ngoài, chuỗi đoạn/cửa nằm sát tường (chuẩn dimension chain)
-                const totalOff = w.thickness / 2 + (hasOps ? 42 : 16) * inv;
-                const segOff = w.thickness / 2 + 16 * inv;
+                const halfT = (w.thickness || 110) / 2;
+                const tier1Off = halfT + 24 * inv;
+                const tier2Off = halfT + (hasOps ? 52 : 24) * inv;
+                const extFrom = halfT + 3 * inv;
+                const extPad = 5 * inv;
+                const tickSz = 4 * inv;
+                const tx = (ux + nx) * 0.7071 * tickSz;
+                const ty = (uy + ny) * 0.7071 * tickSz;
+
                 const label = String(Math.round(len));
                 const tapLbl = (e) => { e.cancelBubble = true; onLabelTap(w.id); };
-                const segs = hasOps
-                    ? wallSegments(w, len).filter(s => s.kind === 'seg' && s.len >= 1)
-                    : [];
+                const segs = hasOps ? wallSegments(w, len).filter(s => s.len >= 1) : [];
+
+                const boundaryTs = hasOps
+                    ? [...new Set([0, ...segs.flatMap(s => [s.from, s.to]), len])]
+                    : [0, len];
+
                 return (
                     <Group key={`lbl-${w.id}`}>
+                        {/* Đường dim Tầng 1 (khi có cửa: chuỗi đoạn + cửa nằm hoàn toàn ngoài tường) */}
+                        {hasOps && (
+                            <>
+                                <Line
+                                    points={[
+                                        a.x + nx * tier1Off - ux * 4 * inv, a.y + ny * tier1Off - uy * 4 * inv,
+                                        b.x + nx * tier1Off + ux * 4 * inv, b.y + ny * tier1Off + uy * 4 * inv,
+                                    ]}
+                                    stroke="#64748b" strokeWidth={1.1 * inv} listening={false}
+                                />
+                                {boundaryTs.map((tPos, bi) => {
+                                    const bx = a.x + ux * tPos;
+                                    const by = a.y + uy * tPos;
+                                    const d1x = bx + nx * tier1Off;
+                                    const d1y = by + ny * tier1Off;
+                                    return (
+                                        <Group key={`t1mk-${w.id}-${bi}`} listening={false}>
+                                            <Line
+                                                points={[bx + nx * extFrom, by + ny * extFrom, d1x + nx * extPad, d1y + ny * extPad]}
+                                                stroke="rgba(100,116,139,0.5)" strokeWidth={0.9 * inv}
+                                            />
+                                            <Line
+                                                points={[d1x - tx, d1y - ty, d1x + tx, d1y + ty]}
+                                                stroke="#475569" strokeWidth={1.5 * inv}
+                                            />
+                                        </Group>
+                                    );
+                                })}
+                                {segs.map(s => {
+                                    const c = s.from + s.len / 2;
+                                    const txt = String(Math.round(s.len));
+                                    if (s.kind === 'seg') {
+                                        const isLocked = !!w.segLocks?.[s.idx];
+                                        const tapSeg = (e) => { e.cancelBubble = true; onSegmentTap?.(w.id, s.idx, Math.round(s.len)); };
+                                        return (
+                                            <Label key={`sg-${w.id}-${s.idx}`}
+                                                x={a.x + ux * c + nx * tier1Off}
+                                                y={a.y + uy * c + ny * tier1Off}
+                                                offsetX={((txt.length * 6 + 14) / 2) * inv}
+                                                offsetY={11 * inv}
+                                                onClick={tapSeg}
+                                                onTap={tapSeg}
+                                                onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
+                                                onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
+                                            >
+                                                <Tag
+                                                    fill={isLocked ? '#ecfdf5' : '#ffffff'}
+                                                    stroke={isLocked ? '#059669' : '#2563eb'}
+                                                    strokeWidth={(isLocked ? 1.6 : 1.2) * inv}
+                                                    cornerRadius={6 * inv}
+                                                />
+                                                <Text text={txt} fill={isLocked ? '#065f46' : '#1e40af'} fontSize={10 * inv} padding={4.5 * inv} fontFamily={FONT} fontStyle="700" />
+                                            </Label>
+                                        );
+                                    }
+                                    const opSel = s.opId === selOpeningId;
+                                    const tapOp = (e) => { e.cancelBubble = true; onOpeningTap?.(w.id, s.opId); };
+                                    return (
+                                        <Label key={`opd-${w.id}-${s.opId}`}
+                                            x={a.x + ux * c + nx * tier1Off}
+                                            y={a.y + uy * c + ny * tier1Off}
+                                            offsetX={((txt.length * 6 + 14) / 2) * inv}
+                                            offsetY={11 * inv}
+                                            onClick={tapOp}
+                                            onTap={tapOp}
+                                            onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'pointer'; }}
+                                            onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
+                                        >
+                                            <Tag
+                                                fill={opSel ? 'rgba(37,99,235,0.94)' : '#eff6ff'}
+                                                stroke={opSel ? '#1d4ed8' : '#64748b'}
+                                                strokeWidth={1.1 * inv}
+                                                cornerRadius={6 * inv}
+                                            />
+                                            <Text text={txt} fill={opSel ? '#fff' : '#334155'} fontSize={10 * inv} padding={4.5 * inv} fontFamily={FONT} fontStyle="700" />
+                                        </Label>
+                                    );
+                                })}
+                            </>
+                        )}
+
+                        {/* Đường dim Tầng 2 (tổng tường — hoặc đường đơn ngoài tường khi chưa có cửa) */}
+                        <Line
+                            points={[
+                                a.x + nx * tier2Off - ux * 4 * inv, a.y + ny * tier2Off - uy * 4 * inv,
+                                b.x + nx * tier2Off + ux * 4 * inv, b.y + ny * tier2Off + uy * 4 * inv,
+                            ]}
+                            stroke={isSel ? '#2563eb' : '#475569'} strokeWidth={1.15 * inv} listening={false}
+                        />
+                        {[0, len].map((tEnd, ei) => {
+                            const ex = a.x + ux * tEnd;
+                            const ey = a.y + uy * tEnd;
+                            const d2x = ex + nx * tier2Off;
+                            const d2y = ey + ny * tier2Off;
+                            return (
+                                <Group key={`t2mk-${w.id}-${ei}`} listening={false}>
+                                    <Line
+                                        points={[
+                                            ex + nx * (hasOps ? tier1Off : extFrom), ey + ny * (hasOps ? tier1Off : extFrom),
+                                            d2x + nx * extPad, d2y + ny * extPad,
+                                        ]}
+                                        stroke="rgba(71,85,105,0.45)" strokeWidth={0.9 * inv}
+                                    />
+                                    <Line
+                                        points={[d2x - tx, d2y - ty, d2x + tx, d2y + ty]}
+                                        stroke={isSel ? '#2563eb' : '#0f172a'} strokeWidth={1.6 * inv}
+                                    />
+                                </Group>
+                            );
+                        })}
+
                         <Label
-                            x={(a.x + b.x) / 2 + nx * totalOff}
-                            y={(a.y + b.y) / 2 + ny * totalOff}
+                            x={(a.x + b.x) / 2 + nx * tier2Off}
+                            y={(a.y + b.y) / 2 + ny * tier2Off}
                             offsetX={((label.length * 6.5 + 18) / 2) * inv}
                             offsetY={13 * inv}
                             onClick={tapLbl}
@@ -178,30 +281,10 @@ const WallsLayer = ({
                             onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
                             onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
                         >
-                            <Tag fill={isSel ? 'rgba(37,99,235,0.92)' : w.edited ? '#fecaca' : 'rgba(15,23,42,0.78)'} cornerRadius={12 * inv} />
+                            <Tag fill={isSel ? 'rgba(37,99,235,0.92)' : w.edited ? '#fecaca' : 'rgba(15,23,42,0.82)'} cornerRadius={12 * inv} />
                             <Text text={label} fill={isSel ? '#fef08a' : w.edited ? '#dc2626' : '#fef08a'}
                                 fontSize={11.5 * inv} padding={6 * inv} fontFamily={FONT} fontStyle="700" />
                         </Label>
-                        {segs.map(s => {
-                            const c = s.from + s.len / 2;
-                            const txt = String(Math.round(s.len));
-                            const tapSeg = (e) => { e.cancelBubble = true; onSegmentTap?.(w.id, s.idx, Math.round(s.len)); };
-                            return (
-                                <Label key={`sg-${w.id}-${s.idx}`}
-                                    x={a.x + ux * c + nx * segOff}
-                                    y={a.y + uy * c + ny * segOff}
-                                    offsetX={((txt.length * 6 + 14) / 2) * inv}
-                                    offsetY={11 * inv}
-                                    onClick={tapSeg}
-                                    onTap={tapSeg}
-                                    onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'text'; }}
-                                    onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
-                                >
-                                    <Tag fill="#ffffff" stroke="#2563eb" strokeWidth={1.2 * inv} cornerRadius={6 * inv} />
-                                    <Text text={txt} fill="#1e40af" fontSize={10 * inv} padding={4.5 * inv} fontFamily={FONT} fontStyle="700" />
-                                </Label>
-                            );
-                        })}
                     </Group>
                 );
             })}

@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Stage, Layer, Image as KonvaImage, Arrow, Group } from 'react-konva';
 import {
     ArrowLeft, Undo2, Redo2, Share2, Ruler, MessageSquareText,
     Trash2, X, Pencil, Image as ImageIcon, MapPin,
+    ChevronLeft, ChevronRight, Hand,
 } from 'lucide-react';
 import DimLine from '../photo/DimLine';
 import NoteMarker from '../photo/NoteMarker';
@@ -15,20 +16,32 @@ import { stageToDataURL, downloadDataURL, shareDataURL, stamp } from '../lib/exp
 import { formatLocation, getCurrentLocation, hasLocation, openLocationMap } from '../lib/location';
 
 const MODES = [
+    { id: 'view', icon: Hand, label: 'Xem ảnh' },
     { id: 'measure', icon: Ruler, label: 'Đo' },
     { id: 'note', icon: MessageSquareText, label: 'Ghi chú' },
 ];
 
-export default function PhotoEditor({ doc, onChange, onBack }) {
+function computeFitView(doc, stageSize) {
+    if (!stageSize.width || !stageSize.height || !doc?.w || !doc?.h) return null;
+    const s = Math.min(stageSize.width / doc.w, stageSize.height / doc.h);
+    return {
+        scale: s,
+        x: (stageSize.width - doc.w * s) / 2,
+        y: (stageSize.height - doc.h * s) / 2,
+    };
+}
+
+export default function PhotoEditor({ doc, photos = [], onSwitchPhoto, onChange, onBack }) {
     const docRef = useRef(doc);
     useEffect(() => { docRef.current = doc; }, [doc]);
 
-    const [mode, setModeRaw] = useState('measure');
+    const [mode, setModeRaw] = useState('view');
     const [img, setImg] = useState(null);
     const [view, setView] = useState(doc.view || null);
     const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
     const [sel, setSel] = useState(null); // {kind:'line'|'note', id}
     const [temp, setTemp] = useState(null); // live drawing line {start, end}
+    const [swipeDx, setSwipeDx] = useState(0);
     const [numpad, setNumpad] = useState(null);
     const [textSheet, setTextSheet] = useState(null);
     const [showExport, setShowExport] = useState(false);
@@ -37,13 +50,40 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
     const stageRef = useRef(null);
     const wrapRef = useRef(null);
     const gestureRef = useRef(null);
+    const lastTapRef = useRef({ time: 0, x: 0, y: 0 });
+    const stripRefs = useRef(new Map());
     const historyRef = useRef({ stack: [{ lines: doc.lines || [], notes: doc.notes || [] }], i: 0 });
+
+    const photoIdx = photos.findIndex(p => p.id === doc.id);
+    const hasAlbum = photos.length > 1 && photoIdx >= 0;
+    const hasPrev = hasAlbum && photoIdx > 0;
+    const hasNext = hasAlbum && photoIdx < photos.length - 1;
+    const fitScale = (stageSize.width && stageSize.height && doc.w && doc.h)
+        ? Math.min(stageSize.width / doc.w, stageSize.height / doc.h)
+        : 0;
+
+    // ===== Reset state cleanly when switching photo inside the album =====
+    useEffect(() => {
+        historyRef.current = { stack: [{ lines: doc.lines || [], notes: doc.notes || [] }], i: 0 };
+        setSel(null);
+        setTemp(null);
+        setSwipeDx(0);
+        setView(doc.view || computeFitView(doc, stageSize));
+        bumpHist(v => v + 1);
+        const el = stripRefs.current.get(doc.id);
+        if (el?.scrollIntoView) {
+            try { el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch { /* ignore */ }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [doc.id]);
 
     // ===== Hydrate image =====
     useEffect(() => {
+        let alive = true;
         const image = new window.Image();
-        image.onload = () => setImg(image);
+        image.onload = () => { if (alive) setImg(image); };
         image.src = doc.img;
+        return () => { alive = false; };
     }, [doc.img]);
 
     // ===== Stage sizing =====
@@ -60,9 +100,33 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
     // ===== Initial view fit =====
     useEffect(() => {
         if (view || !stageSize.width || !stageSize.height || !doc.w) return;
-        const s = Math.min(stageSize.width / doc.w, stageSize.height / doc.h);
-        setView({ scale: s, x: (stageSize.width - doc.w * s) / 2, y: (stageSize.height - doc.h * s) / 2 });
-    }, [stageSize, view, doc.w, doc.h]);
+        const fitted = computeFitView(doc, stageSize);
+        if (fitted) setView(fitted);
+    }, [stageSize, view, doc]);
+
+    const goPrevPhoto = useCallback(() => {
+        if (!hasPrev || !onSwitchPhoto) return;
+        onSwitchPhoto(photos[photoIdx - 1]);
+    }, [hasPrev, onSwitchPhoto, photos, photoIdx]);
+
+    const goNextPhoto = useCallback(() => {
+        if (!hasNext || !onSwitchPhoto) return;
+        onSwitchPhoto(photos[photoIdx + 1]);
+    }, [hasNext, onSwitchPhoto, photos, photoIdx]);
+
+    // ===== Keyboard Left / Right navigation =====
+    useEffect(() => {
+        if (!hasAlbum) return;
+        const onKey = (e) => {
+            if (numpad || textSheet || showExport) return;
+            const tag = e.target?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            if (e.key === 'ArrowLeft') { e.preventDefault(); goPrevPhoto(); }
+            else if (e.key === 'ArrowRight') { e.preventDefault(); goNextPhoto(); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [hasAlbum, numpad, textSheet, showExport, goPrevPhoto, goNextPhoto]);
 
     // ===== History / commit =====
     const commit = (lines, notes, ratio) => {
@@ -146,6 +210,7 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
             const rect = stageRef.current.container().getBoundingClientRect();
             gestureRef.current = { type: 'pinch', lastDist: touchDist(e.evt.touches), lastCenter: touchCenter(e.evt.touches, rect) };
             setTemp(null);
+            setSwipeDx(0);
             return;
         }
         if (e.target.name?.() === 'handle') return;
@@ -159,7 +224,9 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
             return;
         }
         if (e.evt?.cancelable) e.evt.preventDefault();
-        gestureRef.current = { type: 'tap', sx: p.x, sy: p.y, startView: { ...view } };
+        const atFitZoom = !fitScale || !view || view.scale <= fitScale * 1.08;
+        const canSwipe = hasAlbum && (mode === 'view' || mode === 'select') && !sel && atFitZoom && isEmptyTarget(e.target);
+        gestureRef.current = { type: 'tap', sx: p.x, sy: p.y, startView: { ...view }, canSwipe };
     };
 
     const onMove = (e) => {
@@ -195,7 +262,20 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
             return;
         }
         if (g && g.type === 'tap') {
-            if (Math.hypot(p.x - g.sx, p.y - g.sy) > 10) g.type = 'pan';
+            const dx = p.x - g.sx;
+            const dy = p.y - g.sy;
+            if (g.canSwipe && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+                g.type = 'swipe';
+            } else if (Math.hypot(dx, dy) > 10) {
+                g.type = 'pan';
+            }
+        }
+        if (g && g.type === 'swipe') {
+            if (e.evt?.cancelable) e.evt.preventDefault();
+            const dx = p.x - g.sx;
+            const resisted = ((dx > 0 && !hasPrev) || (dx < 0 && !hasNext)) ? dx * 0.25 : dx;
+            setSwipeDx(resisted);
+            return;
         }
         if (g && g.type === 'pan') {
             if (e.evt?.cancelable) e.evt.preventDefault();
@@ -207,6 +287,14 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
         const g = gestureRef.current;
         gestureRef.current = null;
         if (!g) return;
+        if (g.type === 'swipe') {
+            const p = getPos(e) || { x: g.sx + swipeDx, y: g.sy };
+            const dx = p.x - g.sx;
+            setSwipeDx(0);
+            if (dx <= -48 && hasNext) goNextPhoto();
+            else if (dx >= 48 && hasPrev) goPrevPhoto();
+            return;
+        }
         if (g.type === 'draw') {
             const t = temp;
             setTemp(null);
@@ -233,6 +321,27 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
                 },
             });
             return;
+        }
+        // Chạm đúp ở chế độ Xem ảnh để phóng to / thu về vừa khung giống album điện thoại
+        if (mode === 'view' && fitScale && view) {
+            const now = Date.now();
+            const prev = lastTapRef.current;
+            if (now - prev.time < 300 && Math.hypot(p.x - prev.x, p.y - prev.y) < 28) {
+                lastTapRef.current = { time: 0, x: 0, y: 0 };
+                if (view.scale > fitScale * 1.15) {
+                    const fitted = computeFitView(doc, stageSize);
+                    if (fitted) setView(fitted);
+                } else {
+                    const targetScale = fitScale * 2.2;
+                    setView({
+                        scale: targetScale,
+                        x: p.x - w.x * targetScale,
+                        y: p.y - w.y * targetScale,
+                    });
+                }
+                return;
+            }
+            lastTapRef.current = { time: now, x: p.x, y: p.y };
         }
         setSel(null);
     };
@@ -293,7 +402,8 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
     const bannerText = () => {
         if (mode === 'measure') return 'Kéo trên ảnh để vẽ đường đo · nhập số đo laser';
         if (mode === 'note') return 'Chạm vào ảnh để đặt ghi chú';
-        return 'Chạm để chọn · kéo để di chuyển';
+        if (hasAlbum) return 'Vuốt trái/phải hoặc bấm mũi tên để chuyển ảnh · chạm đúp để zoom';
+        return 'Chạm đúp hoặc kẹp 2 ngón để phóng to · chọn "Đo" để đo kích thước';
     };
 
     return (
@@ -301,7 +411,10 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
             <div className="hdr">
                 <button className="icon-btn" onClick={handleBack}><ArrowLeft size={22} /></button>
                 <button className="editor-title-location" onClick={handleLocation}>
-                    <div className="hdr-title">{doc.name}</div>
+                    <div className="hdr-title">
+                        {doc.name}
+                        {hasAlbum && <span className="album-hdr-count">{photoIdx + 1}/{photos.length}</span>}
+                    </div>
                     <div className={`hdr-sub doc-location ${hasLocation(doc) ? 'on' : ''}`}>
                         <MapPin size={12} /> {hasLocation(doc) ? formatLocation(doc.location) : 'Lấy vị trí'}
                     </div>
@@ -314,57 +427,91 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
             <div className={`mode-banner ${mode}`}>
                 <span>{bannerText()}</span>
                 <span className="spacer" />
-                {mode !== 'select' && (
-                    <button className="banner-btn" onClick={() => setMode('select')}>✕ Thoát</button>
+                {mode !== 'view' && (
+                    <button className="banner-btn" onClick={() => setMode('view')}>✕ Xong</button>
                 )}
             </div>
 
-            <div className="editor-canvas" ref={wrapRef} style={{ background: '#1e293b' }}>
+            <div className="editor-canvas" ref={wrapRef} style={{ background: '#0f172a', overflow: 'hidden' }}>
                 {view && stageSize.width > 0 && (
-                    <Stage width={stageSize.width} height={stageSize.height} ref={stageRef}
-                        scaleX={view.scale} scaleY={view.scale} x={view.x} y={view.y}
-                        onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
-                        onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
-                        onWheel={onWheel}>
-                        <Layer>
-                            {img && <KonvaImage image={img} x={0} y={0} />}
-                            {(doc.lines || []).map(l => (
-                                <DimLine key={l.id} line={l} scale={view.scale}
-                                    isSelected={sel?.kind === 'line' && sel.id === l.id}
-                                    onSelect={(id) => setSel({ kind: 'line', id })}
-                                    onLabelTap={(line) => openLabelNumPad(line, false)}
-                                    onChange={(nl, commitFlag) => {
-                                        const lines = (docRef.current.lines || []).map(x => x.id === nl.id ? nl : x);
-                                        if (commitFlag) commit(lines, undefined);
-                                        else onChange({ ...docRef.current, lines });
-                                    }}
-                                />
-                            ))}
-                            <Group listening={mode !== 'measure'}>
-                                {(doc.notes || []).map(n => (
-                                    <NoteMarker key={n.id} note={n} scale={view.scale} baseSize={16}
-                                        isSelected={sel?.kind === 'note' && sel.id === n.id}
-                                        onSelect={(id) => setSel({ kind: 'note', id })}
-                                        onEdit={(note) => setTextSheet({
-                                            title: 'Sửa ghi chú', initial: note.text,
-                                            onOK: (text) => commit(undefined, (docRef.current.notes || []).map(x => x.id === note.id ? { ...x, text } : x)),
-                                        })}
-                                        onChange={(nn, commitFlag) => {
-                                            const notes = (docRef.current.notes || []).map(x => x.id === nn.id ? nn : x);
-                                            if (commitFlag) commit(undefined, notes);
-                                            else onChange({ ...docRef.current, notes });
+                    <div
+                        style={{
+                            width: '100%',
+                            height: '100%',
+                            transform: swipeDx ? `translate3d(${swipeDx}px, 0, 0)` : undefined,
+                            transition: swipeDx ? 'none' : 'transform 160ms ease-out',
+                        }}
+                    >
+                        <Stage width={stageSize.width} height={stageSize.height} ref={stageRef}
+                            scaleX={view.scale} scaleY={view.scale} x={view.x} y={view.y}
+                            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
+                            onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
+                            onWheel={onWheel}>
+                            <Layer>
+                                {img && <KonvaImage image={img} x={0} y={0} />}
+                                {(doc.lines || []).map(l => (
+                                    <DimLine key={l.id} line={l} scale={view.scale}
+                                        isSelected={sel?.kind === 'line' && sel.id === l.id}
+                                        onSelect={(id) => setSel({ kind: 'line', id })}
+                                        onLabelTap={(line) => openLabelNumPad(line, false)}
+                                        onChange={(nl, commitFlag) => {
+                                            const lines = (docRef.current.lines || []).map(x => x.id === nl.id ? nl : x);
+                                            if (commitFlag) commit(lines, undefined);
+                                            else onChange({ ...docRef.current, lines });
                                         }}
                                     />
                                 ))}
-                            </Group>
-                            {temp && (
-                                <Arrow points={[temp.start.x, temp.start.y, temp.end.x, temp.end.y]}
-                                    stroke="#fbbf24" strokeWidth={2 / view.scale} fill="#fbbf24"
-                                    pointerLength={7 / view.scale} pointerWidth={7 / view.scale}
-                                    dash={[6 / view.scale, 5 / view.scale]} listening={false} />
-                            )}
-                        </Layer>
-                    </Stage>
+                                <Group listening={mode !== 'measure'}>
+                                    {(doc.notes || []).map(n => (
+                                        <NoteMarker key={n.id} note={n} scale={view.scale} baseSize={16}
+                                            isSelected={sel?.kind === 'note' && sel.id === n.id}
+                                            onSelect={(id) => setSel({ kind: 'note', id })}
+                                            onEdit={(note) => setTextSheet({
+                                                title: 'Sửa ghi chú', initial: note.text,
+                                                onOK: (text) => commit(undefined, (docRef.current.notes || []).map(x => x.id === note.id ? { ...x, text } : x)),
+                                            })}
+                                            onChange={(nn, commitFlag) => {
+                                                const notes = (docRef.current.notes || []).map(x => x.id === nn.id ? nn : x);
+                                                if (commitFlag) commit(undefined, notes);
+                                                else onChange({ ...docRef.current, notes });
+                                            }}
+                                        />
+                                    ))}
+                                </Group>
+                                {temp && (
+                                    <Arrow points={[temp.start.x, temp.start.y, temp.end.x, temp.end.y]}
+                                        stroke="#fbbf24" strokeWidth={2 / view.scale} fill="#fbbf24"
+                                        pointerLength={7 / view.scale} pointerWidth={7 / view.scale}
+                                        dash={[6 / view.scale, 5 / view.scale]} listening={false} />
+                                )}
+                            </Layer>
+                        </Stage>
+                    </div>
+                )}
+
+                {hasAlbum && (
+                    <>
+                        <button
+                            type="button"
+                            className="album-nav-btn prev"
+                            disabled={!hasPrev}
+                            onClick={goPrevPhoto}
+                            aria-label="Ảnh trước"
+                            title="Ảnh trước (←)"
+                        >
+                            <ChevronLeft size={24} />
+                        </button>
+                        <button
+                            type="button"
+                            className="album-nav-btn next"
+                            disabled={!hasNext}
+                            onClick={goNextPhoto}
+                            aria-label="Ảnh tiếp theo"
+                            title="Ảnh tiếp theo (→)"
+                        >
+                            <ChevronRight size={24} />
+                        </button>
+                    </>
                 )}
 
                 {selLine && (
@@ -400,13 +547,31 @@ export default function PhotoEditor({ doc, onChange, onBack }) {
                 )}
             </div>
 
+            {hasAlbum && mode === 'view' && (
+                <div className="photo-filmstrip">
+                    {photos.map((p, idx) => (
+                        <button
+                            key={p.id}
+                            type="button"
+                            ref={(el) => { if (el) stripRefs.current.set(p.id, el); else stripRefs.current.delete(p.id); }}
+                            className={`filmstrip-item ${p.id === doc.id ? 'on' : ''}`}
+                            onClick={() => onSwitchPhoto?.(p)}
+                            title={p.name || `Ảnh ${idx + 1}`}
+                        >
+                            <img src={p.thumb || p.img} alt={p.name || `Ảnh ${idx + 1}`} />
+                            <span>{idx + 1}</span>
+                        </button>
+                    ))}
+                </div>
+            )}
+
             <div className="tool-bar">
                 {MODES.map(m => {
                     const Icon = m.icon;
                     const on = mode === m.id;
                     return (
                         <button key={m.id} className={`tool ${on ? `on t-${m.id}` : ''}`}
-                            onClick={() => setMode(on ? 'select' : m.id)}>
+                            onClick={() => setMode(on && m.id !== 'view' ? 'view' : m.id)}>
                             <Icon size={21} />
                             {m.label}
                         </button>

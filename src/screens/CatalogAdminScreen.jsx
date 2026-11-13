@@ -5,6 +5,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
     ArrowLeft, Plus, Upload, Download, CloudUpload, RotateCcw,
     Save, Copy, Trash2, Search, Eye, EyeOff, Box, Shapes, Sliders,
+    Monitor, RotateCw, Sparkles,
 } from 'lucide-react';
 import {
     GROUPS, SYM_2D_OPTIONS, SYM_3D_OPTIONS, MAT_3D_OPTIONS, groupName,
@@ -12,9 +13,12 @@ import {
     saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
     getCatalogSyncPayload, applyCatalogSyncPayload,
     exportCatalogSnapshot, importCatalogSnapshot, subscribeCatalog,
+    isDesktopCatalogSupported,
 } from '../lib/furnitureCatalog';
 import { Symbol2D, itemFill } from '../plan/FurnitureLayer';
-import { buildFurniture3D } from '../lib/room3dModels';
+import {
+    buildFurniture3D, detect3DFormat, inspect3DModelBounds, extractTopViewSvgFrom3D,
+} from '../lib/room3dModels';
 import { downloadText, stamp } from '../lib/export';
 import * as pb from '../lib/pb';
 import { toast } from '../ui/Toast';
@@ -45,6 +49,9 @@ function makeDraftFromItem(item) {
         matAccent: item.matAccent || '',
         glbUrl: item.glbUrl || '',
         glbFileName: item.glbFileName || '',
+        modelFormat: item.modelFormat || '',
+        glbRotX: Number(item.glbRotX) || 0,
+        glbRotY: Number(item.glbRotY) || 0,
         hasLocalGlb: !!item.hasLocalGlb,
         isBuiltin: !!item.isBuiltin,
         isCustom: !!item.isCustom,
@@ -304,10 +311,20 @@ export default function CatalogAdminScreen({ onBack }) {
     const [tab, setTab] = useState('info');
     const [showWall3D, setShowWall3D] = useState(true);
     const [cloudBusy, setCloudBusy] = useState(false);
+    const [isDesktop, setIsDesktop] = useState(() => isDesktopCatalogSupported());
+    const [skpGuide, setSkpGuide] = useState('');
+    const [sketchupInfo, setSketchupInfo] = useState(null);
+    const [extractBusy, setExtractBusy] = useState(false);
 
     const jsonInputRef = useRef(null);
     const svgInputRef = useRef(null);
     const glbInputRef = useRef(null);
+
+    useEffect(() => {
+        const onResize = () => setIsDesktop(isDesktopCatalogSupported());
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
 
     useEffect(() => subscribeCatalog(() => setTick(t => t + 1)), []);
 
@@ -327,6 +344,8 @@ export default function CatalogAdminScreen({ onBack }) {
         setSelectedKey(item.key);
         setDraft(makeDraftFromItem(item));
         setPendingGlbData(undefined);
+        setSketchupInfo(null);
+        setSkpGuide('');
     };
 
     const selectedOrig = useMemo(() => items.find(i => i.key === selectedKey) || null, [items, selectedKey]);
@@ -361,6 +380,9 @@ export default function CatalogAdminScreen({ onBack }) {
             matAccent: '',
             glbUrl: '',
             glbFileName: '',
+            modelFormat: '',
+            glbRotX: 0,
+            glbRotY: 0,
             hasLocalGlb: false,
             isBuiltin: false,
             isCustom: true,
@@ -466,19 +488,71 @@ export default function CatalogAdminScreen({ onBack }) {
         const file = e.target.files?.[0];
         e.target.value = '';
         if (!file) return;
-        if (file.size > 15 * 1024 * 1024) {
-            toast('File 3D quá lớn (>15MB), vui lòng nén nhẹ trước khi tải lên', 'err');
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith('.skp')) {
+            setSkpGuide(
+                `File "${file.name}" đang ở định dạng .skp nhị phân của Trimble SketchUp. `
+                + 'Trong SketchUp (Free hoặc Pro), chọn File → Export → 3D Model… → chọn COLLADA (*.dae), KMZ (*.kmz) hoặc GLB (*.glb) rồi tải lại vào đây (giữ nguyên hình khối, màu vật liệu và tỷ lệ).'
+            );
+            setTab('3d');
+            toast('Vui lòng xuất từ SketchUp sang .DAE / .KMZ / .GLB (mất 3 giây)', 'err');
             return;
         }
+        if (file.size > 25 * 1024 * 1024) {
+            toast('File 3D quá lớn (>25MB), vui lòng giảm lưới trong SketchUp trước khi tải lên', 'err');
+            return;
+        }
+        const fmt = detect3DFormat('', file.name);
         const reader = new FileReader();
-        reader.onload = () => {
+        reader.onload = async () => {
             const dataUrl = String(reader.result || '');
+            setSkpGuide('');
             setPendingGlbData(dataUrl);
-            patchDraft({ glbFileName: file.name, hasLocalGlb: true });
-            toast(`Đã nạp mô hình 3D "${file.name}" (${Math.round(file.size / 1024)} KB) — nhấn Lưu thay đổi để áp dụng`, 'ok');
+            patchDraft({ glbFileName: file.name, modelFormat: fmt, hasLocalGlb: true });
+            setTab('3d');
+            try {
+                const bounds = await inspect3DModelBounds(dataUrl, {
+                    format: fmt,
+                    fileName: file.name,
+                    glbRotX: draft?.glbRotX || 0,
+                    glbRotY: draft?.glbRotY || 0,
+                });
+                setSketchupInfo(bounds);
+                toast(`Đã nạp model SketchUp (.${fmt.toUpperCase()}) "${file.name}" — nhấn Lưu thay đổi để áp dụng`, 'ok');
+            } catch (err) {
+                setSketchupInfo(null);
+                toast(`Đã nạp "${file.name}", nhưng chưa phân tích được hình học: ${err.message}`, 'err');
+            }
         };
-        reader.onerror = () => toast('Không đọc được file .glb/.gltf', 'err');
+        reader.onerror = () => toast('Không đọc được file SketchUp / 3D', 'err');
         reader.readAsDataURL(file);
+    };
+
+    const handleExtract2DFromSketchUp = async () => {
+        if (!draft || extractBusy) return;
+        const src = pendingGlbData !== undefined ? pendingGlbData : (draft.glbUrl || getItemGlbSource(draft.key));
+        if (!src) {
+            toast('Chưa có file 3D để trích xuất nét 2D', 'err');
+            return;
+        }
+        setExtractBusy(true);
+        try {
+            const svg = await extractTopViewSvgFrom3D(src, {
+                format: draft.modelFormat,
+                fileName: draft.glbFileName,
+                glbRotX: draft.glbRotX || 0,
+                glbRotY: draft.glbRotY || 0,
+                w: draft.w,
+                d: draft.d,
+                h: draft.h,
+            });
+            patchDraft({ svg2d: svg });
+            toast('Đã tự trích xuất nét mặt bằng 2D SVG từ model SketchUp!', 'ok');
+        } catch (err) {
+            toast('Không trích xuất được nét 2D: ' + err.message, 'err');
+        } finally {
+            setExtractBusy(false);
+        }
     };
 
     const handleSyncCloud = async () => {
@@ -510,6 +584,38 @@ export default function CatalogAdminScreen({ onBack }) {
         }
     };
 
+    if (!isDesktop) {
+        return (
+            <div className="cat-admin-page">
+                <header className="cat-admin-header">
+                    <div className="cat-admin-title-row">
+                        <button className="icon-btn" onClick={onBack} title="Quay lại ứng dụng">
+                            <ArrowLeft size={19} />
+                        </button>
+                        <div>
+                            <h1>Backend Thư Viện 2D &amp; 3D (Dành cho Máy Tính)</h1>
+                            <div className="cat-admin-sub">Chỉ hỗ trợ trên màn hình máy tính (PC / Laptop)</div>
+                        </div>
+                    </div>
+                </header>
+                <div className="cat-mobile-block">
+                    <div className="cat-mobile-card">
+                        <Monitor size={44} style={{ color: 'var(--blue)' }} />
+                        <h3>Chỉ khả dụng trên Máy tính</h3>
+                        <p style={{ margin: 0, fontSize: 13.5, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+                            Trang quản trị thư viện 2D/3D và nạp mô hình từ SketchUp không hiển thị trên điện thoại
+                            để giữ giao diện khảo sát ngoài công trình gọn nhẹ.
+                            Hãy mở ứng dụng trên máy tính để sửa thư viện và bấm <b>Đồng bộ Cloud</b>.
+                        </p>
+                        <button type="button" className="btn btn-primary" onClick={onBack}>
+                            Quay lại ứng dụng
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="cat-admin-page">
             <header className="cat-admin-header">
@@ -518,9 +624,9 @@ export default function CatalogAdminScreen({ onBack }) {
                         <ArrowLeft size={19} />
                     </button>
                     <div>
-                        <h1>Backend Quản Trị Thư Viện 2D &amp; 3D</h1>
+                        <h1>Backend Quản Trị Thư Viện 2D &amp; 3D (PC)</h1>
                         <div className="cat-admin-sub">
-                            {items.length} mẫu nội thất · {modifiedCount} mẫu đang tuỳ chỉnh (Áp dụng tức thì cho 2D, 3D &amp; Layout)
+                            {items.length} mẫu nội thất · {modifiedCount} mẫu đang tuỳ chỉnh · Hỗ trợ nhập từ SketchUp (.DAE, .KMZ, .GLB, .OBJ, .STL, .3DS)
                         </div>
                     </div>
                 </div>
@@ -528,6 +634,9 @@ export default function CatalogAdminScreen({ onBack }) {
                 <div className="cat-admin-toolbar">
                     <button className="cat-btn primary" onClick={handleCreateNew}>
                         <Plus size={15} /> Thêm món mới
+                    </button>
+                    <button className="cat-btn" onClick={() => glbInputRef.current?.click()} title="Nạp mô hình xuất từ SketchUp">
+                        <Box size={15} /> Nhập từ SketchUp
                     </button>
                     <button className="cat-btn" onClick={() => jsonInputRef.current?.click()}>
                         <Upload size={15} /> Nhập JSON
@@ -872,12 +981,12 @@ export default function CatalogAdminScreen({ onBack }) {
                                             onChange={(v) => patchDraft({ matAccent: v })}
                                         />
 
-                                        <div className="cat-glb-box">
+                                        <div className="cat-sketchup-box">
                                             <div className="cat-label-row">
-                                                <label>Mô hình 3D nâng cao (.GLB / .GLTF)</label>
+                                                <label>Nhập mô hình từ SketchUp / 3D CAD</label>
                                                 <div className="cat-label-actions">
                                                     <button type="button" className="cat-mini-btn" onClick={() => glbInputRef.current?.click()}>
-                                                        <Upload size={12} /> Tải file .glb
+                                                        <Upload size={12} /> Chọn file SketchUp (.DAE/.GLB/.OBJ…)
                                                     </button>
                                                     {(draft.hasLocalGlb || draft.glbUrl || pendingGlbData) && (
                                                         <button
@@ -885,7 +994,9 @@ export default function CatalogAdminScreen({ onBack }) {
                                                             className="cat-mini-btn"
                                                             onClick={() => {
                                                                 setPendingGlbData('');
-                                                                patchDraft({ glbUrl: '', glbFileName: '', hasLocalGlb: false });
+                                                                setSketchupInfo(null);
+                                                                setSkpGuide('');
+                                                                patchDraft({ glbUrl: '', glbFileName: '', modelFormat: '', glbRotX: 0, glbRotY: 0, hasLocalGlb: false });
                                                             }}
                                                         >
                                                             Gỡ file 3D
@@ -893,17 +1004,69 @@ export default function CatalogAdminScreen({ onBack }) {
                                                     )}
                                                 </div>
                                             </div>
-                                            <input ref={glbInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden onChange={handleUploadGlb} />
-                                            {(draft.glbFileName || (draft.hasLocalGlb && pendingGlbData !== '')) && (
-                                                <div className="cat-glb-status">
-                                                    Đang dùng file 3D cục bộ: <b>{draft.glbFileName || 'model.glb'}</b> (tự căn vừa {draft.w}×{draft.d}×{draft.h}mm)
-                                                </div>
+                                            <input
+                                                ref={glbInputRef}
+                                                type="file"
+                                                accept=".dae,.kmz,.glb,.gltf,.obj,.stl,.3ds,.skp,model/gltf-binary,model/gltf+json,model/vnd.collada+xml"
+                                                hidden
+                                                onChange={handleUploadGlb}
+                                            />
+                                            <div style={{ fontSize: 11.5, color: '#1e3a8a', lineHeight: 1.45 }}>
+                                                Hỗ trợ trực tiếp file xuất từ SketchUp: <b>COLLADA (.dae)</b>, <b>.kmz</b>, <b>.glb/.gltf</b>, <b>.obj</b>, <b>.stl</b>, <b>.3ds</b>.
+                                            </div>
+                                            {skpGuide && (
+                                                <div className="cat-sketchup-guide">{skpGuide}</div>
+                                            )}
+                                            {(draft.glbFileName || (draft.hasLocalGlb && pendingGlbData !== '') || draft.glbUrl) && (
+                                                <>
+                                                    <div className="cat-glb-status">
+                                                        Đang nạp: <b>{draft.glbFileName || draft.glbUrl}</b>
+                                                        {draft.modelFormat ? ` (${draft.modelFormat.toUpperCase()})` : ''}
+                                                        {` · Xoay X:${draft.glbRotX || 0}° Y:${draft.glbRotY || 0}°`}
+                                                    </div>
+                                                    <div className="cat-sketchup-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="cat-mini-btn"
+                                                            onClick={() => patchDraft({ glbRotY: ((draft.glbRotY || 0) + 90) % 360 })}
+                                                        >
+                                                            <RotateCw size={12} /> Xoay mặt trước 90°
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="cat-mini-btn"
+                                                            onClick={() => patchDraft({ glbRotX: ((draft.glbRotX || 0) + 90) % 360 })}
+                                                        >
+                                                            <RotateCw size={12} /> Lật đứng trục X 90°
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="cat-mini-btn"
+                                                            disabled={extractBusy}
+                                                            onClick={handleExtract2DFromSketchUp}
+                                                        >
+                                                            <Sparkles size={12} /> {extractBusy ? 'Đang trích 2D…' : 'Trích nét 2D từ 3D'}
+                                                        </button>
+                                                        {sketchupInfo && (
+                                                            <button
+                                                                type="button"
+                                                                className="cat-mini-btn"
+                                                                onClick={() => {
+                                                                    patchDraft({ w: sketchupInfo.wMm, d: sketchupInfo.dMm, h: sketchupInfo.hMm });
+                                                                    toast(`Đã áp kích thước gốc SketchUp: ${sketchupInfo.wMm}×${sketchupInfo.dMm}×${sketchupInfo.hMm} mm`, 'ok');
+                                                                }}
+                                                            >
+                                                                Áp KT gốc ({sketchupInfo.wMm}×{sketchupInfo.dMm}×{sketchupInfo.hMm})
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </>
                                             )}
                                             <input
                                                 className="cat-input"
                                                 value={draft.glbUrl}
-                                                onChange={(e) => patchDraft({ glbUrl: e.target.value })}
-                                                placeholder="Hoặc dán URL file .glb / .gltf công khai…"
+                                                onChange={(e) => patchDraft({ glbUrl: e.target.value, modelFormat: detect3DFormat(e.target.value) })}
+                                                placeholder="Hoặc dán URL file .dae / .glb / .obj / .stl công khai…"
                                             />
                                         </div>
                                     </div>

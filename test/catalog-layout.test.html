@@ -5,11 +5,13 @@
 <script type="module">
 import { parseSvgSymbol, svgToNormalizedPolylines } from '/src/lib/svgSymbol.js';
 import {
-    GROUPS, FURNITURE, catalogItem, defaultSize,
+    GROUPS, FURNITURE, catalogItem, defaultSize, getItemGlbSource,
     saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
     exportCatalogSnapshot, importCatalogSnapshot,
 } from '/src/lib/furnitureCatalog.js';
-import { buildFurniture3D } from '/src/lib/room3dModels.js';
+import {
+    buildFurniture3D, detect3DFormat, inspect3DModelBounds, extractTopViewSvgFrom3D,
+} from '/src/lib/room3dModels.js';
 import { generateDxf } from '/src/lib/dxf.js';
 import { recomputeRooms } from '/src/lib/planModel.js';
 import {
@@ -100,6 +102,44 @@ lines.push('--- 2. Backend Thu vien 2D & 3D (furnitureCatalog + room3dModels) --
     await importCatalogSnapshot(snap);
     eq('Sau importCatalogSnapshot, bed16 khoi phuc 1650', defaultSize('bed16').w, 1650);
     ok('Sau importCatalogSnapshot, mau custom duoc phuc hoi', catalogItem(created.key)?.name === 'Quầy bar mini Test');
+
+    // SketchUp OBJ / COLLADA format detection, asset persistence, bounds & 2D SVG auto-extraction
+    eq('detect3DFormat nhan dien .dae', detect3DFormat('', 'Tu_Bep.dae') === 'dae' ? 1 : 0, 1);
+    eq('detect3DFormat nhan dien .kmz', detect3DFormat('', 'Sofa.kmz') === 'kmz' ? 1 : 0, 1);
+    const sampleObj = [
+        'v -0.6 0 -0.3',
+        'v 0.6 0 -0.3',
+        'v 0.6 0 0.3',
+        'v -0.6 0 0.3',
+        'v -0.6 0.8 -0.3',
+        'v 0.6 0.8 -0.3',
+        'v 0.6 0.8 0.3',
+        'v -0.6 0.8 0.3',
+        'f 1 2 3 4',
+        'f 5 6 7 8',
+        'f 1 2 6 5',
+        'f 2 3 7 6',
+        'f 3 4 8 7',
+        'f 4 1 5 8',
+    ].join('\n');
+    const objDataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(sampleObj);
+    const skpItem = saveCatalogItem({
+        name: 'Tủ SketchUp Test',
+        group: 'living',
+        w: 1200,
+        d: 600,
+        h: 800,
+        glbFileName: 'Tu_SketchUp.obj',
+        modelFormat: 'obj',
+    }, { glbData: objDataUrl });
+    ok('saveCatalogItem luu model SketchUp qua getItemGlbSource', getItemGlbSource(skpItem.key) === objDataUrl);
+    const bounds = await inspect3DModelBounds(objDataUrl, { format: 'obj', fileName: 'Tu_SketchUp.obj' });
+    eq('inspect3DModelBounds do dung rong W = 1200mm', bounds.wMm, 1200, 2);
+    eq('inspect3DModelBounds do dung sau D = 600mm', bounds.dMm, 600, 2);
+    eq('inspect3DModelBounds do dung cao H = 800mm', bounds.hMm, 800, 2);
+    const autoSvg = await extractTopViewSvgFrom3D(objDataUrl, { format: 'obj', w: 1200, d: 600, h: 800 });
+    const parsedAuto = parseSvgSymbol(autoSvg);
+    ok('extractTopViewSvgFrom3D tao SVG 2D hop le tu model 3D', !!parsedAuto && parsedAuto.elements.length >= 1);
 
     // Don sach ve mac dinh de giu tinh doc lap test
     resetAllCatalog();

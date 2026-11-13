@@ -173,11 +173,11 @@ export default function PlanLayoutModal({ doc, projectName = '', onClose }) {
                             <label>Lớp thông tin hiển thị</label>
                             <label className="layout-check">
                                 <input type="checkbox" checked={showOuterDims} onChange={(e) => setShowOuterDims(e.target.checked)} />
-                                <span>Kích thước phủ bì &amp; chuỗi trục tường</span>
+                                <span>Kích thước 2 tầng bên ngoài (Tầng 1 chi tiết + Tầng 2 tổng phủ bì)</span>
                             </label>
                             <label className="layout-check">
                                 <input type="checkbox" checked={showWallDims} onChange={(e) => setShowWallDims(e.target.checked)} />
-                                <span>Kích thước đoạn tường &amp; cửa đi / cửa sổ</span>
+                                <span>Chi tiết đoạn tường &amp; ký hiệu cửa đi / cửa sổ</span>
                             </label>
                             <label className="layout-check">
                                 <input type="checkbox" checked={showFurnDims} onChange={(e) => setShowFurnDims(e.target.checked)} />

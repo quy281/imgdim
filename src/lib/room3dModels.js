@@ -6,6 +6,11 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { ColladaLoader } from 'three/examples/jsm/loaders/ColladaLoader.js';
+import { KMZLoader } from 'three/examples/jsm/loaders/KMZLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { TDSLoader } from 'three/examples/jsm/loaders/TDSLoader.js';
 import { getItemGlbSource } from './furnitureCatalog';
 
 const EDGE_MAT = new THREE.LineBasicMaterial({
@@ -15,8 +20,13 @@ const EDGE_MAT = new THREE.LineBasicMaterial({
 });
 
 const HEX_MAT_CACHE = new Map();
-const GLTF_TEMPLATE_CACHE = new Map();
-const gltfLoader = typeof window !== 'undefined' ? new GLTFLoader() : null;
+const MODEL_TEMPLATE_CACHE = new Map();
+const gltfLoader = new GLTFLoader();
+const colladaLoader = new ColladaLoader();
+const kmzLoader = new KMZLoader();
+const objLoader = new OBJLoader();
+const stlLoader = new STLLoader();
+const tdsLoader = new TDSLoader();
 
 export function resolveMat(spec, fallback) {
     if (!spec) return fallback;
@@ -135,8 +145,21 @@ function applyMaterialOverrides(group, cat) {
     });
 }
 
+function applyOrientationToClone(clone, cat) {
+    const rx = ((Number(cat?.glbRotX) || 0) * Math.PI) / 180;
+    const ry = ((Number(cat?.glbRotY) || 0) * Math.PI) / 180;
+    if (!rx && !ry) return clone;
+    const pivoted = new THREE.Group();
+    clone.rotation.x += rx;
+    clone.rotation.y += ry;
+    pivoted.add(clone);
+    pivoted.updateMatrixWorld(true);
+    return pivoted;
+}
+
 function fitGltfCloneToBounds(template, w, h, d, cat) {
-    const clone = template.clone(true);
+    const rawClone = template.clone(true);
+    const clone = applyOrientationToClone(rawClone, cat);
     const box = new THREE.Box3().setFromObject(clone);
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
@@ -154,6 +177,7 @@ function fitGltfCloneToBounds(template, w, h, d, cat) {
         if (obj.isMesh) {
             obj.castShadow = true;
             obj.receiveShadow = true;
+            if (!obj.material) obj.material = MATS.whiteMatte;
             if (cat?.matPrimary && obj.material && !obj.material.transparent) {
                 // Giữ texture gốc nếu model có map; chỉ nhuộm nếu không có texture map
                 if (!obj.material.map) {
@@ -167,27 +191,229 @@ function fitGltfCloneToBounds(template, w, h, d, cat) {
     return wrapper;
 }
 
-function loadGltfTemplate(src) {
-    if (GLTF_TEMPLATE_CACHE.has(src)) return GLTF_TEMPLATE_CACHE.get(src);
-    if (!gltfLoader) return Promise.reject(new Error('GLTFLoader unavailable'));
-    const p = new Promise((resolve, reject) => {
-        gltfLoader.load(
-            src,
-            (gltf) => resolve(gltf.scene || gltf.scenes?.[0]),
-            undefined,
-            (err) => {
-                GLTF_TEMPLATE_CACHE.delete(src);
-                reject(err);
-            }
-        );
+export function detect3DFormat(src = '', fileName = '', explicitFormat = '') {
+    const exp = String(explicitFormat || '').trim().toLowerCase().replace(/^\./, '');
+    if (['glb', 'gltf', 'dae', 'kmz', 'obj', 'stl', '3ds'].includes(exp)) return exp;
+
+    const fname = String(fileName || '').trim().toLowerCase();
+    for (const ext of ['dae', 'kmz', 'glb', 'gltf', 'obj', 'stl', '3ds']) {
+        if (fname.endsWith('.' + ext)) return ext;
+    }
+
+    const s = String(src || '').trim();
+    const low = s.slice(0, 120).toLowerCase();
+    if (low.includes('collada') || low.includes('xml')) return 'dae';
+    if (low.includes('model/gltf-binary')) return 'glb';
+    if (low.includes('model/gltf+json')) return 'gltf';
+    if (!low.startsWith('data:')) {
+        const cleanUrl = low.split('?')[0].split('#')[0];
+        for (const ext of ['dae', 'kmz', 'glb', 'gltf', 'obj', 'stl', '3ds']) {
+            if (cleanUrl.endsWith('.' + ext)) return ext;
+        }
+    }
+    return 'glb';
+}
+
+function decodeBase64ToBytes(b64) {
+    if (typeof atob === 'function') {
+        const bin = atob(b64);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+    }
+    // eslint-disable-next-line no-undef
+    if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(b64, 'base64'));
+    throw new Error('Base64 decoder unavailable');
+}
+
+async function decodeSourceToBuffer(src) {
+    if (typeof src === 'string' && src.startsWith('data:')) {
+        const comma = src.indexOf(',');
+        if (comma < 0) throw new Error('Invalid data URL');
+        const meta = src.slice(5, comma);
+        const payload = src.slice(comma + 1);
+        if (/;base64/i.test(meta)) {
+            return decodeBase64ToBytes(payload).buffer;
+        }
+        const text = decodeURIComponent(payload);
+        return new TextEncoder().encode(text).buffer;
+    }
+    const resp = await fetch(src);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.arrayBuffer();
+}
+
+function decorateSketchUpMeshes(root) {
+    root.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        if (!obj.material) {
+            obj.material = MATS.whiteMatte;
+        }
+        const hasLineChild = obj.children?.some(c => c.isLineSegments);
+        if (!hasLineChild && obj.geometry && obj.geometry.attributes?.position?.count < 24000) {
+            try {
+                const edges = new THREE.EdgesGeometry(obj.geometry, 26);
+                obj.add(new THREE.LineSegments(edges, EDGE_MAT));
+            } catch { /* ignore */ }
+        }
     });
-    GLTF_TEMPLATE_CACHE.set(src, p);
+    return root;
+}
+
+export function load3DModelTemplate(src, explicitFormat = '', fileName = '') {
+    const fmt = detect3DFormat(src, fileName, explicitFormat);
+    const cacheKey = `${fmt}::${src}`;
+    if (MODEL_TEMPLATE_CACHE.has(cacheKey)) return MODEL_TEMPLATE_CACHE.get(cacheKey);
+
+    const p = (async () => {
+        if (fmt === 'glb' || fmt === 'gltf') {
+            if (typeof src === 'string' && src.startsWith('data:')) {
+                const buf = await decodeSourceToBuffer(src);
+                return await new Promise((resolve, reject) => {
+                    gltfLoader.parse(buf, '', (gltf) => resolve(gltf.scene || gltf.scenes?.[0]), reject);
+                });
+            }
+            return await new Promise((resolve, reject) => {
+                gltfLoader.load(src, (gltf) => resolve(gltf.scene || gltf.scenes?.[0]), undefined, reject);
+            });
+        }
+
+        const buf = await decodeSourceToBuffer(src);
+        if (fmt === 'dae') {
+            const xml = new TextDecoder('utf-8').decode(buf);
+            const collada = colladaLoader.parse(xml, '');
+            const scene = collada?.scene;
+            if (!scene) throw new Error('Không đọc được mô hình COLLADA (.dae)');
+            return decorateSketchUpMeshes(scene);
+        }
+        if (fmt === 'kmz') {
+            const kmz = kmzLoader.parse(buf);
+            const scene = kmz?.scene;
+            if (!scene) throw new Error('Không đọc được file SketchUp .kmz');
+            return decorateSketchUpMeshes(scene);
+        }
+        if (fmt === 'obj') {
+            const text = new TextDecoder('utf-8').decode(buf);
+            const obj = objLoader.parse(text);
+            return decorateSketchUpMeshes(obj);
+        }
+        if (fmt === 'stl') {
+            const geo = stlLoader.parse(buf);
+            geo.computeVertexNormals();
+            const mesh = new THREE.Mesh(geo, MATS.whiteMatte);
+            const g = new THREE.Group();
+            // File .STL từ SketchUp xuất theo hệ trục Z-up
+            mesh.rotation.x = -Math.PI / 2;
+            g.add(mesh);
+            return decorateSketchUpMeshes(g);
+        }
+        if (fmt === '3ds') {
+            const obj = tdsLoader.parse(buf, '');
+            const g = new THREE.Group();
+            obj.rotation.x = -Math.PI / 2;
+            g.add(obj);
+            return decorateSketchUpMeshes(g);
+        }
+        throw new Error(`Định dạng 3D chưa hỗ trợ: .${fmt}`);
+    })().catch((err) => {
+        MODEL_TEMPLATE_CACHE.delete(cacheKey);
+        throw err;
+    });
+
+    MODEL_TEMPLATE_CACHE.set(cacheKey, p);
     return p;
 }
 
 /**
+ * Đo kích thước thực tế (mm) của mô hình SketchUp / 3D trước khi co giãn.
+ */
+export async function inspect3DModelBounds(src, opts = {}) {
+    const template = await load3DModelTemplate(src, opts.format, opts.fileName);
+    const clone = applyOrientationToClone(template.clone(true), opts);
+    clone.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(clone);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxRaw = Math.max(size.x, size.y, size.z);
+    // SketchUp COLLADA/GLTF xuất chuẩn mét (~0.2..15), cm (~20..250) hoặc mm (>250)
+    const unitMul = maxRaw > 0 && maxRaw < 25 ? 1000 : (maxRaw >= 25 && maxRaw < 250 ? 10 : 1);
+    let meshCount = 0;
+    clone.traverse((o) => { if (o.isMesh) meshCount += 1; });
+    return {
+        wMm: Math.max(20, Math.round(size.x * unitMul)),
+        hMm: Math.max(10, Math.round(size.y * unitMul)),
+        dMm: Math.max(20, Math.round(size.z * unitMul)),
+        meshCount,
+        unitMul,
+    };
+}
+
+/**
+ * Tự trích xuất ký hiệu SVG mặt bằng (chiếu từ trên xuống X-Z) từ mô hình 3D SketchUp.
+ */
+export async function extractTopViewSvgFrom3D(src, opts = {}) {
+    const template = await load3DModelTemplate(src, opts.format, opts.fileName);
+    const w = Math.max(40, Number(opts.w) || 1000);
+    const d = Math.max(40, Number(opts.d) || 600);
+    const h = Math.max(20, Number(opts.h) || 800);
+    const fitted = fitGltfCloneToBounds(template, w, h, d, {
+        glbRotX: opts.glbRotX || 0,
+        glbRotY: opts.glbRotY || 0,
+    });
+    fitted.updateMatrixWorld(true);
+
+    const vw = 200;
+    const vd = Math.max(20, Math.round((vw * d) / w));
+    const scaleX = vw / w;
+    const scaleZ = vd / d;
+    const minSegPx = Math.max(2.2, Math.min(vw, vd) * 0.015);
+
+    const segments = [];
+    const seen = new Set();
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+
+    fitted.traverse((obj) => {
+        if (!obj.isMesh || !obj.geometry) return;
+        let edges;
+        try {
+            edges = new THREE.EdgesGeometry(obj.geometry, 26);
+        } catch {
+            return;
+        }
+        const pos = edges.attributes?.position;
+        if (!pos) return;
+        for (let i = 0; i + 1 < pos.count; i += 2) {
+            v1.fromBufferAttribute(pos, i).applyMatrix4(obj.matrixWorld);
+            v2.fromBufferAttribute(pos, i + 1).applyMatrix4(obj.matrixWorld);
+            const x1 = (v1.x + w / 2) * scaleX;
+            const y1 = (v1.z + d / 2) * scaleZ;
+            const x2 = (v2.x + w / 2) * scaleX;
+            const y2 = (v2.z + d / 2) * scaleZ;
+            const segLen = Math.hypot(x2 - x1, y2 - y1);
+            if (segLen < minSegPx) continue;
+            const r = (n) => Math.round(n * 2) / 2;
+            const pA = `${r(x1)},${r(y1)}`;
+            const pB = `${r(x2)},${r(y2)}`;
+            const key = pA < pB ? `${pA}|${pB}` : `${pB}|${pA}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            segments.push({ x1: +x1.toFixed(1), y1: +y1.toFixed(1), x2: +x2.toFixed(1), y2: +y2.toFixed(1), len: segLen });
+        }
+        edges.dispose();
+    });
+
+    segments.sort((a, b) => b.len - a.len);
+    const kept = segments.slice(0, 420);
+    const pathD = kept.map(s => `M${s.x1} ${s.y1}L${s.x2} ${s.y2}`).join('');
+    return `<svg viewBox="0 0 ${vw} ${vd}" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="${vw - 2}" height="${vd - 2}" fill="none" stroke="currentColor" stroke-width="2"/>${pathD ? `<path d="${pathD}" fill="none" stroke="currentColor" stroke-width="1.2"/>` : ''}</svg>`;
+}
+
+/**
  * Xây dựng `THREE.Group` cho 1 món nội thất theo kích thước thực tế `(w, d, h)` và chiều cao trần `roomH`.
- * Hỗ trợ override chất liệu (`matPrimary`/`matSecondary`/`matAccent`), `sym3d` và file `.glb`/`.gltf` tùy biến.
+ * Hỗ trợ override chất liệu (`matPrimary`/`matSecondary`/`matAccent`), `sym3d` và file 3D (`.glb`/`.gltf`/SketchUp `.dae`/`.kmz`/`.obj`/`.stl`/`.3ds`).
  */
 export function buildFurniture3D(item, cat, roomH = 3200, opts = {}) {
     const g = new THREE.Group();
@@ -197,7 +423,7 @@ export function buildFurniture3D(item, cat, roomH = 3200, opts = {}) {
     const hw = w / 2, hd = d / 2;
 
     const glbSrc = cat?.glbUrl || cat?.glbData || (item?.kind ? getItemGlbSource(item.kind) : null);
-    if (glbSrc && gltfLoader) {
+    if (glbSrc) {
         const placeholder = new THREE.Mesh(
             new THREE.BoxGeometry(w, h, d),
             new THREE.MeshBasicMaterial({ color: 0x94a3b8, wireframe: true, transparent: true, opacity: 0.35 })
@@ -205,7 +431,7 @@ export function buildFurniture3D(item, cat, roomH = 3200, opts = {}) {
         placeholder.position.set(0, h / 2, 0);
         g.add(placeholder);
 
-        loadGltfTemplate(glbSrc).then((scene) => {
+        load3DModelTemplate(glbSrc, cat?.modelFormat, cat?.glbFileName).then((scene) => {
             if (!scene) return;
             g.remove(placeholder);
             placeholder.geometry.dispose();
@@ -213,7 +439,7 @@ export function buildFurniture3D(item, cat, roomH = 3200, opts = {}) {
             g.add(fitGltfCloneToBounds(scene, w, h, d, cat));
             opts?.onLoaded?.();
         }).catch(() => {
-            // Giữ khung chờ hoặc fallback nếu URL hỏng
+            // Giữ khung chờ hoặc fallback nếu file hỏng
         });
         return g;
     }

@@ -185,7 +185,7 @@ export function addOpening(plan, wallId, t, type, width) {
     const openingId = genId('op');
     const walls = plan.walls.map(w => {
         if (w.id !== wallId) return w;
-        return { ...w, openings: [...(w.openings || []), { id: openingId, type, t, width, flipped: false }] };
+        return { ...w, openings: [...(w.openings || []), { id: openingId, type, t, width, flipped: false }], segLocks: {} };
     });
     return { plan: { ...plan, walls }, openingId };
 }
@@ -193,8 +193,13 @@ export function addOpening(plan, wallId, t, type, width) {
 export function removeOpening(plan, wallId, openingId) {
     const walls = plan.walls.map(w => {
         if (w.id !== wallId) return w;
-        return { ...w, openings: (w.openings || []).filter(op => op.id !== openingId) };
+        return { ...w, openings: (w.openings || []).filter(op => op.id !== openingId), segLocks: {} };
     });
+    return { ...plan, walls };
+}
+
+export function unlockWallSegments(plan, wallId) {
+    const walls = plan.walls.map(w => w.id === wallId ? { ...w, segLocks: {} } : w);
     return { ...plan, walls };
 }
 
