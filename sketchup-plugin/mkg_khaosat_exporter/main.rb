@@ -1,12 +1,11 @@
 # encoding: UTF-8
-# MKG Khảo Sát — SketchUp Extension Main Module
+# MKG Khảo Sát — SketchUp Extension Main Module (v1.0.2)
+# Chỉ xuất khối Solid & Màu sắc (tự loại bỏ Tag Label, liên kết, chữ, kích thước, texture ảnh)
 # Tương thích SketchUp 2017 -> 2026 (Windows & macOS, Ruby 2.2 -> Ruby 3.2+)
 
 require 'sketchup.rb'
 require 'json'
 require 'base64'
-require 'tmpdir'
-require 'fileutils'
 require 'time'
 
 module MKG
@@ -21,6 +20,18 @@ module MKG
       { 'key' => 'elec',    'name' => 'Điện & TB' },
       { 'key' => 'other',   'name' => 'Khác' }
     ].freeze unless defined?(GROUPS)
+
+    JUNK_NAME_RE = Regexp.new(
+      '(?:\b(?:' \
+      'abf|betagon|label|3d text|text|dim|dimension|kich thuoc|ky hieu|symbol|' \
+      'arrow|mui ten|grain|van go|swing|net mo|open line|annot|annotation|ghi chu|' \
+      'ma tam|chi canh|dan canh|edgeband|lien ket|oc cam|cam chot|chot|dowel|' \
+      'minifix|rafix|cabineo|clamex|lamello|khoan|drill|hole|cnc|groove|ranh|' \
+      'vit|screw|bolt|bulong|connector|fitting|phu kien|hinge|ban le|runner|' \
+      'ray bi|ray am|laser|helper|bbox|snap|origin|axis|guide' \
+      ')\b|abf_?label|camchot|occam|ma_?tam|chi_?canh|edgeband|minifix|cabineo)',
+      Regexp::IGNORECASE
+    ) unless defined?(JUNK_NAME_RE)
 
     def plugin_dir
       __dir__
@@ -72,6 +83,30 @@ module MKG
 
     def fold_vn(text)
       slugify(text).tr('_', ' ')
+    end
+
+    def junk_tag_name?(layer)
+      return false unless layer
+      name = layer.respond_to?(:name) ? layer.name.to_s : layer.to_s
+      return false if name.empty? || name == 'Layer0' || name == 'Untagged'
+      !!(fold_vn(name) =~ JUNK_NAME_RE)
+    end
+
+    def junk_part_name?(*names)
+      names.any? do |nm|
+        s = nm.to_s.strip
+        !s.empty? && !!(fold_vn(s) =~ JUNK_NAME_RE)
+      end
+    end
+
+    def entity_visible?(ent)
+      return false unless ent && ent.valid?
+      return false if ent.respond_to?(:hidden?) && ent.hidden?
+      if ent.respond_to?(:layer) && ent.layer
+        return false unless ent.layer.visible?
+        return false if junk_tag_name?(ent.layer)
+      end
+      true
     end
 
     def guess_metadata(name, min_z_mm, h_mm)
@@ -132,11 +167,11 @@ module MKG
       z_val = mount == 'floor' ? 0 : [0, min_z_mm].max
 
       {
-        'group' => group,
-        'sym'   => sym,
-        'mount' => mount,
-        'back'  => back,
-        'z'     => z_val,
+        'group'  => group,
+        'sym'    => sym,
+        'mount'  => mount,
+        'back'   => back,
+        'z'      => z_val,
         'h_hint' => h_mm
       }
     end
@@ -210,108 +245,198 @@ module MKG
       [sx, sy, sz]
     end
 
-    def front_axis_radians(front_axis, entity_tr = nil)
+    def mirrored_transform?(tr)
+      origin = Geom::Point3d.new(0, 0, 0).transform(tr)
+      vx = Geom::Point3d.new(1, 0, 0).transform(tr) - origin
+      vy = Geom::Point3d.new(0, 1, 0).transform(tr) - origin
+      vz = Geom::Point3d.new(0, 0, 1).transform(tr) - origin
+      vx.cross(vy).dot(vz) < 0
+    end
+
+    def front_axis_radians(front_axis)
       case front_axis.to_s
-      when '+Y'
-        Math::PI
-      when '-X'
-        -Math::PI / 2.0
-      when '+X'
-        Math::PI / 2.0
-      when 'WORLD'
-        if entity_tr
-          origin = Geom::Point3d.new(0, 0, 0).transform(entity_tr)
-          vx = Geom::Point3d.new(1, 0, 0).transform(entity_tr) - origin
-          Math.atan2(vx.y, vx.x)
-        else
-          0.0
-        end
-      else
-        0.0
+      when '+Y' then Math::PI
+      when '-X' then -Math::PI / 2.0
+      when '+X' then Math::PI / 2.0
+      else 0.0
       end
     end
 
-    # Tính BoundingBox thực sự theo hình học hiển thị (tránh padding vô hình)
-    def compute_entities_bbox(entities, tr = Geom::Transformation.new, bb = Geom::BoundingBox.new)
-      entities.each do |ent|
-        next unless ent.valid?
-        next if ent.hidden?
-        next if ent.layer && !ent.layer.visible?
+    def child_local_dims_mm(child, parent_tr)
+      defn = definition_of(child)
+      return nil unless defn
+      dbb = defn.bounds
+      return nil if dbb.empty?
+      csx, csy, csz = extract_local_scales(parent_tr * child.transformation)
+      [
+        (dbb.max.x - dbb.min.x).to_mm * csx.abs,
+        (dbb.max.y - dbb.min.y).to_mm * csy.abs,
+        (dbb.max.z - dbb.min.z).to_mm * csz.abs
+      ].sort
+    end
 
-        if ent.is_a?(Sketchup::Edge)
-          bb.add(ent.start.position.transform(tr))
-          bb.add(ent.end.position.transform(tr))
-        elsif ent.is_a?(Sketchup::Face)
-          ent.vertices.each { |v| bb.add(v.position.transform(tr)) }
-        elsif ent.is_a?(Sketchup::Group)
-          compute_entities_bbox(ent.entities, tr * ent.transformation, bb)
-        elsif ent.is_a?(Sketchup::ComponentInstance)
-          compute_entities_bbox(ent.definition.entities, tr * ent.transformation, bb)
+    def container_is_manifold?(ent)
+      return false unless ent && ent.respond_to?(:manifold?)
+      ent.manifold?
+    rescue StandardError
+      false
+    end
+
+    def collect_candidate_leaves(entities, tr, inherited_mat, root_max_mm, solid_only, leaves, container_ent = nil)
+      direct_faces = entities.select { |e| e.is_a?(Sketchup::Face) && entity_visible?(e) }
+      unless direct_faces.empty?
+        leaves << {
+          entities: entities,
+          faces: direct_faces,
+          tr: tr,
+          mat: inherited_mat,
+          manifold: container_is_manifold?(container_ent)
+        }
+      end
+
+      entities.each do |ent|
+        next unless ent.is_a?(Sketchup::Group) || ent.is_a?(Sketchup::ComponentInstance)
+        next unless entity_visible?(ent)
+
+        defn = definition_of(ent)
+        next unless defn
+        next if junk_part_name?(ent.name, defn.name)
+
+        dims = child_local_dims_mm(ent, tr)
+        if dims && root_max_mm > 250.0
+          # Loại nhãn dán phẳng, chữ 3D mỏng (< 1.8mm) và chốt/ốc/linh kiện nhỏ (< 42mm)
+          next if dims[0] < 1.8
+          next if solid_only && dims[2] < 42.0
+        end
+
+        child_mat = (ent.respond_to?(:material) && ent.material) ? ent.material : inherited_mat
+        child_tr = tr * ent.transformation
+        collect_candidate_leaves(defn.entities, child_tr, child_mat, root_max_mm, solid_only, leaves, ent)
+      end
+    end
+
+    def compute_leaves_bbox(leaves)
+      bb = Geom::BoundingBox.new
+      leaves.each do |leaf|
+        tr = leaf[:tr]
+        leaf[:faces].each do |face|
+          next unless face.valid?
+          face.vertices.each { |v| bb.add(v.position.transform(tr)) }
         end
       end
       bb
     end
 
-    def collect_2d_segments(entities, tr, segments)
-      entities.each do |ent|
-        next unless ent.valid?
-        next if ent.hidden?
-        next if ent.layer && !ent.layer.visible?
+    def resolve_kept_leaves(model, target, options)
+      solid_only = options['solid_only'] != false
+      front_axis = options['front_axis'] || '-Y'
+      ent = target[:entity]
 
-        if ent.is_a?(Sketchup::Edge)
-          faces = ent.faces.select { |f| f.valid? && !f.hidden? && (!f.layer || f.layer.visible?) }
-          keep = !ent.soft? && !ent.smooth?
-          keep ||= faces.length <= 1
-          if !keep && faces.length == 2
-            n1 = faces[0].normal.transform(tr)
-            n2 = faces[1].normal.transform(tr)
-            n1.normalize! if n1.length.to_f > 1e-6
-            n2.normalize! if n2.length.to_f > 1e-6
-            # Đường bao chân trời khi nhìn từ trên xuống (+Z / -Z đổi dấu qua ngưỡng)
-            keep = (n1.z >= 0.05 && n2.z < 0.05) || (n2.z >= 0.05 && n1.z < 0.05) ||
-                   (n1.z <= -0.05 && n2.z > -0.05) || (n2.z <= -0.05 && n1.z > -0.05)
-          end
-          next unless keep
+      leaves = []
+      if ent
+        defn = definition_of(ent)
+        raise 'Không tìm thấy Definition của đối tượng được chọn' unless defn
 
-          p1 = ent.start.position.transform(tr)
-          p2 = ent.end.position.transform(tr)
-          segments << [p1.x.to_mm, p1.y.to_mm, p2.x.to_mm, p2.y.to_mm]
-        elsif ent.is_a?(Sketchup::Group)
-          collect_2d_segments(ent.entities, tr * ent.transformation, segments)
-        elsif ent.is_a?(Sketchup::ComponentInstance)
-          collect_2d_segments(ent.definition.entities, tr * ent.transformation, segments)
-        end
+        ebb = ent.bounds
+        root_max_mm = [
+          (ebb.max.x - ebb.min.x).to_mm,
+          (ebb.max.y - ebb.min.y).to_mm,
+          (ebb.max.z - ebb.min.z).to_mm
+        ].max
+
+        base_tr = if front_axis.to_s == 'WORLD'
+                    ent.transformation
+                  else
+                    origin_pt = Geom::Point3d.new(0, 0, 0)
+                    z_vec = Geom::Vector3d.new(0, 0, 1)
+                    sx, sy, sz = extract_local_scales(ent.transformation)
+                    Geom::Transformation.rotation(origin_pt, z_vec, front_axis_radians(front_axis)) *
+                      Geom::Transformation.scaling(origin_pt, sx, sy, sz)
+                  end
+        root_mat = ent.respond_to?(:material) ? ent.material : nil
+        collect_candidate_leaves(defn.entities, base_tr, root_mat, root_max_mm, solid_only, leaves, ent)
+      else
+        mbb = model.bounds
+        root_max_mm = [
+          (mbb.max.x - mbb.min.x).to_mm,
+          (mbb.max.y - mbb.min.y).to_mm,
+          (mbb.max.z - mbb.min.z).to_mm
+        ].max
+        collect_candidate_leaves(model.entities, Geom::Transformation.new, nil, root_max_mm, solid_only, leaves, nil)
       end
+
+      return [nil, nil] if leaves.empty?
+
+      if solid_only
+        solid_leaves = leaves.select { |l| l[:manifold] }
+        leaves = solid_leaves unless solid_leaves.empty?
+      end
+
+      bb = compute_leaves_bbox(leaves)
+      return [nil, nil] if bb.empty?
+
+      cx = (bb.min.x + bb.max.x) / 2.0
+      cy = (bb.min.y + bb.max.y) / 2.0
+      mz = bb.min.z
+      shift_tr = Geom::Transformation.translation(Geom::Vector3d.new(-cx, -cy, -mz))
+
+      shifted_leaves = leaves.map { |l| l.merge(tr: shift_tr * l[:tr]) }
+      norm_bb = compute_leaves_bbox(shifted_leaves)
+      [shifted_leaves, norm_bb]
     end
 
-    def extract_top_svg(entities, bb_min_x_mm, bb_max_y_mm, w_mm, d_mm)
-      raw_segs = []
-      collect_2d_segments(entities, Geom::Transformation.new, raw_segs)
-      return '' if raw_segs.empty?
-
+    def extract_top_svg_from_leaves(leaves, bb_min_x_mm, bb_max_y_mm, w_mm, d_mm)
       dedup = {}
-      raw_segs.each do |x1, y1, x2, y2|
-        sx1 = x1 - bb_min_x_mm
-        sy1 = bb_max_y_mm - y1
-        sx2 = x2 - bb_min_x_mm
-        sy2 = bb_max_y_mm - y2
-        len2 = (sx2 - sx1) * (sx2 - sx1) + (sy2 - sy1) * (sy2 - sy1)
-        next if len2 < 16.0 # bỏ nét < 4mm
 
-        qx1 = (sx1 / 2.0).round * 2
-        qy1 = (sy1 / 2.0).round * 2
-        qx2 = (sx2 / 2.0).round * 2
-        qy2 = (sy2 / 2.0).round * 2
-        next if qx1 == qx2 && qy1 == qy2
+      leaves.each do |leaf|
+        tr = leaf[:tr]
+        seen_edges = {}
+        leaf[:faces].each do |face|
+          next unless face.valid?
+          face.edges.each do |edge|
+            eid = edge.object_id
+            next if seen_edges[eid]
+            seen_edges[eid] = true
+            next unless entity_visible?(edge)
 
-        key = if (qx1 < qx2) || (qx1 == qx2 && qy1 <= qy2)
-                "#{qx1},#{qy1}:#{qx2},#{qy2}"
-              else
-                "#{qx2},#{qy2}:#{qx1},#{qy1}"
-              end
-        prev = dedup[key]
-        if prev.nil? || len2 > prev[4]
-          dedup[key] = [sx1.round(1), sy1.round(1), sx2.round(1), sy2.round(1), len2]
+            efaces = edge.faces.select { |f| f.valid? && entity_visible?(f) }
+            keep = !edge.soft? && !edge.smooth?
+            keep ||= efaces.length <= 1
+            if !keep && efaces.length == 2
+              n1 = efaces[0].normal.transform(tr)
+              n2 = efaces[1].normal.transform(tr)
+              n1.normalize! if n1.length.to_f > 1e-6
+              n2.normalize! if n2.length.to_f > 1e-6
+              keep = (n1.z >= 0.05 && n2.z < 0.05) || (n2.z >= 0.05 && n1.z < 0.05) ||
+                     (n1.z <= -0.05 && n2.z > -0.05) || (n2.z <= -0.05 && n1.z > -0.05)
+            end
+            next unless keep
+
+            p1 = edge.start.position.transform(tr)
+            p2 = edge.end.position.transform(tr)
+            sx1 = p1.x.to_mm - bb_min_x_mm
+            sy1 = bb_max_y_mm - p1.y.to_mm
+            sx2 = p2.x.to_mm - bb_min_x_mm
+            sy2 = bb_max_y_mm - p2.y.to_mm
+            len2 = (sx2 - sx1) * (sx2 - sx1) + (sy2 - sy1) * (sy2 - sy1)
+            next if len2 < 16.0
+
+            qx1 = (sx1 / 2.0).round * 2
+            qy1 = (sy1 / 2.0).round * 2
+            qx2 = (sx2 / 2.0).round * 2
+            qy2 = (sy2 / 2.0).round * 2
+            next if qx1 == qx2 && qy1 == qy2
+
+            key = if (qx1 < qx2) || (qx1 == qx2 && qy1 <= qy2)
+                    "#{qx1},#{qy1}:#{qx2},#{qy2}"
+                  else
+                    "#{qx2},#{qy2}:#{qx1},#{qy1}"
+                  end
+            prev = dedup[key]
+            if prev.nil? || len2 > prev[4]
+              dedup[key] = [sx1.round(1), sy1.round(1), sx2.round(1), sy2.round(1), len2]
+            end
+          end
         end
       end
 
@@ -333,10 +458,6 @@ module MKG
       SVG
     end
 
-    def percent_decode(str)
-      str.to_s.gsub(/%([0-9A-Fa-f]{2})/) { [Regexp.last_match(1).to_i(16)].pack('C') }
-    end
-
     def xml_escape(str)
       str.to_s
          .gsub('&', '&amp;')
@@ -346,72 +467,31 @@ module MKG
          .gsub("'", '&apos;')
     end
 
-    def mime_for_ext(path)
-      case File.extname(path).downcase
-      when '.png' then 'image/png'
-      when '.jpg', '.jpeg' then 'image/jpeg'
-      when '.webp' then 'image/webp'
-      when '.gif' then 'image/gif'
-      when '.bmp' then 'image/bmp'
-      else nil
-      end
+    def material_color_spec(mat)
+      return ['default', [0.88, 0.89, 0.91, 1.0], 'MKG_Default'] unless mat && mat.color
+      c = mat.color
+      alpha = mat.respond_to?(:alpha) ? mat.alpha.to_f : 1.0
+      alpha = [[alpha, 0.0].max, 1.0].min
+      rgba = [(c.red / 255.0).round(3), (c.green / 255.0).round(3), (c.blue / 255.0).round(3), alpha.round(3)]
+      [rgba.join('_'), rgba, mat.display_name]
     end
 
-    def resolve_collada_image_path(dae_dir, raw_ref)
-      cleaned = percent_decode(raw_ref.to_s.strip)
-      return nil if cleaned.empty? || cleaned.start_with?('data:')
+    def build_solid_color_dae_from_leaves(leaves)
+      buckets = {}
 
-      if cleaned.start_with?('file:///')
-        cleaned = cleaned.sub(%r{\Afile:///}, '')
-        cleaned = "/#{cleaned}" unless cleaned =~ /\A[A-Za-z]:/
-      elsif cleaned.start_with?('file://')
-        cleaned = cleaned.sub(%r{\Afile://}, '')
-      end
+      leaves.each do |leaf|
+        tr = leaf[:tr]
+        mirrored = mirrored_transform?(tr)
+        root_mat = leaf[:mat]
 
-      candidates = [
-        cleaned,
-        File.join(dae_dir, cleaned),
-        File.join(dae_dir, File.basename(cleaned))
-      ]
-      candidates.find { |p| File.exist?(p) && File.file?(p) }
-    end
-
-    def embed_dae_textures(dae_xml, dae_dir)
-      total_embedded = 0
-      max_single = 2_600_000
-      max_total  = 8_000_000
-
-      dae_xml.gsub(%r{<init_from>(.*?)</init_from>}m) do |full_match|
-        inner = Regexp.last_match(1).to_s.strip
-        img_path = resolve_collada_image_path(dae_dir, inner)
-        mime = img_path ? mime_for_ext(img_path) : nil
-        if img_path && mime
-          sz = File.size(img_path)
-          if sz > 0 && sz <= max_single && (total_embedded + sz) <= max_total
-            total_embedded += sz
-            b64 = Base64.strict_encode64(File.binread(img_path))
-            "<init_from>data:#{mime};base64,#{b64}</init_from>"
-          else
-            full_match
-          end
-        else
-          full_match
-        end
-      end
-    end
-
-    def collect_mesh_triangles(entities, tr, inherited_mat, buckets)
-      entities.each do |ent|
-        next unless ent.valid?
-        next if ent.hidden?
-        next if ent.layer && !ent.layer.visible?
-
-        if ent.is_a?(Sketchup::Face)
-          mat = ent.material || inherited_mat
-          color_key, rgba = material_color_spec(mat)
-          buckets[color_key] ||= { rgba: rgba, name: mat ? mat.display_name : 'MKG_Default', positions: [], normals: [], indices: [] }
+        leaf[:faces].each do |face|
+          next unless face.valid?
+          mat = face.material || face.back_material || root_mat
+          color_key, rgba, mat_name = material_color_spec(mat)
+          buckets[color_key] ||= { rgba: rgba, name: mat_name, positions: [], normals: [], indices: [] }
           b = buckets[color_key]
-          mesh = ent.mesh(4) # 4 = Normals (triangulated)
+
+          mesh = face.mesh(4)
           next if mesh.count_polygons <= 0
 
           base_idx = b[:positions].length / 3
@@ -422,34 +502,23 @@ module MKG
             b[:positions].push(pt.x.to_m.round(5), pt.y.to_m.round(5), pt.z.to_m.round(5))
             b[:normals].push(nm.x.round(4), nm.y.round(4), nm.z.round(4))
           end
+
           mesh.polygons.each do |poly|
             next unless poly.length >= 3
             (1...(poly.length - 1)).each do |k|
-              b[:indices].push(base_idx + poly[0].abs - 1, base_idx + poly[k].abs - 1, base_idx + poly[k + 1].abs - 1)
+              i0 = base_idx + poly[0].abs - 1
+              i1 = base_idx + poly[k].abs - 1
+              i2 = base_idx + poly[k + 1].abs - 1
+              if mirrored
+                b[:indices].push(i0, i2, i1)
+              else
+                b[:indices].push(i0, i1, i2)
+              end
             end
           end
-        elsif ent.is_a?(Sketchup::Group)
-          mat = ent.material || inherited_mat
-          collect_mesh_triangles(ent.entities, tr * ent.transformation, mat, buckets)
-        elsif ent.is_a?(Sketchup::ComponentInstance)
-          mat = ent.material || inherited_mat
-          collect_mesh_triangles(ent.definition.entities, tr * ent.transformation, mat, buckets)
         end
       end
-    end
 
-    def material_color_spec(mat)
-      return ['default', [0.88, 0.89, 0.91, 1.0]] unless mat && mat.color
-      c = mat.color
-      alpha = mat.respond_to?(:alpha) ? mat.alpha.to_f : 1.0
-      rgba = [(c.red / 255.0).round(3), (c.green / 255.0).round(3), (c.blue / 255.0).round(3), alpha.round(3)]
-      [rgba.join('_'), rgba]
-    end
-
-    # Bộ xuất COLLADA thuần Ruby dự phòng khi SketchUp model.export thất bại
-    def build_pure_ruby_dae(entities, root_mat = nil)
-      buckets = {}
-      collect_mesh_triangles(entities, Geom::Transformation.new, root_mat, buckets)
       return nil if buckets.empty?
 
       effects_xml = String.new
@@ -466,12 +535,19 @@ module MKG
         fx_id = "fx_#{idx}"
         r, g, bl, a = b[:rgba]
 
+        trans_xml = if a < 0.99
+                      %(<transparency><float>#{a}</float></transparency>)
+                    else
+                      ''
+                    end
+
         effects_xml << <<~XML
           <effect id="#{fx_id}">
             <profile_COMMON>
               <technique sid="common">
                 <lambert>
                   <diffuse><color>#{r} #{g} #{bl} #{a}</color></diffuse>
+                  #{trans_xml}
                 </lambert>
               </technique>
             </profile_COMMON>
@@ -564,123 +640,22 @@ module MKG
     end
 
     def export_single_target(model, target, options)
-      tmp_dir = Dir.mktmpdir('mkg_skp_')
-      dae_path = File.join(tmp_dir, 'model.dae')
-      export_dae_path = File::ALT_SEPARATOR ? dae_path.tr('/', File::ALT_SEPARATOR) : dae_path
       include_svg = options['include_svg'] != false
-      include_textures = options['include_textures'] != false
-      front_axis = options['front_axis'] || '-Y'
+      kept_leaves, bb = resolve_kept_leaves(model, target, options)
+      raise "Không tìm thấy khối Solid hợp lệ trong \"#{target[:name]}\"" unless kept_leaves && bb && !bb.empty?
 
-      ent = target[:entity]
-      w_mm = 600
-      d_mm = 600
-      h_mm = 800
-      svg2d = ''
-      dae_xml = nil
+      w_mm = [20, (bb.max.x - bb.min.x).to_mm.round].max
+      d_mm = [20, (bb.max.y - bb.min.y).to_mm.round].max
+      h_mm = [10, (bb.max.z - bb.min.z).to_mm.round].max
 
-      # Thoát active editing context trước start_operation theo khuyến nghị SketchUp API
-      while model.active_path && !model.active_path.empty?
-        break unless model.close_active
-      end
+      svg2d = if include_svg
+                extract_top_svg_from_leaves(kept_leaves, bb.min.x.to_mm, bb.max.y.to_mm, w_mm, d_mm)
+              else
+                ''
+              end
 
-      model.start_operation('MKG Temp Export', true)
-      begin
-        model.selection.clear
-
-        if ent
-          defn = definition_of(ent)
-          raise 'Không tìm thấy Definition của đối tượng được chọn' unless defn
-
-          model.entities.each do |top|
-            top.hidden = true if top.valid?
-          end
-
-          temp_grp = model.entities.add_group
-          temp_grp.layer = model.layers[0] if model.layers[0]
-          sx, sy, sz = extract_local_scales(ent.transformation)
-          rot_rad = front_axis_radians(front_axis, ent.transformation)
-
-          origin_pt = Geom::Point3d.new(0, 0, 0)
-          z_vec = Geom::Vector3d.new(0, 0, 1)
-          inst_tr = Geom::Transformation.rotation(origin_pt, z_vec, rot_rad) *
-                    Geom::Transformation.scaling(origin_pt, sx, sy, sz)
-          temp_inst = temp_grp.entities.add_instance(defn, inst_tr)
-          if ent.respond_to?(:material) && ent.material
-            temp_inst.material = ent.material
-          end
-
-          bb = compute_entities_bbox(temp_grp.entities)
-          bb = temp_grp.bounds if bb.empty?
-
-          cx = (bb.min.x + bb.max.x) / 2.0
-          cy = (bb.min.y + bb.max.y) / 2.0
-          mz = bb.min.z
-          shift_tr = Geom::Transformation.translation(Geom::Vector3d.new(-cx, -cy, -mz))
-          temp_grp.entities.transform_entities(shift_tr, [temp_inst])
-
-          bb = compute_entities_bbox(temp_grp.entities)
-          bb = temp_grp.bounds if bb.empty?
-
-          w_mm = [20, (bb.max.x - bb.min.x).to_mm.round].max
-          d_mm = [20, (bb.max.y - bb.min.y).to_mm.round].max
-          h_mm = [10, (bb.max.z - bb.min.z).to_mm.round].max
-
-          if include_svg
-            svg2d = extract_top_svg(temp_grp.entities, bb.min.x.to_mm, bb.max.y.to_mm, w_mm, d_mm)
-          end
-
-          model.selection.add(temp_grp)
-          export_opts = {
-            :triangulated_faces  => true,
-            :double_sided_faces  => false,
-            :edges               => false,
-            :hidden_geometry     => false,
-            :author_attribution  => false,
-            :texture_maps        => include_textures,
-            :selectionset_only   => true
-          }
-          ok = model.export(export_dae_path, export_opts)
-          if ok && File.exist?(dae_path) && File.size(dae_path) > 100
-            raw_xml = File.binread(dae_path).force_encoding('UTF-8').scrub('')
-            dae_xml = include_textures ? embed_dae_textures(raw_xml, tmp_dir) : raw_xml
-          else
-            dae_xml = build_pure_ruby_dae(temp_grp.entities, ent.respond_to?(:material) ? ent.material : nil)
-          end
-        else
-          # Xuất toàn bộ model hiện hành
-          bb = compute_entities_bbox(model.entities)
-          bb = model.bounds if bb.empty?
-          w_mm = [20, (bb.max.x - bb.min.x).to_mm.round].max
-          d_mm = [20, (bb.max.y - bb.min.y).to_mm.round].max
-          h_mm = [10, (bb.max.z - bb.min.z).to_mm.round].max
-
-          if include_svg
-            svg2d = extract_top_svg(model.entities, bb.min.x.to_mm, bb.max.y.to_mm, w_mm, d_mm)
-          end
-
-          export_opts = {
-            :triangulated_faces  => true,
-            :double_sided_faces  => false,
-            :edges               => false,
-            :hidden_geometry     => false,
-            :author_attribution  => false,
-            :texture_maps        => include_textures,
-            :selectionset_only   => false
-          }
-          ok = model.export(export_dae_path, export_opts)
-          if ok && File.exist?(dae_path) && File.size(dae_path) > 100
-            raw_xml = File.binread(dae_path).force_encoding('UTF-8').scrub('')
-            dae_xml = include_textures ? embed_dae_textures(raw_xml, tmp_dir) : raw_xml
-          else
-            dae_xml = build_pure_ruby_dae(model.entities)
-          end
-        end
-      ensure
-        model.abort_operation
-        FileUtils.remove_entry(tmp_dir) if tmp_dir && File.exist?(tmp_dir)
-      end
-
-      raise "Không trích xuất được hình học 3D cho \"#{target[:name]}\"" unless dae_xml && !dae_xml.empty?
+      dae_xml = build_solid_color_dae_from_leaves(kept_leaves)
+      raise "Không tạo được lưới 3D Solid cho \"#{target[:name]}\"" unless dae_xml && !dae_xml.empty?
 
       slug = slugify(target[:name])
       b64 = Base64.strict_encode64(dae_xml.encode('UTF-8'))
@@ -732,7 +707,6 @@ module MKG
 
       out_path = "#{out_path}.mkglib.json" unless out_path.downcase.end_with?('.json')
 
-      orig_selection = model.selection.to_a
       exported_items = chosen_targets.map do |t|
         res = export_single_target(model, t, payload)
         res.delete('daeXml')
@@ -749,21 +723,15 @@ module MKG
 
       File.binwrite(out_path, JSON.pretty_generate(pkg).encode('UTF-8'))
       UI.messagebox(
-        "Đã xuất thành công #{exported_items.length} món nội thất!\n\n" \
+        "Đã xuất thành công #{exported_items.length} món nội thất (chỉ Solid & màu sắc)!\n\n" \
         "File: #{out_path}\n\n" \
-        "Mở https://do.mkg.vn/?backend=1 trên máy tính → bấm \"Nhập từ SketchUp\" hoặc kéo thả file này vào trình duyệt."
+        "Kéo thả file này vào trang Backend https://do.mkg.vn/?backend=1 trên máy tính để nạp ngay."
       )
       true
     rescue StandardError => e
       loc = e.backtrace && !e.backtrace.empty? ? "\n(#{e.backtrace[0]})" : ''
       UI.messagebox("Lỗi khi xuất thư viện MKG:\n#{e.message}#{loc}")
       false
-    ensure
-      if model && orig_selection
-        model.selection.clear
-        valid_sel = orig_selection.select(&:valid?)
-        model.selection.add(valid_sel) unless valid_sel.empty?
-      end
     end
 
     def quick_export_dae
@@ -782,9 +750,9 @@ module MKG
       return unless out_path && !out_path.empty?
 
       out_path = "#{out_path}.dae" unless out_path.downcase.end_with?('.dae')
-      res = export_single_target(model, target, { 'include_svg' => false, 'include_textures' => true, 'front_axis' => '-Y' })
+      res = export_single_target(model, target, { 'include_svg' => false, 'solid_only' => true, 'front_axis' => '-Y' })
       File.binwrite(out_path, res['daeXml'].encode('UTF-8'))
-      UI.messagebox("Đã xuất file .DAE chuẩn trục (#{res['w']}×#{res['d']}×#{res['h']} mm):\n#{out_path}")
+      UI.messagebox("Đã xuất file .DAE sạch (#{res['w']}×#{res['d']}×#{res['h']} mm):\n#{out_path}")
     rescue StandardError => e
       UI.messagebox("Lỗi xuất .DAE: #{e.message}")
     end
@@ -793,10 +761,9 @@ module MKG
       UI.messagebox(
         "HƯỚNG DẪN XUẤT MODEL SKETCHUP SANG MKG KHẢO SÁT (do.mkg.vn)\n\n" \
         "1. Đóng gói mỗi món nội thất thành 1 Group hoặc Component riêng.\n" \
-        "2. Hướng mặt trước (Front) về trục Xanh lá âm (-Y); chiều cao hướng lên trục Xanh dương (+Z).\n" \
-        "   (Nếu model quay hướng khác, có thể chọn lại 'Hướng mặt trước' ngay trong hộp thoại xuất).\n" \
-        "3. Chọn 1 hoặc nhiều món cùng lúc → vào Extensions → MKG Khảo Sát (hoặc chuột phải) → Xuất .mkglib.json.\n" \
-        "4. Trên trình duyệt máy tính mở https://do.mkg.vn/?backend=1 → kéo thả file .mkglib.json vào là tự động lên đủ 2D CAD SVG + 3D + kích thước mm!"
+        "2. Plugin tự động lọc sạch chỉ giữ khối Solid & màu sắc (bỏ qua Tag Label, chữ, dim, ốc cam chốt liên kết).\n" \
+        "3. Chọn 1 hoặc nhiều món cùng lúc → chuột phải → Xuất .mkglib.json.\n" \
+        "4. Trên trình duyệt máy tính mở https://do.mkg.vn/?backend=1 → kéo thả file .mkglib.json vào."
       )
     end
 
@@ -814,7 +781,6 @@ module MKG
       end
 
       unless defined?(UI::HtmlDialog)
-        # Fallback cho SketchUp rất cũ không có HtmlDialog
         t0 = targets[0]
         prompts = ['Tên món:', 'Nhóm (bedroom/living/kitchen/wc/elec/other):', 'Kiểu lắp (floor/wall/ceiling):', 'Cao độ Z (mm):', 'Áp tường (true/false):']
         defaults = [t0[:name], t0[:group], t0[:mount], t0[:z].to_s, t0[:back].to_s]
@@ -825,7 +791,7 @@ module MKG
         t0[:mount] = ans[2]
         t0[:z] = ans[3].to_i
         t0[:back] = ans[4].to_s.downcase == 'true'
-        perform_export_mkglib(model, [t0], { 'include_svg' => true, 'include_textures' => true, 'front_axis' => '-Y', 'items' => [] })
+        perform_export_mkglib(model, [t0], { 'include_svg' => true, 'solid_only' => true, 'front_axis' => '-Y', 'items' => [] })
         return
       end
 
@@ -855,10 +821,18 @@ module MKG
         min_height: 420
       )
 
+      @export_busy = false
+
       dlg.add_action_callback('exportMkg') do |_ctx, json_str|
-        payload = JSON.parse(json_str.to_s)
-        dlg.close
-        UI.start_timer(0.05, false) { perform_export_mkglib(model, targets, payload) }
+        next if @export_busy
+        @export_busy = true
+        begin
+          payload = JSON.parse(json_str.to_s)
+          dlg.close
+          perform_export_mkglib(model, targets, payload)
+        ensure
+          @export_busy = false
+        end
       end
 
       dlg.add_action_callback('cancelDialog') do |_ctx|
@@ -884,10 +858,10 @@ module MKG
           .hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
           .hdr h2 { margin: 0; font-size: 16px; color: #0f172a; }
           .hdr small { color: #475569; font-size: 11.5px; }
-          .opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+          .opts { display: grid; grid-template-columns: 1.15fr 1fr 1.25fr; gap: 8px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; align-items: center; }
           .opt-item { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
           .opt-item label { font-weight: 600; color: #334155; }
-          .chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; padding-top: 14px; }
+          .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; line-height: 1.35; }
           select, input[type="text"], input[type="number"] { padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12.5px; width: 100%; background: #fff; }
           .tbl-wrap { max-height: 290px; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; }
           table { width: 100%; border-collapse: collapse; }
@@ -899,14 +873,15 @@ module MKG
           .btns { display: flex; gap: 8px; }
           button { padding: 8px 14px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-weight: 600; font-size: 13px; }
           button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
-          button.primary:hover { background: #1d4ed8; }
+          button.primary:hover:not(:disabled) { background: #1d4ed8; }
+          button:disabled { opacity: 0.6; cursor: wait; }
         </style>
         </head>
         <body>
           <div class="hdr">
             <div>
               <h2>Xuất sang Thư viện 2D &amp; 3D — MKG Khảo Sát</h2>
-              <small>Chuẩn hoá toạ độ tâm đáy (0,0,0), đơn vị mm, tự trích nét 2D SVG chiếu bằng + mô hình 3D COLLADA</small>
+              <small>Chỉ xuất khối Solid &amp; Màu sắc (bỏ Label, liên kết, dim, chữ) · Chuẩn tâm đáy (0,0,0) mm</small>
             </div>
           </div>
 
@@ -922,7 +897,7 @@ module MKG
               </select>
             </div>
             <label class="chk"><input type="checkbox" id="incSvg" checked /> Tự trích nét mặt bằng 2D SVG</label>
-            <label class="chk"><input type="checkbox" id="incTex" checked /> Nhúng ảnh vật liệu Texture</label>
+            <label class="chk"><input type="checkbox" id="solidOnly" checked /> Chỉ giữ khối Solid &amp; màu sắc (bỏ Label, liên kết)</label>
           </div>
 
           <div class="tbl-wrap">
@@ -945,7 +920,7 @@ module MKG
             <div class="note" id="summary"></div>
             <div class="btns">
               <button type="button" onclick="sketchup.cancelDialog()">Huỷ</button>
-              <button type="button" class="primary" onclick="doExport()">Xuất file .mkglib.json</button>
+              <button type="button" id="btnExport" class="primary" onclick="doExport()">Xuất file .mkglib.json</button>
             </div>
           </div>
 
@@ -954,6 +929,8 @@ module MKG
             const tbody = document.getElementById('rows');
             const summary = document.getElementById('summary');
             const chkAll = document.getElementById('chkAll');
+            const btnExport = document.getElementById('btnExport');
+            let exporting = false;
 
             function render() {
               tbody.innerHTML = '';
@@ -999,10 +976,14 @@ module MKG
             });
 
             function doExport() {
+              if (exporting) return;
+              exporting = true;
+              btnExport.disabled = true;
+              btnExport.textContent = 'Đang xử lý…';
               const payload = {
                 front_axis: document.getElementById('frontAxis').value,
                 include_svg: document.getElementById('incSvg').checked,
-                include_textures: document.getElementById('incTex').checked,
+                solid_only: document.getElementById('solidOnly').checked,
                 items: DATA.items
               };
               sketchup.exportMkg(JSON.stringify(payload));

@@ -10,7 +10,7 @@ module MKG
     PLUGIN_ID = 'mkg_khaosat_exporter'.freeze unless defined?(PLUGIN_ID)
     PLUGIN_NAME = 'MKG Khảo Sát — Xuất Thư Viện 2D & 3D'.freeze unless defined?(PLUGIN_NAME)
     remove_const(:PLUGIN_VERSION) if const_defined?(:PLUGIN_VERSION)
-    PLUGIN_VERSION = '1.0.1'.freeze
+    PLUGIN_VERSION = '1.0.2'.freeze
 
     if !file_loaded?(__FILE__)
       loader = File.join(__dir__, PLUGIN_ID, 'main')
