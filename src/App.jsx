@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import ProjectsScreen from './screens/ProjectsScreen';
 import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
@@ -22,6 +22,9 @@ import { newProject, newPlanDoc, newPhotoDoc, newBoardDoc } from './lib/planMode
 import { fileToPhoto, makePlanThumb } from './lib/image';
 import { genId } from './lib/geometry';
 import { getCurrentLocation } from './lib/location';
+import { initCatalogStore, applyCatalogSyncPayload } from './lib/furnitureCatalog';
+
+const CatalogAdminScreen = lazy(() => import('./screens/CatalogAdminScreen'));
 
 /** Đọc tham số share từ URL: ?s=<code> (mới) hoặc ?view=<base64> (link cũ đã gửi ra). */
 function readShareParam() {
@@ -41,6 +44,12 @@ function readShareParam() {
 }
 
 const customerPortalRequested = () => new URLSearchParams(window.location.search).get('customer') === '1';
+const backendRequested = () => {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('backend') === '1') return true;
+    const h = (window.location.hash || '').toLowerCase();
+    return h === '#backend' || h === '#/backend' || h === '#catalog-admin' || h === '#/catalog-admin';
+};
 const BOARD_INVENTORY_PROJECT_NAME = 'Kho ván tồn';
 const isInventoryProject = (p) => p?.boardInventory === true || p?.name === BOARD_INVENTORY_PROJECT_NAME;
 
@@ -71,7 +80,7 @@ function buildProjectStats(allDocs) {
 
 export default function App() {
     const [projects, setProjects] = useState(null); // null = đang tải
-    const [route, setRoute] = useState({ screen: 'projects' });
+    const [route, setRoute] = useState(() => (backendRequested() ? { screen: 'catalog-admin' } : { screen: 'projects' }));
     const [docs, setDocs] = useState([]);           // doc của dự án đang mở
     const [projectStats, setProjectStats] = useState({});
     const [syncBusy, setSyncBusy] = useState(false);
@@ -139,6 +148,7 @@ export default function App() {
     // ===== Boot =====
     useEffect(() => {
         if (share) return; // chế độ xem link chia sẻ: không chạm dữ liệu local
+        initCatalogStore().catch(() => {});
         (async () => {
             try {
                 if (!pb.isLoggedIn()) {
@@ -174,7 +184,7 @@ export default function App() {
                 if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
                 if (!pb.isCustomer() && !customerPortal) {
                     syncAll(true);
-                    refreshCustomerInboxCount();
+                    refreshCustomerInboxCount(); pb.fetchCloudCatalog().then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
                 }
             } catch (err) {
                 // Fail closed: không đọc dữ liệu khi phiên không chắc chắn hợp lệ. Kho cũ
@@ -186,9 +196,11 @@ export default function App() {
                 console.warn('boot data recovery:', err);
             }
         })();
-        history.replaceState({ screen: 'projects' }, '');
-        const onPop = (e) => setRoute(e.state || { screen: 'projects' });
+        history.replaceState(backendRequested() ? { screen: 'catalog-admin' } : { screen: 'projects' }, '');
+        const onPop = (e) => setRoute(e.state || (backendRequested() ? { screen: 'catalog-admin' } : { screen: 'projects' }));
+        const onHash = () => { if (backendRequested()) setRoute({ screen: 'catalog-admin' }); };
         window.addEventListener('popstate', onPop);
+        window.addEventListener('hashchange', onHash);
         const onVisible = () => {
             if (document.visibilityState === 'visible' && pb.isLoggedIn() && !pb.isCustomer() && !customerPortal) {
                 syncAll(true);
@@ -215,6 +227,7 @@ export default function App() {
         return () => {
             clearInterval(poll);
             window.removeEventListener('popstate', onPop);
+            window.removeEventListener('hashchange', onHash);
             document.removeEventListener('visibilitychange', onVisible);
             window.removeEventListener('online', onOnline);
         };
@@ -771,7 +784,7 @@ export default function App() {
         setSyncMsg(null);
         clearProtectedState();
         setRoute({ screen: 'projects' });
-        history.replaceState({ screen: 'projects' }, '');
+        history.replaceState(backendRequested() ? { screen: 'catalog-admin' } : { screen: 'projects' }, '');
         toast('Đã đăng xuất');
     };
 
@@ -824,10 +837,26 @@ export default function App() {
     let screen;
     if ((route.screen === 'plan' || route.screen === 'photo' || route.screen === 'board') && currentDoc) {
         screen = route.screen === 'plan'
-            ? <PlanEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />
+            ? <PlanEditor key={currentDoc.id} doc={currentDoc} projectName={currentProject?.name || ''} onChange={updateDoc} onBack={goBack} onOpenCatalogAdmin={() => navigate({ screen: 'catalog-admin' })} />
             : route.screen === 'board'
                 ? <BoardEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />
                 : <PhotoEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />;
+    } else if (route.screen === 'catalog-admin') {
+        screen = (
+            <Suspense fallback={<div className="loading-screen"><div className="loading-spinner" /><div>Đang mở Backend thư viện…</div></div>}>
+                <CatalogAdminScreen
+                    onBack={() => {
+                        if (backendRequested()) {
+                            const cleanSearch = window.location.search.replace(/([?&])backend=1(&?)/, (_, p1, p2) => (p2 ? p1 : '')).replace(/[?&]$/, '');
+                            history.replaceState({ screen: 'projects' }, '', window.location.pathname + cleanSearch);
+                            setRoute({ screen: 'projects' });
+                        } else {
+                            goBack();
+                        }
+                    }}
+                />
+            </Suspense>
+        );
     } else if (route.screen === 'experience') {
         screen = <ExperienceScreen onBack={goBack} />;
     } else if (route.screen === 'board-inventory') {
@@ -864,6 +893,7 @@ export default function App() {
                 onRenameDoc={renameDoc}
                 onDeleteDoc={deleteDoc}
                 onOpenExperience={() => navigate({ screen: 'experience' })}
+                onOpenCatalogAdmin={() => navigate({ screen: 'catalog-admin' })}
             />
         );
     } else if (pb.isCustomer()) {
@@ -899,6 +929,7 @@ export default function App() {
                 onOpenTeamAdmin={() => setShowTeamAdmin(true)}
                 onOpenCustomerInbox={() => setShowCustomerInbox(true)}
                 onOpenExperience={() => navigate({ screen: 'experience' })}
+                onOpenCatalogAdmin={() => navigate({ screen: 'catalog-admin' })}
                 onOpenBoardInventory={openBoardInventory}
                 onOpenBoardMarket={openBoardMarket}
                 boardMarketCount={boardMarketCount}

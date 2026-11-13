@@ -1,9 +1,7 @@
-// Thư viện nội thất — kích thước mm (rộng × sâu × cao), theo Neufert + thực tế thị trường VN.
-// w = cạnh song song mặt tường khi rot=0; d = cạnh vuông góc (chiều sâu, hướng vào phòng).
-// h = chiều cao; z = cao độ đáy so với sàn hoàn thiện (0 = đặt trên sàn).
-// `back: true` = có mặt lưng áp tường (dùng cho magnet). `back: false` = đặt giữa phòng.
-// `mount: 'ceiling'` = neo từ trần xuống, z suy ra = H − h, nên sửa chiều cao trần thì
-// nó đi theo chứ không nằm lơ lửng.
+// Thư viện nội thất động 2D & 3D — kích thước mm (rộng × sâu × cao), theo Neufert + thực tế thị trường VN.
+// Hỗ trợ tuỳ chỉnh & quản trị từ Backend (kích thước, ký hiệu 2D/SVG, vật liệu 3D, file .glb/.gltf)
+// nhưng vẫn tương thích ngược 100% với toàn bộ dự án cũ & bộ test hiện tại.
+import localforage from 'localforage';
 
 export const GROUPS = [
     { key: 'bedroom', name: 'Phòng ngủ' },
@@ -14,7 +12,83 @@ export const GROUPS = [
     { key: 'other', name: 'Khác' },
 ];
 
-export const FURNITURE = {
+export const SYM_2D_OPTIONS = [
+    { key: 'bed', label: 'Giường ngủ' },
+    { key: 'headboard', label: 'Đầu giường ốp' },
+    { key: 'wardrobe', label: 'Tủ áo cánh mở' },
+    { key: 'wardrobe_slide', label: 'Tủ áo cửa lùa' },
+    { key: 'cab', label: 'Tủ / Kệ đứng' },
+    { key: 'cab_wall', label: 'Tủ treo tường' },
+    { key: 'kitchen_base', label: 'Tủ bếp dưới' },
+    { key: 'island', label: 'Đảo bếp + ghế bar' },
+    { key: 'nightstand', label: 'Táp đầu giường' },
+    { key: 'dresser', label: 'Bàn trang điểm' },
+    { key: 'desk', label: 'Bàn làm việc + ghế' },
+    { key: 'bench', label: 'Đôn / Ghế băng' },
+    { key: 'sofa', label: 'Sofa văng' },
+    { key: 'sofaL', label: 'Sofa góc L' },
+    { key: 'armchair', label: 'Ghế đơn Armchair' },
+    { key: 'coffee', label: 'Bàn trà' },
+    { key: 'rug', label: 'Thảm trải sàn' },
+    { key: 'tvstand', label: 'Kệ TV' },
+    { key: 'tv', label: 'TV treo tường' },
+    { key: 'table', label: 'Bàn ăn + ghế' },
+    { key: 'partition', label: 'Vách lam ngăn' },
+    { key: 'plant', label: 'Chậu cây xanh' },
+    { key: 'toilet', label: 'Bồn cầu' },
+    { key: 'basin', label: 'Lavabo' },
+    { key: 'sink', label: 'Chậu rửa chén' },
+    { key: 'sink2', label: 'Chậu rửa 2 hố + bàn' },
+    { key: 'hob', label: 'Bếp từ' },
+    { key: 'fridge', label: 'Tủ lạnh' },
+    { key: 'hood', label: 'Máy hút mùi' },
+    { key: 'shower', label: 'Buồng tắm đứng' },
+    { key: 'glass_part', label: 'Vách kính tắm' },
+    { key: 'tub', label: 'Bồn tắm nằm' },
+    { key: 'washer', label: 'Máy giặt / Tháp giặt' },
+    { key: 'ac_wall', label: 'Dàn lạnh treo tường' },
+    { key: 'ac_cass', label: 'Máy lạnh âm trần' },
+    { key: 'curtain', label: 'Rèm & Hộp rèm' },
+    { key: 'socket', label: 'Ổ điện / Chờ TV' },
+    { key: 'switch', label: 'Công tắc' },
+    { key: 'lamp', label: 'Đèn tường' },
+    { key: 'cove', label: 'Đèn hắt trần' },
+    { key: 'altar', label: 'Bàn thờ' },
+    { key: 'shoe_bench', label: 'Tủ giày kèm đôn' },
+    { key: 'stairs', label: 'Thang bộ' },
+    { key: 'box', label: 'Khối hộp chữ nhật đơn giản' },
+];
+
+export const SYM_3D_OPTIONS = [
+    { key: '', label: 'Theo ký hiệu 2D (Tự động)' },
+    { key: 'box', label: 'Khối hộp đặc kiến trúc' },
+    { key: 'shelf_open', label: 'Kệ / Tủ mở nhiều tầng' },
+    { key: 'cabinet_glass', label: 'Tủ cánh kính khung nhôm' },
+    ...SYM_2D_OPTIONS.filter(x => x.key !== 'box'),
+];
+
+export const MAT_3D_OPTIONS = [
+    { key: '', label: 'Mặc định theo mẫu', color: null },
+    { key: 'oak', label: 'Gỗ sồi tự nhiên', color: '#c99a6b' },
+    { key: 'oakDark', label: 'Gỗ óc chó trầm', color: '#8b5a2b' },
+    { key: 'redwood', label: 'Gỗ gõ đỏ', color: '#6e2c1b' },
+    { key: 'whiteMatte', label: 'Sơn trắng mờ', color: '#f8fafc' },
+    { key: 'cream', label: 'Kem ấm / Vải sáng', color: '#f3efe6' },
+    { key: 'stone', label: 'Đá thạch anh trắng', color: '#eef2f6' },
+    { key: 'fabricWarm', label: 'Vải nỉ be ấm', color: '#d6d1c7' },
+    { key: 'fabricSlate', label: 'Vải xám ghi', color: '#64748b' },
+    { key: 'fabricBlue', label: 'Vải xanh Navy', color: '#476885' },
+    { key: 'duvet', label: 'Chăn ga trắng xám', color: '#e2e8f0' },
+    { key: 'ceramic', label: 'Sứ bóng vệ sinh', color: '#ffffff' },
+    { key: 'steel', label: 'Inox / Thép xước', color: '#cbd5e1' },
+    { key: 'graphite', label: 'Nhôm đen Graphite', color: '#334155' },
+    { key: 'darkGlass', label: 'Kính tối / Màn hình', color: '#0f172a' },
+    { key: 'mirror', label: 'Gương soi', color: '#dbeafe' },
+    { key: 'brass', label: 'Đồng thau mạ vàng', color: '#d4af37' },
+    { key: 'leaf', label: 'Xanh lá cây', color: '#2e7d32' },
+];
+
+export const BUILTIN_FURNITURE = {
     bedroom: [
         { key: 'bed12', name: 'Giường 1m2', w: 1200, d: 2000, h: 450, z: 0, back: true, sym: 'bed' },
         { key: 'bed16', name: 'Giường 1m6', w: 1600, d: 2000, h: 450, z: 0, back: true, sym: 'bed' },
@@ -93,10 +167,448 @@ export const FURNITURE = {
     ],
 };
 
-const BY_KEY = new Map();
-for (const g of GROUPS) for (const it of FURNITURE[g.key]) BY_KEY.set(it.key, { ...it, group: g.key });
+const STORAGE_KEY = 'mkg_furniture_catalog_v1';
+const STATE_ASSET_KEY = 'catalog_state_v1';
+const GLB_PREFIX = 'glb_';
 
-export function catalogItem(key) { return BY_KEY.get(key) || null; }
+let assetStore = null;
+function getAssetStore() {
+    if (assetStore) return assetStore;
+    if (typeof window === 'undefined' || typeof indexedDB === 'undefined') return null;
+    try {
+        assetStore = localforage.createInstance({
+            name: 'mkg-khaosat-catalog',
+            storeName: 'catalog_assets',
+            description: 'Custom 2D/3D furniture library assets',
+        });
+    } catch {
+        assetStore = null;
+    }
+    return assetStore;
+}
+
+const BUILTIN_BY_KEY = new Map();
+for (const g of GROUPS) {
+    for (const it of BUILTIN_FURNITURE[g.key]) {
+        BUILTIN_BY_KEY.set(it.key, { ...it, group: g.key });
+    }
+}
+
+export const FURNITURE = Object.fromEntries(GROUPS.map(g => [g.key, []]));
+const BY_KEY = new Map();
+const GLB_MEM_CACHE = new Map();
+const LISTENERS = new Set();
+let catalogVersion = 0;
+
+function emptyState() {
+    return {
+        version: 1,
+        updatedAt: 0,
+        overrides: {},
+        customItems: [],
+        deletedKeys: [],
+    };
+}
+
+function readLocalStateSync() {
+    try {
+        if (typeof localStorage === 'undefined' || typeof localStorage?.getItem !== 'function') return emptyState();
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return emptyState();
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return emptyState();
+        return {
+            version: 1,
+            updatedAt: Number(parsed.updatedAt) || 0,
+            overrides: parsed.overrides && typeof parsed.overrides === 'object' ? parsed.overrides : {},
+            customItems: Array.isArray(parsed.customItems) ? parsed.customItems : [],
+            deletedKeys: Array.isArray(parsed.deletedKeys) ? parsed.deletedKeys : [],
+        };
+    } catch {
+        return emptyState();
+    }
+}
+
+let catalogState = readLocalStateSync();
+
+function notifyListeners() {
+    catalogVersion += 1;
+    for (const fn of LISTENERS) {
+        try { fn(catalogVersion); } catch { /* ignore */ }
+    }
+}
+
+function sanitizeGroup(gKey) {
+    return GROUPS.some(g => g.key === gKey) ? gKey : 'other';
+}
+
+function sanitizePatch(raw, base = null) {
+    const out = {};
+    const validStr = (v) => (typeof v === 'string' ? v.trim() : '');
+    if (raw.name != null) out.name = validStr(raw.name) || base?.name || 'Mẫu mới';
+    if (raw.group != null) out.group = sanitizeGroup(raw.group);
+    if (raw.w != null && Number.isFinite(Number(raw.w))) out.w = Math.max(20, Math.round(Number(raw.w)));
+    if (raw.d != null && Number.isFinite(Number(raw.d))) out.d = Math.max(20, Math.round(Number(raw.d)));
+    if (raw.h != null && Number.isFinite(Number(raw.h))) out.h = Math.max(10, Math.round(Number(raw.h)));
+    if (raw.z != null && Number.isFinite(Number(raw.z))) out.z = Math.max(0, Math.round(Number(raw.z)));
+    if (raw.back !== undefined) out.back = !!raw.back;
+    if (raw.noSnapContact !== undefined) out.noSnapContact = !!raw.noSnapContact;
+    if (raw.mount !== undefined) {
+        out.mount = raw.mount === 'wall' || raw.mount === 'ceiling' ? raw.mount : 'floor';
+    }
+    if (raw.sym !== undefined) out.sym = validStr(raw.sym) || base?.sym || 'box';
+    if (raw.sym3d !== undefined) out.sym3d = validStr(raw.sym3d);
+    if (raw.color2d !== undefined) out.color2d = validStr(raw.color2d);
+    if (raw.fill2d !== undefined) out.fill2d = validStr(raw.fill2d);
+    if (raw.svg2d !== undefined) out.svg2d = typeof raw.svg2d === 'string' ? raw.svg2d.trim() : '';
+    if (raw.matPrimary !== undefined) out.matPrimary = validStr(raw.matPrimary);
+    if (raw.matSecondary !== undefined) out.matSecondary = validStr(raw.matSecondary);
+    if (raw.matAccent !== undefined) out.matAccent = validStr(raw.matAccent);
+    if (raw.glbUrl !== undefined) out.glbUrl = validStr(raw.glbUrl);
+    if (raw.glbFileName !== undefined) out.glbFileName = validStr(raw.glbFileName);
+    if (raw.glbRotY != null && Number.isFinite(Number(raw.glbRotY))) out.glbRotY = Number(raw.glbRotY) % 360;
+    if (raw.hasLocalGlb !== undefined) out.hasLocalGlb = !!raw.hasLocalGlb;
+    if (raw.hidden !== undefined) out.hidden = !!raw.hidden;
+    return out;
+}
+
+function rebuildCatalog() {
+    BY_KEY.clear();
+    const deleted = new Set(catalogState.deletedKeys || []);
+    const grouped = Object.fromEntries(GROUPS.map(g => [g.key, []]));
+
+    for (const g of GROUPS) {
+        for (const base of BUILTIN_FURNITURE[g.key]) {
+            const ov = catalogState.overrides?.[base.key];
+            const merged = {
+                mount: 'floor',
+                ...base,
+                group: g.key,
+                ...(ov || {}),
+                key: base.key,
+                isBuiltin: true,
+                isCustom: false,
+                isModified: !!(ov && Object.keys(ov).length > 0),
+                hidden: !!(ov?.hidden || deleted.has(base.key)),
+            };
+            if (!merged.sym) merged.sym = base.sym || 'box';
+            merged.group = sanitizeGroup(merged.group);
+            BY_KEY.set(merged.key, merged);
+            if (!merged.hidden) grouped[merged.group].push(merged);
+        }
+    }
+
+    for (const c of catalogState.customItems || []) {
+        if (!c?.key || deleted.has(c.key)) continue;
+        const clean = sanitizePatch(c);
+        const item = {
+            mount: 'floor',
+            back: true,
+            sym: 'box',
+            z: 0,
+            w: 1000,
+            d: 600,
+            h: 800,
+            ...clean,
+            key: String(c.key).trim(),
+            group: sanitizeGroup(c.group),
+            isBuiltin: false,
+            isCustom: true,
+            isModified: true,
+            hidden: !!c.hidden,
+        };
+        BY_KEY.set(item.key, item);
+        if (!item.hidden) grouped[item.group].push(item);
+    }
+
+    for (const g of GROUPS) {
+        const target = FURNITURE[g.key];
+        target.splice(0, target.length, ...grouped[g.key]);
+    }
+}
+
+rebuildCatalog();
+
+function persistState(touchUpdatedAt = true) {
+    if (touchUpdatedAt) {
+        catalogState = { ...catalogState, updatedAt: Date.now() };
+    }
+    try {
+        if (typeof localStorage !== 'undefined' && typeof localStorage?.setItem === 'function') {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(catalogState));
+        }
+    } catch (err) {
+        console.warn('catalog localStorage write:', err);
+    }
+    const st = getAssetStore();
+    if (st) {
+        st.setItem(STATE_ASSET_KEY, catalogState).catch(() => {});
+    }
+    rebuildCatalog();
+    notifyListeners();
+}
+
+export function subscribeCatalog(listener) {
+    LISTENERS.add(listener);
+    return () => LISTENERS.delete(listener);
+}
+
+export function getCatalogVersion() {
+    return catalogVersion;
+}
+
+export function groupName(groupKey) {
+    return GROUPS.find(g => g.key === groupKey)?.name || 'Khác';
+}
+
+export async function initCatalogStore() {
+    const st = getAssetStore();
+    if (!st) return;
+    try {
+        const storedState = await st.getItem(STATE_ASSET_KEY);
+        if (storedState && Number(storedState.updatedAt || 0) > Number(catalogState.updatedAt || 0)) {
+            catalogState = {
+                ...emptyState(),
+                ...storedState,
+                overrides: storedState.overrides || {},
+                customItems: Array.isArray(storedState.customItems) ? storedState.customItems : [],
+                deletedKeys: Array.isArray(storedState.deletedKeys) ? storedState.deletedKeys : [],
+            };
+            try {
+                if (typeof localStorage !== 'undefined' && typeof localStorage?.setItem === 'function') {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(catalogState));
+                }
+            } catch { /* ignore */ }
+            rebuildCatalog();
+        }
+        const keys = await st.keys();
+        await Promise.all(
+            keys.filter(k => String(k).startsWith(GLB_PREFIX)).map(async (k) => {
+                const itemKey = String(k).slice(GLB_PREFIX.length);
+                const val = await st.getItem(k);
+                if (typeof val === 'string' && val) GLB_MEM_CACHE.set(itemKey, val);
+            })
+        );
+        notifyListeners();
+    } catch (err) {
+        console.warn('initCatalogStore:', err);
+    }
+}
+
+export function getItemGlbSource(key) {
+    if (!key) return '';
+    return GLB_MEM_CACHE.get(key) || BY_KEY.get(key)?.glbUrl || '';
+}
+
+export function getBuiltinItem(key) {
+    return BUILTIN_BY_KEY.get(key) || null;
+}
+
+export function listAdminCatalogItems() {
+    return [...BY_KEY.values()];
+}
+
+function slugKey(name) {
+    const base = String(name || 'mau_moi')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'mau_moi';
+    let candidate = `custom_${base}`;
+    let idx = 2;
+    while (BY_KEY.has(candidate) || BUILTIN_BY_KEY.has(candidate)) {
+        candidate = `custom_${base}_${idx++}`;
+    }
+    return candidate;
+}
+
+/**
+ * Lưu chỉnh sửa mẫu gốc hoặc thêm/sửa mẫu tự tạo.
+ * opts: { glbDataUrl?: string, clearGlb?: boolean }
+ */
+export function saveCatalogItem(itemPatch, opts = {}) {
+    const requestedKey = String(itemPatch?.key || '').trim();
+    const builtin = requestedKey ? BUILTIN_BY_KEY.get(requestedKey) : null;
+    let finalKey = requestedKey;
+
+    if (builtin) {
+        const clean = sanitizePatch(itemPatch, builtin);
+        if (opts.clearGlb) {
+            clean.hasLocalGlb = false;
+            clean.glbFileName = '';
+            clean.glbUrl = '';
+        } else if (opts.glbDataUrl) {
+            clean.hasLocalGlb = true;
+        }
+        const nextOv = { ...(catalogState.overrides?.[finalKey] || {}), ...clean };
+        const deletedSet = new Set(catalogState.deletedKeys || []);
+        if (clean.hidden === false) deletedSet.delete(finalKey);
+        catalogState = {
+            ...catalogState,
+            overrides: { ...catalogState.overrides, [finalKey]: nextOv },
+            deletedKeys: [...deletedSet],
+        };
+    } else {
+        if (!finalKey) finalKey = slugKey(itemPatch?.name);
+        const existingIdx = (catalogState.customItems || []).findIndex(x => x.key === finalKey);
+        const existing = existingIdx >= 0 ? catalogState.customItems[existingIdx] : null;
+        const clean = sanitizePatch(itemPatch, existing);
+        if (opts.clearGlb) {
+            clean.hasLocalGlb = false;
+            clean.glbFileName = '';
+            clean.glbUrl = '';
+        } else if (opts.glbDataUrl) {
+            clean.hasLocalGlb = true;
+        }
+        const nextItem = {
+            key: finalKey,
+            name: 'Mẫu nội thất mới',
+            group: 'other',
+            w: 1000,
+            d: 600,
+            h: 800,
+            z: 0,
+            back: true,
+            mount: 'floor',
+            sym: 'cab',
+            ...(existing || {}),
+            ...clean,
+        };
+        const nextCustom = [...(catalogState.customItems || [])];
+        if (existingIdx >= 0) nextCustom[existingIdx] = nextItem;
+        else nextCustom.unshift(nextItem);
+        catalogState = {
+            ...catalogState,
+            customItems: nextCustom,
+            deletedKeys: (catalogState.deletedKeys || []).filter(k => k !== finalKey),
+        };
+    }
+
+    const st = getAssetStore();
+    if (opts.clearGlb) {
+        GLB_MEM_CACHE.delete(finalKey);
+        if (st) st.removeItem(`${GLB_PREFIX}${finalKey}`).catch(() => {});
+    } else if (opts.glbDataUrl) {
+        GLB_MEM_CACHE.set(finalKey, opts.glbDataUrl);
+        if (st) st.setItem(`${GLB_PREFIX}${finalKey}`, opts.glbDataUrl).catch(() => {});
+    }
+
+    persistState(true);
+    return catalogItem(finalKey);
+}
+
+export function resetCatalogItem(key) {
+    if (!key) return null;
+    const nextOv = { ...(catalogState.overrides || {}) };
+    delete nextOv[key];
+    catalogState = {
+        ...catalogState,
+        overrides: nextOv,
+        deletedKeys: (catalogState.deletedKeys || []).filter(k => k !== key),
+    };
+    GLB_MEM_CACHE.delete(key);
+    const st = getAssetStore();
+    if (st) st.removeItem(`${GLB_PREFIX}${key}`).catch(() => {});
+    persistState(true);
+    return catalogItem(key);
+}
+
+export function deleteCatalogItem(key) {
+    if (!key) return;
+    if (BUILTIN_BY_KEY.has(key)) {
+        const nextOv = {
+            ...(catalogState.overrides || {}),
+            [key]: { ...(catalogState.overrides?.[key] || {}), hidden: true },
+        };
+        catalogState = { ...catalogState, overrides: nextOv };
+    } else {
+        catalogState = {
+            ...catalogState,
+            customItems: (catalogState.customItems || []).filter(x => x.key !== key),
+        };
+        GLB_MEM_CACHE.delete(key);
+        const st = getAssetStore();
+        if (st) st.removeItem(`${GLB_PREFIX}${key}`).catch(() => {});
+    }
+    persistState(true);
+}
+
+export function resetAllCatalog() {
+    catalogState = emptyState();
+    const keys = [...GLB_MEM_CACHE.keys()];
+    GLB_MEM_CACHE.clear();
+    const st = getAssetStore();
+    if (st) {
+        for (const k of keys) st.removeItem(`${GLB_PREFIX}${k}`).catch(() => {});
+    }
+    persistState(true);
+}
+
+export function getCatalogSyncPayload() {
+    return {
+        version: 1,
+        updatedAt: catalogState.updatedAt || Date.now(),
+        overrides: catalogState.overrides || {},
+        customItems: catalogState.customItems || [],
+        deletedKeys: catalogState.deletedKeys || [],
+    };
+}
+
+export function applyCatalogSyncPayload(payload, { force = false } = {}) {
+    if (!payload || typeof payload !== 'object') return false;
+    const remoteTs = Number(payload.updatedAt) || 0;
+    const localTs = Number(catalogState.updatedAt) || 0;
+    if (!force && remoteTs <= localTs) return false;
+    catalogState = {
+        version: 1,
+        updatedAt: remoteTs || Date.now(),
+        overrides: payload.overrides && typeof payload.overrides === 'object' ? payload.overrides : {},
+        customItems: Array.isArray(payload.customItems) ? payload.customItems : [],
+        deletedKeys: Array.isArray(payload.deletedKeys) ? payload.deletedKeys : [],
+    };
+    if (payload.glbAssets && typeof payload.glbAssets === 'object') {
+        const st = getAssetStore();
+        for (const [k, v] of Object.entries(payload.glbAssets)) {
+            if (typeof v === 'string' && v) {
+                GLB_MEM_CACHE.set(k, v);
+                if (st) st.setItem(`${GLB_PREFIX}${k}`, v).catch(() => {});
+            }
+        }
+    }
+    persistState(false);
+    return true;
+}
+
+export function exportCatalogSnapshot({ includeGlb = false } = {}) {
+    const snap = {
+        app: 'MKG_CATALOG',
+        exportedAt: new Date().toISOString(),
+        ...getCatalogSyncPayload(),
+    };
+    if (includeGlb && GLB_MEM_CACHE.size > 0) {
+        snap.glbAssets = Object.fromEntries(GLB_MEM_CACHE.entries());
+    }
+    return JSON.stringify(snap, null, 2);
+}
+
+export function importCatalogSnapshot(jsonStringOrObj) {
+    const obj = typeof jsonStringOrObj === 'string'
+        ? JSON.parse(jsonStringOrObj)
+        : jsonStringOrObj;
+    if (!obj || typeof obj !== 'object') {
+        throw new Error('File cấu hình thư viện không hợp lệ');
+    }
+    if (!obj.overrides && !obj.customItems) {
+        throw new Error('Thiếu dữ liệu overrides / customItems');
+    }
+    applyCatalogSyncPayload({ ...obj, updatedAt: Date.now() }, { force: true });
+    return listAdminCatalogItems().length;
+}
+
+export function catalogItem(key) {
+    return BY_KEY.get(key) || null;
+}
 
 /** Kích thước hiệu dụng: settings.furnitureDefaults[key] ghi đè catalog. */
 export function defaultSize(key, settings) {

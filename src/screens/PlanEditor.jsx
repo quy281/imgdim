@@ -4,7 +4,7 @@ import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
     ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
-    MapPin, Box, Move,
+    MapPin, Box, Move, Boxes, FileSpreadsheet,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -13,7 +13,7 @@ import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
 import ColumnPreview from '../plan/ColumnPreview';
 import ElevationView from '../plan/ElevationView';
-import { GROUPS, FURNITURE, catalogItem, defaultSize } from '../lib/furnitureCatalog';
+import { GROUPS, FURNITURE, catalogItem, defaultSize, subscribeCatalog } from '../lib/furnitureCatalog';
 import {
     snapFurnitureSmart, resizeFurnitureEdge, resizeFurnitureEdgeByValue,
 } from '../lib/magnetSnap';
@@ -42,6 +42,7 @@ import { stageToDataURL, downloadDataURL, downloadText, shareDataURL, stamp } fr
 import { formatLocation, getCurrentLocation, hasLocation, openLocationMap } from '../lib/location';
 
 const Room3DView = lazy(() => import('../plan/Room3DView'));
+const PlanLayoutModal = lazy(() => import('../plan/PlanLayoutModal'));
 
 const MODES = [
     { id: 'draw', icon: BrickWall, label: 'Tường' },
@@ -53,9 +54,12 @@ const MODES = [
     { id: 'note', icon: MessageSquareText, label: 'Ghi chú' },
 ];
 
-export default function PlanEditor({ doc, onChange, onBack }) {
+export default function PlanEditor({ doc, projectName = '', onChange, onBack, onOpenCatalogAdmin }) {
     const docRef = useRef(doc);
     useEffect(() => { docRef.current = doc; }, [doc]);
+    const [, setCatTick] = useState(0);
+    useEffect(() => subscribeCatalog(() => setCatTick(t => t + 1)), []);
+    const [showLayoutModal, setShowLayoutModal] = useState(false);
 
     const [mode, setModeRaw] = useState(doc.plan.walls.length ? 'select' : 'draw');
     const [chain, setChain] = useState(null);
@@ -876,6 +880,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="icon-btn" style={{ color: 'var(--red-dark)' }} onClick={() => setShowExport(true)}><Share2 size={20} /></button>
             </div>
 
+            {/* Layout Xuất Bản Vẽ KT */}
+            {showLayoutModal && (
+                <Suspense fallback={<div className="loading-screen"><div className="loading-spinner" /><div>Đang mở xuất Layout…</div></div>}>
+                    <PlanLayoutModal doc={doc} projectName={projectName} onClose={() => setShowLayoutModal(false)} />
+                </Suspense>
+            )}
+
             {/* Mặt đứng — overlay trong chính màn hình này */}
             {elev && (
                 <ElevationView
@@ -909,9 +920,14 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <span>{bannerText()}</span>
                 <span className="spacer" />
                 {mode === 'select' && has3DContent && (
-                    <button className="banner-btn solid-emerald" onClick={() => setRoom3dTarget('all')}>
-                        <Box size={14} /> 3D Phòng
-                    </button>
+                    <>
+                        <button className="banner-btn" onClick={() => setShowLayoutModal(true)}>
+                            <FileSpreadsheet size={14} /> Layout KT
+                        </button>
+                        <button className="banner-btn solid-emerald" onClick={() => setRoom3dTarget('all')}>
+                            <Box size={14} /> 3D Phòng
+                        </button>
+                    </>
                 )}
                 {mode === 'draw' && (
                     <button className="banner-btn" onClick={openTemplatePicker}>▦ Template</button>
@@ -957,6 +973,7 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                                 editItemId={mode === 'select' ? furnEditId : null}
                                 snapGuides={snapGuides}
                                 listening={mode === 'select'}
+                                showDims={settings.showFurnDims !== false}
                                 onSelect={(id) => {
                                     setSel({ kind: 'furniture', id });
                                     setOpeningSheet(null);
@@ -1244,6 +1261,13 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                     <Settings2 size={18} style={{ color: 'var(--ink-2)' }} />
                     <div style={{ flex: 1 }}>Sửa kích thước mặc định<div className="sub">Áp dụng cho món thêm sau</div></div>
                 </button>
+                {onOpenCatalogAdmin && (
+                    <button className="sheet-row"
+                        onClick={() => { setShowFurnPicker(false); onOpenCatalogAdmin(); }}>
+                        <Boxes size={18} style={{ color: 'var(--violet)' }} />
+                        <div style={{ flex: 1 }}>Mở Backend sửa thư viện 2D &amp; 3D<div className="sub">Sửa ký hiệu SVG 2D, màu, chất liệu &amp; file 3D GLB</div></div>
+                    </button>
+                )}
             </Sheet>
 
             {/* Furniture default sizes */}
@@ -1333,6 +1357,15 @@ export default function PlanEditor({ doc, onChange, onBack }) {
             {/* Export */}
             <Sheet open={showExport} onClose={() => setShowExport(false)} title="Xuất mặt bằng & Phối cảnh">
                 {has3DContent && (
+                    <button className="sheet-row" onClick={() => { setShowExport(false); setShowLayoutModal(true); }}>
+                        <FileSpreadsheet size={19} style={{ color: 'var(--red)' }} />
+                        <div style={{ flex: 1 }}>
+                            Xuất Layout Mặt Bằng + Kích Thước (A3/A4/PDF)
+                            <div className="sub">Kèm kích thước phủ bì, tường, nội thất, bảng thống kê &amp; góc 3D</div>
+                        </div>
+                    </button>
+                )}
+                {has3DContent && (
                     <button className="sheet-row" onClick={() => { setShowExport(false); setRoom3dTarget('all'); }}>
                         <Box size={19} style={{ color: 'var(--ok)' }} />
                         <div style={{ flex: 1 }}>
@@ -1384,6 +1417,10 @@ export default function PlanEditor({ doc, onChange, onBack }) {
                 <button className="sheet-row" onClick={() => onChange({ ...docRef.current, settings: { ...settings, gridSnap: settings.gridSnap === false } })}>
                     <div style={{ flex: 1 }}>Bắt lưới 100mm<div className="sub">Điểm vẽ dính vào lưới</div></div>
                     <div className={`sync-chip ${settings.gridSnap !== false ? 'on' : 'off'}`}>{settings.gridSnap !== false ? 'BẬT' : 'TẮT'}</div>
+                </button>
+                <button className="sheet-row" onClick={() => onChange({ ...docRef.current, settings: { ...settings, showFurnDims: settings.showFurnDims === false } })}>
+                    <div style={{ flex: 1 }}>Hiện kích thước nội thất (R×S)<div className="sub">Ghi kích thước trực tiếp trên món đồ 2D</div></div>
+                    <div className={`sync-chip ${settings.showFurnDims !== false ? 'on' : 'off'}`}>{settings.showFurnDims !== false ? 'BẬT' : 'TẮT'}</div>
                 </button>
 
                 <div style={{ padding: '12px 0 4px', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Bề rộng cửa mặc định</div>

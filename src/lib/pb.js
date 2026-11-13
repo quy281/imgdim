@@ -25,6 +25,7 @@ const CUSTOMER_PROFILES = 'customer_profiles';
 const CUSTOMER_SUBMISSIONS = 'customer_submissions';
 const SIGNUP_REQUESTS = 'signup_requests';
 const EXPERIENCE_POSTS = 'experience_posts';
+const FURNITURE_CATALOG = 'furniture_catalog';
 // Bảng dấu xoá. Bản ghi khảo sát bị XOÁ THẬT khỏi survey_items (kèm ảnh); ở đây chỉ còn
 // item_id + thời điểm. Không có dấu này thì máy đang offline lúc xoá sẽ đẩy bản cũ lên
 // lại ở lần sync sau — xoá rồi tự sống lại.
@@ -2738,4 +2739,91 @@ export async function provisionUsers(onProgress) {
 
     await refreshTeam().catch(() => {});
     return { team: { id: team.id, name: team.name }, users: out };
+}
+
+// ===== Thư viện 2D & 3D dùng chung (Backend Catalog Admin) =====
+
+/**
+ * Tải cấu hình thư viện 2D & 3D tùy biến từ PocketBase (nếu collection tồn tại).
+ * Trả về `null` nếu offline, chưa đăng nhập hoặc chưa tạo collection trên server.
+ */
+export async function fetchCloudCatalog() {
+    if (!isLoggedIn()) return null;
+    try {
+        const res = await api(
+            `collections/${FURNITURE_CATALOG}/records?${q({
+                filter: "catalog_key='global'",
+                perPage: 1,
+            })}`
+        );
+        const rec = res?.items?.[0];
+        if (!rec) return null;
+        return typeof rec.payload === 'string' ? JSON.parse(rec.payload) : (rec.payload || null);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Đẩy snapshot thư viện 2D & 3D lên PocketBase.
+ * Nếu đang đăng nhập quyền superuser và collection chưa tồn tại, tự tạo collection.
+ */
+export async function pushCloudCatalog(payload) {
+    if (!isLoggedIn()) return { ok: false, reason: 'Chưa đăng nhập PocketBase' };
+    try {
+        let existing = null;
+        try {
+            const res = await api(
+                `collections/${FURNITURE_CATALOG}/records?${q({
+                    filter: "catalog_key='global'",
+                    perPage: 1,
+                })}`
+            );
+            existing = res?.items?.[0] || null;
+        } catch (err) {
+            if (err?.status === 404 && isSuperuser()) {
+                await createCollection({
+                    name: FURNITURE_CATALOG,
+                    type: 'base',
+                    fields: [
+                        F.id(),
+                        F.text('catalog_key', 64, true),
+                        { name: 'payload', type: 'json', maxSize: 20_000_000 },
+                        F.num('updated_ms'),
+                        F.text('updated_by', 160),
+                    ],
+                    indexes: [
+                        `CREATE UNIQUE INDEX \`idx_furniture_catalog_key\` ON \`${FURNITURE_CATALOG}\` (\`catalog_key\`)`,
+                    ],
+                    listRule: '@request.auth.id != ""',
+                    viewRule: '@request.auth.id != ""',
+                    createRule: IS_ADMIN,
+                    updateRule: IS_ADMIN,
+                    deleteRule: IS_ADMIN,
+                });
+            } else {
+                throw err;
+            }
+        }
+        const body = {
+            catalog_key: 'global',
+            payload,
+            updated_ms: payload?.updatedAt || now(),
+            updated_by: ownerName() || ownerId() || '',
+        };
+        if (existing?.id) {
+            await api(`collections/${FURNITURE_CATALOG}/records/${existing.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify(body),
+            });
+        } else {
+            await api(`collections/${FURNITURE_CATALOG}/records`, {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+        }
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, reason: sdkMsg(err) };
+    }
 }

@@ -7,6 +7,7 @@ import {
 } from './geometry';
 import { catalogItem, resolveZ } from './furnitureCatalog';
 import { projectItemDetailOnWall } from './projectionEngine';
+import { parseSvgSymbol, svgToNormalizedPolylines } from './svgSymbol';
 
 const LAYERS = [
     { name: 'WALL', color: 7 },
@@ -17,6 +18,7 @@ const LAYERS = [
     { name: 'WINDOW', color: 5 },
     { name: 'FURNITURE', color: 8 },
     { name: 'FURN-DETAIL', color: 9 },
+    { name: 'FURN-DIM', color: 6 },
     { name: 'ELEV', color: 7 },
     { name: 'ELEV-DOOR', color: 1 },
     { name: 'ELEV-WINDOW', color: 5 },
@@ -325,9 +327,38 @@ export function generateDxf(doc) {
         const cos = Math.cos(th), sin = Math.sin(th);
         const pt = (lx, ly) => ({ x: f.x + lx * cos - ly * sin, y: f.y + lx * sin + ly * cos });
         const hw = w / 2, hd = d / 2;
-        emitFurniture2DCad(cat?.sym, w, d, pt, closedPolyline, line, circle);
+
+        const parsedSvg = cat?.svg2d ? parseSvgSymbol(cat.svg2d) : null;
+        if (parsedSvg) {
+            closedPolyline('FURNITURE', [pt(-hw, -hd), pt(hw, -hd), pt(hw, hd), pt(-hw, hd)]);
+            const polies = svgToNormalizedPolylines(parsedSvg);
+            for (const poly of polies) {
+                const worldPts = poly.points.map(p => pt(p.x * w, p.y * d));
+                if (worldPts.length < 2) continue;
+                if (poly.closed) {
+                    closedPolyline('FURN-DETAIL', worldPts);
+                } else {
+                    for (let i = 0; i < worldPts.length - 1; i++) {
+                        line('FURN-DETAIL', worldPts[i], worldPts[i + 1]);
+                    }
+                }
+            }
+        } else {
+            emitFurniture2DCad(cat?.sym, w, d, pt, closedPolyline, line, circle);
+        }
+
         if (cat?.back) line('FURNITURE', pt(-hw, -hd), pt(hw, -hd));
         if (cat?.name) text('FURNITURE', { x: f.x - hw * 0.7, y: f.y }, 105, asciiFold(cat.name));
+
+        // Kích thước nội thất trên layer FURN-DIM
+        const dimY = hd + 90;
+        const tk = 35;
+        line('FURN-DIM', pt(-hw, hd + 18), pt(-hw, dimY + tk));
+        line('FURN-DIM', pt(hw, hd + 18), pt(hw, dimY + tk));
+        line('FURN-DIM', pt(-hw, dimY), pt(hw, dimY));
+        line('FURN-DIM', pt(-hw - tk * 0.6, dimY + tk * 0.6), pt(-hw + tk * 0.6, dimY - tk * 0.6));
+        line('FURN-DIM', pt(hw - tk * 0.6, dimY + tk * 0.6), pt(hw + tk * 0.6, dimY - tk * 0.6));
+        text('FURN-DIM', pt(-hw * 0.35, dimY + 35), 85, `${Math.round(w)}x${Math.round(d)}`);
     }
 
     // ===== Khai triển tường (mặt đứng) =====

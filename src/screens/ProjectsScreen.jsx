@@ -3,7 +3,7 @@ import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
     Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
-    UserPlus, Store, PackageOpen, Grid2X2, List, Images, PencilRuler,
+    UserPlus, Store, PackageOpen, Grid2X2, List, Images, PencilRuler, Boxes,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -26,7 +26,7 @@ export default function ProjectsScreen({
     projects, projectStats = {}, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
-    onLogin, onLogout, onOpenExperience, onOpenBoardInventory, onOpenBoardMarket, boardMarketCount = 0,
+    onLogin, onLogout, onOpenExperience, onOpenBoardInventory, onOpenBoardMarket, onOpenCatalogAdmin, boardMarketCount = 0,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
@@ -148,6 +148,9 @@ export default function ProjectsScreen({
                     <button className="module-tab" onClick={onOpenBoardMarket}>
                         <Store size={15} /> Sàn trao đổi ván dư
                         {!!boardMarketCount && <b>{boardMarketCount}</b>}
+                    </button>
+                    <button className="module-tab" onClick={onOpenCatalogAdmin}>
+                        <Boxes size={15} /> Thư viện 2D/3D
                     </button>
                 </div>
 
@@ -419,6 +422,13 @@ export default function ProjectsScreen({
                                 </div>
                             </button>
                         )}
+                        <button className="sheet-row" onClick={() => { setShowSettings(false); onOpenCatalogAdmin?.(); }}>
+                            <Boxes size={19} style={{ color: 'var(--violet)' }} />
+                            <div style={{ flex: 1 }}>
+                                Quản trị thư viện 2D &amp; 3D (Backend)
+                                <div className="sub">Sửa ký hiệu 2D/SVG, kích thước mặc định, chất liệu 3D &amp; file .glb</div>
+                            </div>
+                        </button>
                         {pinForm && (
                             <div style={{ padding: '4px 0 12px' }}>
                                 <div className="field">

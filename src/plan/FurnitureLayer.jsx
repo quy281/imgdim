@@ -1,8 +1,9 @@
 import React from 'react';
-import { Group, Rect, Line, Circle, Ellipse, Arc, Label, Tag, Text } from 'react-konva';
+import { Group, Rect, Line, Circle, Ellipse, Arc, Path, Label, Tag, Text } from 'react-konva';
 import { catalogItem } from '../lib/furnitureCatalog';
 import { furnitureBasis } from '../lib/magnetSnap';
 import { isParametricCabinet, resolveParametricConfig } from '../lib/parametricModel';
+import { parseSvgSymbol } from '../lib/svgSymbol';
 
 const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
 const FILL = 'rgba(241,245,249,0.72)';
@@ -27,10 +28,11 @@ function layerOrder(item) {
 }
 
 /** Màu nền tinh tế theo chủng loại để bản vẽ mặt bằng nội thất có chiều sâu chuyên nghiệp */
-function itemFill(cat, isSelected, isEditing) {
+export function itemFill(cat, isSelected, isEditing) {
     if (isEditing) return FILL_EDIT;
     if (isSelected) return FILL_SEL;
     if (!cat) return FILL;
+    if (cat.fill2d) return cat.fill2d;
     if (cat.sym === 'rug') return 'rgba(254,249,195,0.28)';
     if (cat.group === 'wc' || cat.sym === 'sink' || cat.sym === 'sink2') return FILL_WATER;
     if (['wardrobe', 'wardrobe_slide', 'cab', 'dresser', 'desk', 'nightstand', 'tvstand', 'table', 'altar', 'shoe_bench'].includes(cat.sym)) {
@@ -41,10 +43,62 @@ function itemFill(cat, isSelected, isEditing) {
 }
 
 /**
+ * Vẽ ký hiệu SVG tùy biến (nếu món đồ được admin gắn svg2d) theo kích thước w × d.
+ */
+export function CustomSvg2D({ svgText, w, d, sw, color }) {
+    const parsed = React.useMemo(() => parseSvgSymbol(svgText), [svgText]);
+    if (!parsed) return null;
+    const [vx, vy, vw, vh] = parsed.viewBox;
+    const sx = w / (vw || 1);
+    const sy = d / (vh || 1);
+    const strokeScale = Math.max(1e-4, Math.max(sx, sy));
+    const adjSw = sw / strokeScale;
+
+    return (
+        <Group x={-w / 2 - vx * sx} y={-d / 2 - vy * sy} scaleX={sx} scaleY={sy} listening={false}>
+            {parsed.elements.map((el, idx) => {
+                const hasFill = el.fill && el.fill !== 'none' && el.fill !== 'transparent';
+                const stroke = el.stroke && el.stroke !== 'none' ? (el.stroke === 'currentColor' ? color : el.stroke) : color;
+                const fill = hasFill ? (el.fill === 'currentColor' ? color : el.fill) : undefined;
+                const common = {
+                    fill,
+                    stroke,
+                    strokeWidth: el.stroke === 'none' ? 0 : (el.strokeWidth ? el.strokeWidth : adjSw),
+                    listening: false,
+                };
+                if (el.type === 'rect') {
+                    return <Rect key={idx} x={el.x} y={el.y} width={el.width} height={el.height} cornerRadius={el.rx || 0} {...common} />;
+                }
+                if (el.type === 'circle') {
+                    return <Circle key={idx} x={el.cx} y={el.cy} radius={el.r} {...common} />;
+                }
+                if (el.type === 'ellipse') {
+                    return <Ellipse key={idx} x={el.cx} y={el.cy} radiusX={el.rx} radiusY={el.ry} {...common} />;
+                }
+                if (el.type === 'line') {
+                    return <Line key={idx} points={[el.x1, el.y1, el.x2, el.y2]} stroke={stroke} strokeWidth={el.strokeWidth || adjSw} listening={false} />;
+                }
+                if (el.type === 'polyline' || el.type === 'polygon') {
+                    const flatPts = Array.isArray(el.points) ? el.points.flatMap(p => [p.x, p.y]) : [];
+                    return <Line key={idx} points={flatPts} closed={el.type === 'polygon'} {...common} />;
+                }
+                if (el.type === 'path' && el.d) {
+                    return <Path key={idx} data={el.d} {...common} />;
+                }
+                return null;
+            })}
+        </Group>
+    );
+}
+
+/**
  * Thư viện ký hiệu CAD 2D kiến trúc nội thất chuyên nghiệp.
  * Hệ tọa độ local: tâm (0,0), lưng áp tường ở y = -d/2, mặt trước hướng vào phòng y = +d/2.
  */
-function Symbol2D({ sym, w, d, sw, color, subColor, item, cat }) {
+export function Symbol2D({ sym, w, d, sw, color, subColor, item, cat }) {
+    if (cat?.svg2d) {
+        return <CustomSvg2D svgText={cat.svg2d} w={w} d={d} sw={sw} color={color} />;
+    }
     const hw = w / 2, hd = d / 2;
     const st = { stroke: color, strokeWidth: sw, listening: false };
     const stThin = { stroke: subColor, strokeWidth: sw * 0.78, listening: false };
@@ -631,14 +685,15 @@ function Symbol2D({ sym, w, d, sw, color, subColor, item, cat }) {
 /**
  * 1 món nội thất trên mặt bằng.
  */
-const FurnitureItem = ({ item, scale, isSelected, isEditing, onSelect, onChange, onRotate }) => {
+const FurnitureItem = ({ item, scale, isSelected, isEditing, showDims = true, onSelect, onChange, onRotate }) => {
     const inv = 1 / scale;
     const cat = catalogItem(item.kind);
     const w = item.w || cat?.w || 600;
     const d = item.d || cat?.d || 600;
     const sw = 1.15 * inv;
-    const color = isEditing ? LINE_EDIT : isSelected ? LINE_SEL : LINE;
-    const subColor = isEditing ? '#10b981' : isSelected ? '#60a5fa' : LINE_SUB;
+    const baseColor = cat?.color2d || LINE;
+    const color = isEditing ? LINE_EDIT : isSelected ? LINE_SEL : baseColor;
+    const subColor = isEditing ? '#10b981' : isSelected ? '#60a5fa' : (cat?.color2d ? baseColor : LINE_SUB);
     const lastTap = React.useRef(0);
 
     const tap = (e) => {
@@ -655,6 +710,13 @@ const FurnitureItem = ({ item, scale, isSelected, isEditing, onSelect, onChange,
 
     const isSofaL = cat?.sym === 'sofaL';
     const isTable = cat?.sym === 'table';
+    const pxW = w * scale;
+    const pxD = d * scale;
+    const labelW = Math.max(w * 0.94, 40);
+    const fsName = Math.max(7.5 * inv, Math.min(10.5 * inv, Math.min(w, d) * 0.22));
+    const fsDim = Math.max(6.8 * inv, Math.min(9 * inv, fsName * 0.85));
+    const showName = !!(cat && pxW > 26 && pxD > 16);
+    const showDimText = !!(showDims && pxW > 42 && pxD > 26);
 
     return (
         <Group
@@ -681,15 +743,49 @@ const FurnitureItem = ({ item, scale, isSelected, isEditing, onSelect, onChange,
                     stroke={color} strokeWidth={sw * 2.8} listening={false} />
             )}
             <Symbol2D sym={cat?.sym} w={w} d={d} sw={sw} color={color} subColor={subColor} item={item} cat={cat} />
-            {cat && w * scale > 28 && d * scale > 16 && (
+            {(showName || showDimText) && (
+                <Group x={0} y={0} rotation={-(item.rot || 0)} listening={false}>
+                    {showName && (
+                        <Text
+                            text={cat.name}
+                            x={-labelW / 2}
+                            y={showDimText ? -fsName - 1.5 * inv : -fsName * 0.55}
+                            width={labelW}
+                            align="center"
+                            fontSize={fsName}
+                            fontFamily={FONT}
+                            fontStyle="600"
+                            fill={isEditing ? '#065f46' : isSelected ? '#1e40af' : '#334155'}
+                            listening={false}
+                        />
+                    )}
+                    {showDimText && (
+                        <Text
+                            text={`${Math.round(w)}×${Math.round(d)}`}
+                            x={-labelW / 2}
+                            y={showName ? 1.5 * inv : -fsDim * 0.55}
+                            width={labelW}
+                            align="center"
+                            fontSize={fsDim}
+                            fontFamily={FONT}
+                            fontStyle="500"
+                            fill={isEditing ? '#047857' : isSelected ? '#2563eb' : '#64748b'}
+                            listening={false}
+                        />
+                    )}
+                </Group>
+            )}
+            {(isSelected || isEditing) && pxW > 36 && (
                 <Text
-                    text={cat.name}
-                    x={-w / 2} y={-5.5 * inv}
-                    width={w} align="center"
-                    rotation={-(item.rot || 0)}
-                    fontSize={Math.min(10.5 * inv, Math.max(d, w) * 0.24)}
-                    fontFamily={FONT} fontStyle="600"
-                    fill={isEditing ? '#065f46' : isSelected ? '#1e40af' : '#334155'}
+                    text={`R ${Math.round(w)}`}
+                    x={-w / 2}
+                    y={d / 2 + 4 * inv}
+                    width={w}
+                    align="center"
+                    fontSize={9 * inv}
+                    fontFamily={FONT}
+                    fontStyle="700"
+                    fill={isEditing ? '#059669' : '#2563eb'}
                     listening={false}
                 />
             )}
@@ -853,7 +949,7 @@ function SnapGuidesOverlay({ guides, scale }) {
 }
 
 const FurnitureLayer = ({
-    items, scale, sel, editItemId, snapGuides, listening,
+    items, scale, sel, editItemId, snapGuides, listening, showDims = true,
     onSelect, onChange, onRotate, onScaleEdge, onTapEdge,
 }) => {
     const sorted = React.useMemo(
@@ -871,6 +967,7 @@ const FurnitureLayer = ({
                     scale={scale}
                     isSelected={sel?.kind === 'furniture' && sel.id === it.id}
                     isEditing={editItemId === it.id}
+                    showDims={showDims}
                     onSelect={onSelect}
                     onChange={onChange}
                     onRotate={onRotate}

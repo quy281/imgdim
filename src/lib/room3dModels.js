@@ -5,12 +5,35 @@
 //   +Z = hướng từ lưng (-d/2) ra mặt trước (+d/2) vào trong phòng.
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { getItemGlbSource } from './furnitureCatalog';
 
 const EDGE_MAT = new THREE.LineBasicMaterial({
     color: 0x334155,
     transparent: true,
     opacity: 0.45,
 });
+
+const HEX_MAT_CACHE = new Map();
+const GLTF_TEMPLATE_CACHE = new Map();
+const gltfLoader = typeof window !== 'undefined' ? new GLTFLoader() : null;
+
+export function resolveMat(spec, fallback) {
+    if (!spec) return fallback;
+    if (MATS[spec]) return MATS[spec];
+    if (typeof spec === 'string' && /^#[0-9a-f]{3,8}$/i.test(spec.trim())) {
+        const key = spec.trim().toLowerCase();
+        if (!HEX_MAT_CACHE.has(key)) {
+            HEX_MAT_CACHE.set(key, new THREE.MeshStandardMaterial({
+                color: new THREE.Color(key),
+                roughness: 0.62,
+                metalness: 0.06,
+            }));
+        }
+        return HEX_MAT_CACHE.get(key);
+    }
+    return fallback;
+}
 
 export const MATS = {
     oak: new THREE.MeshStandardMaterial({ color: 0xc99a6b, roughness: 0.72, metalness: 0.04 }),
@@ -86,16 +109,116 @@ function addDiningChair(parent, cx, cz, rotY, seatW = 420, seatD = 420, seatH = 
     parent.add(g);
 }
 
+const PRIMARY_MATS = new Set([
+    MATS.oak, MATS.whiteMatte, MATS.fabricSlate, MATS.fabricWarm,
+    MATS.fabricBlue, MATS.redwood, MATS.stone, MATS.ceramic, MATS.rug,
+]);
+const SECONDARY_MATS = new Set([
+    MATS.oakDark, MATS.cream, MATS.duvet, MATS.rugBorder, MATS.graphite,
+]);
+const ACCENT_MATS = new Set([
+    MATS.steel, MATS.brass, MATS.pillow, MATS.mirror, MATS.darkGlass,
+]);
+
+function applyMaterialOverrides(group, cat) {
+    if (!cat?.matPrimary && !cat?.matSecondary && !cat?.matAccent) return;
+    group.traverse((obj) => {
+        if (!obj.isMesh) return;
+        const m = obj.material;
+        if (cat.matPrimary && PRIMARY_MATS.has(m)) {
+            obj.material = resolveMat(cat.matPrimary, m);
+        } else if (cat.matSecondary && SECONDARY_MATS.has(m)) {
+            obj.material = resolveMat(cat.matSecondary, m);
+        } else if (cat.matAccent && ACCENT_MATS.has(m)) {
+            obj.material = resolveMat(cat.matAccent, m);
+        }
+    });
+}
+
+function fitGltfCloneToBounds(template, w, h, d, cat) {
+    const clone = template.clone(true);
+    const box = new THREE.Box3().setFromObject(clone);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+
+    const sx = size.x > 1e-4 ? w / size.x : 1;
+    const sy = size.y > 1e-4 ? h / size.y : 1;
+    const sz = size.z > 1e-4 ? d / size.z : 1;
+
+    const wrapper = new THREE.Group();
+    clone.scale.set(sx, sy, sz);
+    clone.position.set(-center.x * sx, -box.min.y * sy, -center.z * sz);
+    clone.traverse((obj) => {
+        if (obj.isMesh) {
+            obj.castShadow = true;
+            obj.receiveShadow = true;
+            if (cat?.matPrimary && obj.material && !obj.material.transparent) {
+                // Giữ texture gốc nếu model có map; chỉ nhuộm nếu không có texture map
+                if (!obj.material.map) {
+                    const mat = resolveMat(cat.matPrimary, null);
+                    if (mat) obj.material = mat;
+                }
+            }
+        }
+    });
+    wrapper.add(clone);
+    return wrapper;
+}
+
+function loadGltfTemplate(src) {
+    if (GLTF_TEMPLATE_CACHE.has(src)) return GLTF_TEMPLATE_CACHE.get(src);
+    if (!gltfLoader) return Promise.reject(new Error('GLTFLoader unavailable'));
+    const p = new Promise((resolve, reject) => {
+        gltfLoader.load(
+            src,
+            (gltf) => resolve(gltf.scene || gltf.scenes?.[0]),
+            undefined,
+            (err) => {
+                GLTF_TEMPLATE_CACHE.delete(src);
+                reject(err);
+            }
+        );
+    });
+    GLTF_TEMPLATE_CACHE.set(src, p);
+    return p;
+}
+
 /**
  * Xây dựng `THREE.Group` cho 1 món nội thất theo kích thước thực tế `(w, d, h)` và chiều cao trần `roomH`.
+ * Hỗ trợ override chất liệu (`matPrimary`/`matSecondary`/`matAccent`), `sym3d` và file `.glb`/`.gltf` tùy biến.
  */
-export function buildFurniture3D(item, cat, roomH = 3200) {
+export function buildFurniture3D(item, cat, roomH = 3200, opts = {}) {
     const g = new THREE.Group();
     const w = Math.max(60, item.w || cat?.w || 600);
     const d = Math.max(30, item.d || cat?.d || 600);
     const h = Math.max(12, item.h ?? cat?.h ?? 800);
     const hw = w / 2, hd = d / 2;
-    const sym = cat?.sym || 'box';
+
+    const glbSrc = cat?.glbUrl || cat?.glbData || (item?.kind ? getItemGlbSource(item.kind) : null);
+    if (glbSrc && gltfLoader) {
+        const placeholder = new THREE.Mesh(
+            new THREE.BoxGeometry(w, h, d),
+            new THREE.MeshBasicMaterial({ color: 0x94a3b8, wireframe: true, transparent: true, opacity: 0.35 })
+        );
+        placeholder.position.set(0, h / 2, 0);
+        g.add(placeholder);
+
+        loadGltfTemplate(glbSrc).then((scene) => {
+            if (!scene) return;
+            g.remove(placeholder);
+            placeholder.geometry.dispose();
+            placeholder.material.dispose();
+            g.add(fitGltfCloneToBounds(scene, w, h, d, cat));
+            opts?.onLoaded?.();
+        }).catch(() => {
+            // Giữ khung chờ hoặc fallback nếu URL hỏng
+        });
+        return g;
+    }
+
+    const sym = cat?.sym3d || cat?.sym || 'box';
 
     switch (sym) {
         case 'bed': {
@@ -628,11 +751,40 @@ export function buildFurniture3D(item, cat, roomH = 3200) {
             break;
         }
 
+        case 'shelf_open': {
+            const sideT = 20;
+            const shelves = Math.max(3, Math.round(h / 380));
+            addBox(g, sideT, h, d, MATS.oak, -hw + sideT / 2, h / 2, 0);
+            addBox(g, sideT, h, d, MATS.oak, hw - sideT / 2, h / 2, 0);
+            addBox(g, w - sideT * 2, h - 20, 12, MATS.cream, 0, h / 2, -hd + 6);
+            for (let i = 0; i < shelves; i++) {
+                const sy = (h - 20) * (i / Math.max(1, shelves - 1)) + 10;
+                addBox(g, w - sideT * 2, 18, d - 14, MATS.oak, 0, sy, 2);
+            }
+            break;
+        }
+
+        case 'cabinet_glass': {
+            const sideT = 18;
+            addBox(g, w, h, d - 22, MATS.oakDark, 0, h / 2, -11);
+            const cols = Math.max(1, Math.min(4, Math.round(w / 450)));
+            const colW = (w - sideT * 2) / cols;
+            for (let i = 0; i < cols; i++) {
+                const cx = -hw + sideT + colW * (i + 0.5);
+                addBox(g, colW - 8, h - 40, 14, MATS.clearGlass, cx, h / 2, hd - 10);
+                addBox(g, 8, h - 40, 18, MATS.oakDark, cx - colW / 2 + 4, h / 2, hd - 9);
+                addBox(g, 8, h - 40, 18, MATS.oakDark, cx + colW / 2 - 4, h / 2, hd - 9);
+            }
+            break;
+        }
+
+        case 'box':
         default: {
             addBox(g, w, h, d, MATS.whiteMatte, 0, h / 2, 0);
             break;
         }
     }
 
+    applyMaterialOverrides(g, cat);
     return g;
 }

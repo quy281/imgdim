@@ -1,0 +1,182 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>2D/3D catalog backend & dimensioned layout export selftest</title>
+<pre id="out">running…</pre>
+<script type="module">
+import { parseSvgSymbol, svgToNormalizedPolylines } from '/src/lib/svgSymbol.js';
+import {
+    GROUPS, FURNITURE, catalogItem, defaultSize,
+    saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
+    exportCatalogSnapshot, importCatalogSnapshot,
+} from '/src/lib/furnitureCatalog.js';
+import { buildFurniture3D } from '/src/lib/room3dModels.js';
+import { generateDxf } from '/src/lib/dxf.js';
+import { recomputeRooms } from '/src/lib/planModel.js';
+import {
+    STANDARD_SCALES, pickArchitecturalScale, computePlanOuterDimensions, buildFurnitureSchedule,
+} from '/src/lib/layoutExport.js';
+
+const lines = [];
+let pass = 0, fail = 0;
+const ok = (name, cond) => { cond ? pass++ : fail++; lines.push(`${cond ? 'PASS' : 'FAIL'}  ${name}`); };
+const eq = (name, got, want, tol = 0.5) => {
+    const c = Math.abs(got - want) <= tol;
+    c ? pass++ : fail++;
+    lines.push(`${c ? 'PASS' : 'FAIL'}  ${name}: got ${got}, want ${want}`);
+};
+
+lines.push('--- 1. Parser & chuan hoa SVG 2D ---');
+{
+    const sampleSvg = `<svg viewBox="0 0 100 50">
+        <rect x="0" y="0" width="100" height="50" />
+        <circle cx="50" cy="25" r="10" />
+        <polygon points="10,10 90,10 50,40" />
+        <path d="M 10 10 H 90 V 40 H 10 Z" />
+    </svg>`;
+    const parsed = parseSvgSymbol(sampleSvg);
+    ok('parseSvgSymbol doc du 4 phan tu SVG', !!parsed && parsed.elements.length === 4);
+    eq('viewBox width = 100', parsed.viewBox[2], 100);
+    eq('viewBox height = 50', parsed.viewBox[3], 50);
+
+    const polies = svgToNormalizedPolylines(parsed);
+    ok('svgToNormalizedPolylines tao >= 4 polyline', polies.length >= 4);
+    const inBounds = polies.every(p => p.points.every(pt => pt.x >= -0.501 && pt.x <= 0.501 && pt.y >= -0.501 && pt.y <= 0.501));
+    ok('Tat ca diem polyline chuan hoa nam trong [-0.5 .. 0.5]', inBounds);
+    ok('Chuoi rong hoac khong phai SVG tra ve null', parseSvgSymbol('') === null && parseSvgSymbol('<div>hi</div>') === null);
+}
+
+lines.push('--- 2. Backend Thu vien 2D & 3D (furnitureCatalog + room3dModels) ---');
+{
+    resetAllCatalog();
+    const initialLivingCount = FURNITURE.living.length;
+
+    const created = saveCatalogItem({
+        name: 'Quầy bar mini Test',
+        group: 'living',
+        w: 1450,
+        d: 550,
+        h: 1050,
+        z: 0,
+        mount: 'floor',
+        back: true,
+        sym: 'cab',
+        sym3d: 'cabinet_glass',
+        matPrimary: '#b45309',
+        svg2d: '<svg viewBox="0 0 100 50"><rect x="4" y="4" width="92" height="42"/></svg>',
+    });
+    ok('Them mau moi tao key custom_*', created.key.startsWith('custom_'));
+    eq('FURNITURE.living tang them 1 mon tai cho', FURNITURE.living.length, initialLivingCount + 1);
+    ok('catalogItem tra ve dung ten mau moi', catalogItem(created.key)?.name === 'Quầy bar mini Test');
+
+    // Sua mau co san bed16
+    saveCatalogItem({
+        key: 'bed16',
+        w: 1650,
+        matPrimary: '#b45309',
+        svg2d: '<svg viewBox="0 0 100 100"><rect x="5" y="5" width="90" height="90"/></svg>',
+    });
+    eq('defaultSize("bed16").w phan anh gia tri moi 1650', defaultSize('bed16').w, 1650);
+
+    // Kiem tra mau 3D moi (shelf_open, cabinet_glass) va nhuom mau hex #b45309
+    const bed3d = buildFurniture3D({ id: 'b1', kind: 'bed16', w: 1650, d: 2000, h: 420 }, catalogItem('bed16'), 3000);
+    let hasHexColor = false;
+    bed3d.traverse((o) => {
+        if (o.isMesh && o.material?.color?.getHexString?.() === 'b45309') hasHexColor = true;
+    });
+    ok('buildFurniture3D nhuom mau hex #b45309 vao vat lieu chinh', hasHexColor);
+
+    const glass3d = buildFurniture3D({ id: 'g1', kind: created.key, w: 1450, d: 550, h: 1050 }, catalogItem(created.key), 3000);
+    ok('cabinet_glass 3D tao du mesh', glass3d.children.length >= 2);
+    const shelf3d = buildFurniture3D({ id: 's1', kind: created.key, w: 1000, d: 350, h: 1800 }, { ...catalogItem(created.key), sym3d: 'shelf_open', matPrimary: '' }, 3000);
+    ok('shelf_open 3D tao du mesh', shelf3d.children.length >= 5);
+
+    // Export / Reset / Import snapshot
+    const snap = exportCatalogSnapshot({ includeGlb: false });
+    resetCatalogItem('bed16');
+    eq('Sau resetCatalogItem, bed16 ve lai 1600', defaultSize('bed16').w, 1600);
+    deleteCatalogItem(created.key);
+    ok('Sau deleteCatalogItem, mau tuy tao bi xoa', !catalogItem(created.key));
+
+    await importCatalogSnapshot(snap);
+    eq('Sau importCatalogSnapshot, bed16 khoi phuc 1650', defaultSize('bed16').w, 1650);
+    ok('Sau importCatalogSnapshot, mau custom duoc phuc hoi', catalogItem(created.key)?.name === 'Quầy bar mini Test');
+
+    // Don sach ve mac dinh de giu tinh doc lap test
+    resetAllCatalog();
+    eq('Sau resetAllCatalog, bed16 ve lai 1600', defaultSize('bed16').w, 1600);
+}
+
+lines.push('--- 3. Xuat AutoCAD DXF kem kich thuoc noi that & SVG 2D ---');
+{
+    resetAllCatalog();
+    saveCatalogItem({
+        key: 'bed16',
+        w: 1650,
+        svg2d: '<svg viewBox="0 0 100 100"><polygon points="10,10 90,10 50,90"/></svg>',
+    });
+    const doc = {
+        plan: recomputeRooms({
+            nodes: [
+                { id: 'n0', x: 0, y: 0 }, { id: 'n1', x: 4000, y: 0 },
+                { id: 'n2', x: 4000, y: 3000 }, { id: 'n3', x: 0, y: 3000 },
+            ],
+            walls: [
+                { id: 'w1', a: 'n0', b: 'n1', thickness: 110, openings: [] },
+                { id: 'w2', a: 'n1', b: 'n2', thickness: 110, openings: [] },
+                { id: 'w3', a: 'n2', b: 'n3', thickness: 110, openings: [] },
+                { id: 'w4', a: 'n3', b: 'n0', thickness: 110, openings: [] },
+            ],
+            rooms: [],
+        }),
+        furniture: [
+            { id: 'f1', kind: 'bed16', x: 2000, y: 1100, w: 1650, d: 2000, h: 420, rot: 0 },
+        ],
+        notes: [],
+        settings: {},
+    };
+    const dxf = generateDxf(doc);
+    ok('DXF chua layer FURN-DIM', dxf.includes('FURN-DIM'));
+    ok('DXF chua nhan kich thuoc 1650x2000', dxf.includes('1650x2000'));
+    ok('DXF chua polyline FURN-DETAIL tu svg2d', dxf.includes('FURN-DETAIL'));
+    resetAllCatalog();
+}
+
+lines.push('--- 4. Tinh toan Layout Mat Bang & Bang Thong Ke Kich Thuoc ---');
+{
+    const plan = recomputeRooms({
+        nodes: [
+            { id: 'n0', x: 0, y: 0 }, { id: 'n1', x: 4000, y: 0 },
+            { id: 'n2', x: 4000, y: 3000 }, { id: 'n3', x: 0, y: 3000 },
+        ],
+        walls: [
+            { id: 'w1', a: 'n0', b: 'n1', thickness: 110, openings: [] },
+            { id: 'w2', a: 'n1', b: 'n2', thickness: 110, openings: [] },
+            { id: 'w3', a: 'n2', b: 'n3', thickness: 110, openings: [] },
+            { id: 'w4', a: 'n3', b: 'n0', thickness: 110, openings: [] },
+        ],
+        rooms: [],
+    });
+    const outer = computePlanOuterDimensions(plan);
+    eq('Phu bi ngang phong 4000 tuong 110 = 4110', outer.totalW, 4110);
+    eq('Phu bi doc phong 3000 tuong 110 = 3110', outer.totalH, 3110);
+    ok('xChain co >= 1 doan', outer.xChain.length >= 1);
+
+    const schedule = buildFurnitureSchedule({
+        furniture: [
+            { id: 'a1', kind: 'bed16', w: 1600, d: 2000, h: 420 },
+            { id: 'a2', kind: 'nightstand', w: 450, d: 400, h: 500 },
+            { id: 'a3', kind: 'nightstand', w: 450, d: 400, h: 500 },
+        ],
+    });
+    eq('buildFurnitureSchedule gop thanh 2 dong quy cach', schedule.length, 2);
+    ok('Ma hang muc bat dau F01, F02', schedule[0].code === 'F01' && schedule[1].code === 'F02');
+    eq('Tap đầu giường gop dung so luong 2', schedule[1].qty, 2);
+
+    const sc = pickArchitecturalScale(6000, 4000, 260, 180);
+    ok('pickArchitecturalScale tra ve ty le chuan hop le', STANDARD_SCALES.includes(sc) && sc >= 20);
+}
+
+lines.push(`\n===== ${pass} pass, ${fail} fail =====`);
+document.getElementById('out').textContent = lines.join('\n');
+document.title = fail ? `FAIL (${fail}) catalog-layout` : `PASS (${pass}) catalog-layout`;
+</script>
