@@ -4,7 +4,7 @@ import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
     ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
-    MapPin, Box, Move, Boxes, FileSpreadsheet, RefreshCw,
+    MapPin, Box, Move, Boxes, FileSpreadsheet, RefreshCw, Lock, Unlock,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -87,6 +87,28 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
     const [furnGroup, setFurnGroup] = useState(() => (isFadiContextActive() && isFadiLibraryEnabled() ? 'fadi' : 'bedroom'));
     const [fadiSyncBusy, setFadiSyncBusy] = useState(false);
     const [showFurnSizes, setShowFurnSizes] = useState(false);
+    const [furnRotLock, setFurnRotLock] = useState(() => {
+        try { return localStorage.getItem('mkg_furn_rot_lock_v1') === '1'; } catch { return false; }
+    });
+    const [furnInsertRot, setFurnInsertRot] = useState(() => {
+        try {
+            const v = Number(localStorage.getItem('mkg_furn_insert_rot_v1'));
+            return [0, 90, 180, 270].includes(v) ? v : 0;
+        } catch { return 0; }
+    });
+
+    const toggleDefaultFurnRotLock = () => {
+        setFurnRotLock(prev => {
+            const next = !prev;
+            try { localStorage.setItem('mkg_furn_rot_lock_v1', next ? '1' : '0'); } catch { /* ignore */ }
+            toast(next ? 'Đã bật Khoá xoay khi đưa đồ vào — magnet sẽ không tự xoay' : 'Đã tắt Khoá xoay mặc định — magnet tự xoay theo tường', 'ok');
+            return next;
+        });
+    };
+    const pickFurnInsertRot = (deg) => {
+        setFurnInsertRot(deg);
+        try { localStorage.setItem('mkg_furn_insert_rot_v1', String(deg)); } catch { /* ignore */ }
+    };
 
     const pickerGroups = listPickerGroups();
     const activeFurnGroup = pickerGroups.some(g => g.key === furnGroup)
@@ -370,7 +392,18 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         const { w, d, h, z } = defaultSize(key, docRef.current.settings);
         const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
         const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
-        const raw = { id: genId('f'), kind: key, x: Math.round(cx), y: Math.round(cy), w, d, h, z, rot: 0 };
+        const raw = {
+            id: genId('f'),
+            kind: key,
+            x: Math.round(cx),
+            y: Math.round(cy),
+            w,
+            d,
+            h,
+            z,
+            rot: furnRotLock ? furnInsertRot : 0,
+            ...(furnRotLock ? { rotLock: true } : {}),
+        };
         const cat = catalogItem(key);
         const res = snapFurnitureSmart(docRef.current.plan, furnList(), raw, {
             scale: view?.scale || 0.1,
@@ -382,12 +415,21 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         setShowFurnPicker(false);
         setModeRaw('select');
         setSel({ kind: 'furniture', id: placed.id });
-        toast(`${cat?.name || 'Nội thất'} — kéo để magnet, bấm "Chỉnh sửa" để co giãn 4 chiều`, 'ok');
+        toast(
+            `${cat?.name || 'Nội thất'}${furnRotLock ? ` (Khoá xoay ${placed.rot || 0}°)` : ''} — kéo để magnet, bấm "Chỉnh sửa" để co giãn 4 chiều`,
+            'ok'
+        );
     };
 
     const rotateFurniture = (item) => {
         const rot = ((item.rot || 0) + 90) % 360;
         commit(undefined, undefined, furnList().map(f => f.id === item.id ? { ...f, rot } : f));
+    };
+
+    const toggleFurnitureRotLock = (item) => {
+        const nextLocked = !item.rotLock;
+        commit(undefined, undefined, furnList().map(f => f.id === item.id ? { ...f, rotLock: nextLocked } : f));
+        toast(nextLocked ? 'Đã khoá xoay — magnet giữ nguyên góc khi kéo' : 'Đã mở khoá xoay — magnet tự xoay theo tường', 'ok');
     };
 
     const removeFurniture = (id) => {
@@ -1152,6 +1194,16 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                             <RotateCw size={16} /> Quay 90°
                         </button>
                         <div className="fb-sep" />
+                        <button
+                            className={`fb-btn${selFurn.rotLock ? ' fb-btn-active' : ''}`}
+                            style={selFurn.rotLock ? { background: '#d97706', color: '#fff', borderRadius: 9, padding: '6px 10px' } : { color: '#b45309' }}
+                            onClick={() => toggleFurnitureRotLock(selFurn)}
+                            title={selFurn.rotLock ? 'Đang khoá xoay (Magnet không tự xoay) — bấm để mở khoá' : 'Khoá xoay để magnet giữ nguyên góc'}
+                        >
+                            {selFurn.rotLock ? <Lock size={15} /> : <Unlock size={15} />}
+                            {selFurn.rotLock ? 'Đã khoá xoay' : 'Khoá xoay'}
+                        </button>
+                        <div className="fb-sep" />
                         <button className="fb-btn" style={{ color: 'var(--blue)' }} onClick={() => resizeFurniture(selFurn)}>
                             <Maximize2 size={15} /> {Math.round(selFurn.w)}×{Math.round(selFurn.d)}
                         </button>
@@ -1320,7 +1372,63 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                         </button>
                     ))}
                 </div>
-                <div style={{ maxHeight: '44vh', overflowY: 'auto' }}>
+                <div style={{
+                    display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between',
+                    gap: 8, padding: '8px 11px', marginBottom: 8, borderRadius: 11,
+                    background: furnRotLock ? '#fffbeb' : 'var(--bg)',
+                    border: `1px solid ${furnRotLock ? '#f59e0b' : 'var(--line)'}`,
+                }}>
+                    <button
+                        type="button"
+                        onClick={toggleDefaultFurnRotLock}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 190,
+                            background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer',
+                            color: furnRotLock ? '#92400e' : 'var(--ink)',
+                        }}
+                    >
+                        {furnRotLock
+                            ? <Lock size={16} style={{ color: '#d97706', flexShrink: 0 }} />
+                            : <Unlock size={16} style={{ color: 'var(--muted)', flexShrink: 0 }} />}
+                        <span style={{ flex: 1 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700, display: 'block', lineHeight: 1.2 }}>
+                                Khoá xoay khi đưa đồ vào
+                            </span>
+                            <span style={{ fontSize: 11.5, color: furnRotLock ? '#b45309' : 'var(--muted)' }}>
+                                {furnRotLock ? 'Đã khoá — magnet chỉ hít vị trí, không tự xoay' : 'Tắt — magnet tự xoay mặt lưng theo tường'}
+                            </span>
+                        </span>
+                        <span style={{
+                            padding: '3px 9px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, flexShrink: 0,
+                            background: furnRotLock ? '#d97706' : 'var(--surface)',
+                            color: furnRotLock ? '#ffffff' : 'var(--muted)',
+                            border: furnRotLock ? 'none' : '1px solid var(--line)',
+                        }}>
+                            {furnRotLock ? 'Đang khoá' : 'Tắt'}
+                        </span>
+                    </button>
+                    {furnRotLock && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}>
+                            <span style={{ fontSize: 11.5, color: '#92400e', fontWeight: 600, marginRight: 4 }}>Góc đưa vào:</span>
+                            {[0, 90, 180, 270].map(deg => (
+                                <button
+                                    key={deg}
+                                    type="button"
+                                    onClick={() => pickFurnInsertRot(deg)}
+                                    style={{
+                                        padding: '3px 9px', borderRadius: 8, fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
+                                        border: `1px solid ${furnInsertRot === deg ? '#d97706' : '#fcd34d'}`,
+                                        background: furnInsertRot === deg ? '#d97706' : '#ffffff',
+                                        color: furnInsertRot === deg ? '#ffffff' : '#92400e',
+                                    }}
+                                >
+                                    {deg}°
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                <div style={{ maxHeight: '42vh', overflowY: 'auto' }}>
                     {(FURNITURE[activeFurnGroup] || []).map(it => {
                         const sz = defaultSize(it.key, settings);
                         return (
@@ -1329,7 +1437,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                                 <div style={{ flex: 1 }}>
                                     {it.name}
                                     <div className="sub">
-                                        {sz.w} × {sz.d} × {sz.h} mm{it.back ? ' · magnet tường & đồ kề' : ' · magnet căn tim/cạnh'}
+                                        {sz.w} × {sz.d} × {sz.h} mm{it.back ? (furnRotLock ? ' · magnet vị trí (khoá xoay)' : ' · magnet tường & đồ kề') : ' · magnet căn tim/cạnh'}
                                     </div>
                                 </div>
                             </button>

@@ -789,6 +789,18 @@ const FurnitureItem = ({ item, scale, isSelected, isEditing, showDims = true, on
                     listening={false}
                 />
             )}
+            {item.rotLock && pxW > 24 && pxD > 20 && (
+                <Group x={w / 2 - 9 * inv} y={-d / 2 + 9 * inv} rotation={-(item.rot || 0)} listening={false}>
+                    <Circle radius={6.5 * inv} fill="#d97706" stroke="#ffffff" strokeWidth={1.1 * inv} />
+                    <Arc
+                        x={0} y={-1.1 * inv}
+                        innerRadius={1.8 * inv} outerRadius={2.6 * inv}
+                        angle={180} rotation={180}
+                        fill="#ffffff"
+                    />
+                    <Rect x={-2.8 * inv} y={-0.6 * inv} width={5.6 * inv} height={4 * inv} cornerRadius={0.8 * inv} fill="#ffffff" />
+                </Group>
+            )}
         </Group>
     );
 };

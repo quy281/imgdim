@@ -133,6 +133,8 @@ export function snapFurnitureSmart(plan, otherItems, movingItem, opts = {}) {
     const wallTol = opts.wallTol ?? Math.max(260, 44 / scale);
     const cornerTol = opts.cornerTol ?? Math.max(200, 34 / scale);
     const furnTol = opts.furnTol ?? Math.max(160, 28 / scale);
+    const lockRot = !!(movingItem.rotLock || opts.rotLock);
+    const wallFaceTol = lockRot ? Math.max(wallTol, cornerTol) : cornerTol;
 
     let curRot = movingItem.rot || 0;
     let curX = movingItem.x;
@@ -142,8 +144,8 @@ export function snapFurnitureSmart(plan, otherItems, movingItem, opts = {}) {
     let snappedFurn = false;
     const guides = [];
 
-    // ===== BƯỚC 1: Hút mặt lưng vào tường chính (có tự xoay cho món `back: true`) =====
-    if (cat?.back && plan?.walls?.length) {
+    // ===== BƯỚC 1: Hút mặt lưng vào tường chính (có tự xoay cho món `back: true`, bỏ qua khi khoá xoay) =====
+    if (!lockRot && cat?.back && plan?.walls?.length) {
         const nodeById = new Map((plan.nodes || []).map(n => [n.id, n]));
         let best = null;
         let bestGap = wallTol;
@@ -206,30 +208,30 @@ export function snapFurnitureSmart(plan, otherItems, movingItem, opts = {}) {
     const perpWallsU = collectWallFacesAlongAxis(plan, right, front, v - hd, v + hd, u);
     for (const wf of perpWallsU) {
         const dLeft = wf.coord - (u - hw);
-        if (Math.abs(dLeft) <= cornerTol) {
+        if (Math.abs(dLeft) <= wallFaceTol) {
             pushU(dLeft, 0.72, { x1: wf.p1.x, y1: wf.p1.y, x2: wf.p2.x, y2: wf.p2.y, kind: 'wall' });
         }
         const dRight = wf.coord - (u + hw);
-        if (Math.abs(dRight) <= cornerTol) {
+        if (Math.abs(dRight) <= wallFaceTol) {
             pushU(dRight, 0.72, { x1: wf.p1.x, y1: wf.p1.y, x2: wf.p2.x, y2: wf.p2.y, kind: 'wall' });
         }
     }
 
-    // 2b. Tường song song trục U (khi chưa khoá lưng `lockedV`, ví dụ bàn ăn, đảo bếp, món xoay tay)
+    // 2b. Tường song song trục U (khi chưa khoá lưng `lockedV`, ví dụ bàn ăn, đảo bếp, món khoá xoay)
     const vCandidates = [];
     const pushV = (delta, priority, guide) => {
         const abs = Math.abs(delta);
         vCandidates.push({ delta, score: abs * priority, guide });
     };
-    if (!lockedV && !cat?.noSnapContact) {
+    if (!lockedV && (!cat?.noSnapContact || (lockRot && cat?.back))) {
         const perpWallsV = collectWallFacesAlongAxis(plan, front, right, u - hw, u + hw, v);
         for (const wf of perpWallsV) {
             const dBack = wf.coord - (v - hd);
-            if (Math.abs(dBack) <= cornerTol) {
+            if (Math.abs(dBack) <= wallFaceTol) {
                 pushV(dBack, 0.75, { x1: wf.p1.x, y1: wf.p1.y, x2: wf.p2.x, y2: wf.p2.y, kind: 'wall' });
             }
             const dFront = wf.coord - (v + hd);
-            if (Math.abs(dFront) <= cornerTol) {
+            if (Math.abs(dFront) <= wallFaceTol) {
                 pushV(dFront, 0.75, { x1: wf.p1.x, y1: wf.p1.y, x2: wf.p2.x, y2: wf.p2.y, kind: 'wall' });
             }
         }

@@ -1317,6 +1317,9 @@ input, textarea {
     left: 50%;
     bottom: 14px;
     transform: translateX(-50%);
+    max-width: calc(100vw - 16px);
+    overflow-x: auto;
+    scrollbar-width: none;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -1327,6 +1330,8 @@ input, textarea {
     z-index: 20;
 }
 
+.float-bar::-webkit-scrollbar { display: none; }
+
 .float-bar .fb-btn {
     display: flex;
     align-items: center;
@@ -1335,6 +1340,8 @@ input, textarea {
     border-radius: 999px;
     font-size: 13px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .float-bar .fb-btn:active { background: var(--bg); }

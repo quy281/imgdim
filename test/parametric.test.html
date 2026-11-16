@@ -162,6 +162,33 @@ lines.push('--- 5. Xuất AutoCAD DXF (kèm ký hiệu nội thất chi tiết &
         dxf.includes('FURN-DETAIL') && dxf.includes('ELEV-SWING') && dxf.trimEnd().endsWith('EOF'));
 }
 
+lines.push('--- 6. Khoá xoay (rotLock): magnet không tự xoay nhưng vẫn hít tường & đồ kề ---');
+{
+    const plan = mkRoomPlan();
+    // 6a. Tủ áo rot=90 gần tường trên & tường trái: khi khoá xoay (movingItem.rotLock = true), giữ nguyên rot=90
+    const itemLocked = { id: 'wl1', kind: 'wardrobe', x: 420, y: 1320, w: 2400, d: 600, h: 2400, z: 0, rot: 90, rotLock: true };
+    const snapLocked = snapFurnitureSmart(plan, [], itemLocked, { scale: 0.1 });
+    eq('rotLock=true: giữ nguyên rot = 90 (không bị tự xoay theo tường)', snapLocked.rot, 90);
+    eq('rotLock=true: cạnh trái (X) vẫn hít sát tường trái 0mm (x = 55 + 300 = 355)', snapLocked.x, 355);
+    eq('rotLock=true: cạnh trên (Y) vẫn hít kịch tường trên 0mm (y = 55 + 1200 = 1255)', snapLocked.y, 1255);
+    ok('rotLock=true: báo snappedWall = true', snapLocked.snappedWall === true);
+
+    // 6b. Giường 1m8 rot=0 đặt sát cạnh tường trái: nếu unlocked sẽ bị tự xoay, với opts.rotLock=true giữ rot=0 & hít tường trái
+    const bedAtLeftFree = { id: 'bl0', kind: 'bed18', x: 1000, y: 1500, w: 1800, d: 2000, h: 450, z: 0, rot: 0 };
+    const sFree = snapFurnitureSmart(plan, [], bedAtLeftFree, { scale: 0.1 });
+    ok('không khoá xoay: giường sát tường trái bị tự xoay khác 0°', sFree.rot !== 0);
+
+    const sOptLocked = snapFurnitureSmart(plan, [], bedAtLeftFree, { scale: 0.1, rotLock: true });
+    eq('opts.rotLock=true: giường giữ nguyên rot = 0', sOptLocked.rot, 0);
+    eq('opts.rotLock=true: mép trái giường hít sát tường trái (x = 55 + 900 = 955)', sOptLocked.x, 955);
+
+    // 6c. Khi đã khoá xoay vẫn magnet chạm cạnh đồ nội thất kế bên 0mm
+    const tapNear = { id: 'nl1', kind: 'nightstand', x: 2130, y: 700, w: 450, d: 400, h: 550, z: 0, rot: 90, rotLock: true };
+    const sTapNear = snapFurnitureSmart(plan, [{ ...bedAtLeftFree, x: 955, rot: 0 }], tapNear, { scale: 0.1 });
+    eq('rotLock=true + rot=90: táp giữ rot = 90 và hít sát cạnh giường 0mm (x = 2055)', sTapNear.x, 2055);
+    eq('rotLock=true + rot=90: không bị xoay theo tường trên dù wallTol lớn', snapFurnitureSmart(plan, [], { ...tapNear, x: 2000, y: 320 }, { scale: 0.1, wallTol: 850 }).rot, 90);
+}
+
 document.getElementById('out').textContent =
     lines.join('\n') + `\n\n===== ${pass} pass, ${fail} fail =====`;
 document.title = fail === 0 ? 'ALL PASS' : `${fail} FAIL`;
