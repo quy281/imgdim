@@ -18,7 +18,8 @@ module MKG
       { 'key' => 'kitchen', 'name' => 'Bếp' },
       { 'key' => 'wc',      'name' => 'WC' },
       { 'key' => 'elec',    'name' => 'Điện & TB' },
-      { 'key' => 'other',   'name' => 'Khác' }
+      { 'key' => 'other',   'name' => 'Khác' },
+      { 'key' => 'fadi',    'name' => 'Thư viện FADI' }
     ].freeze unless defined?(GROUPS)
 
     JUNK_NAME_RE = Regexp.new(
@@ -116,7 +117,9 @@ module MKG
       mount = 'floor'
       back = true
 
-      if f =~ /\b(giuong|bed|tap dau giuong|nightstand|ban trang diem|dresser|tu ao|wardrobe|tu quan ao|ban lam viec|desk)\b/
+      if f =~ /\bfadi\b/
+        group = 'fadi'
+      elsif f =~ /\b(giuong|bed|tap dau giuong|nightstand|ban trang diem|dresser|tu ao|wardrobe|tu quan ao|ban lam viec|desk)\b/
         group = 'bedroom'
       elsif f =~ /\b(sofa|ban tra|coffee|ke tv|tv stand|tivi|ban an|dining|armchair|ghe don|tham|rug|vach lam|cay xanh|plant)\b/
         group = 'living'
@@ -702,6 +705,8 @@ module MKG
       end
 
       default_file = chosen_targets.length == 1 ? "#{slugify(chosen_targets[0][:name])}.mkglib.json" : 'MKG_ThuVien_SketchUp.mkglib.json'
+      all_fadi = payload['target_library'] == 'fadi' || (!chosen_targets.empty? && chosen_targets.all? { |t| t[:group] == 'fadi' })
+      default_file = chosen_targets.length == 1 ? "#{slugify(chosen_targets[0][:name])}.mkglib.json" : 'FADI_ThuVien_SketchUp.mkglib.json' if all_fadi
       out_path = UI.savepanel('Lưu gói Thư viện MKG (.mkglib.json)', '', default_file)
       return false unless out_path && !out_path.empty?
 
@@ -710,6 +715,10 @@ module MKG
       exported_items = chosen_targets.map do |t|
         res = export_single_target(model, t, payload)
         res.delete('daeXml')
+        if payload['target_library'] == 'fadi' || res['group'] == 'fadi'
+          res['library'] = 'fadi'
+          res['group'] = 'fadi'
+        end
         res
       end
 
@@ -720,6 +729,7 @@ module MKG
         'exporter'   => "#{PLUGIN_ID}/#{PLUGIN_VERSION}",
         'items'      => exported_items
       }
+      pkg['library'] = 'fadi' if all_fadi
 
       File.binwrite(out_path, JSON.pretty_generate(pkg).encode('UTF-8'))
       UI.messagebox(
@@ -919,6 +929,7 @@ module MKG
           <div class="foot">
             <div class="note" id="summary"></div>
             <div class="btns">
+              <button type="button" onclick="assignAllFadi()" style="border-color:#f59e0b;color:#b45309;background:#fffbeb">Đưa tất cả vào FADI</button>
               <button type="button" onclick="sketchup.cancelDialog()">Huỷ</button>
               <button type="button" id="btnExport" class="primary" onclick="doExport()">Xuất file .mkglib.json</button>
             </div>
@@ -975,15 +986,23 @@ module MKG
               render();
             });
 
+            function assignAllFadi() {
+              DATA.items.forEach(it => { it.group = 'fadi'; });
+              render();
+            }
+
             function doExport() {
               if (exporting) return;
               exporting = true;
               btnExport.disabled = true;
               btnExport.textContent = 'Đang xử lý…';
+              const enabledItems = DATA.items.filter(x => x.enabled);
+              const allFadi = enabledItems.length > 0 && enabledItems.every(x => x.group === 'fadi');
               const payload = {
                 front_axis: document.getElementById('frontAxis').value,
                 include_svg: document.getElementById('incSvg').checked,
                 solid_only: document.getElementById('solidOnly').checked,
+                target_library: allFadi ? 'fadi' : 'auto',
                 items: DATA.items
               };
               sketchup.exportMkg(JSON.stringify(payload));

@@ -3,17 +3,19 @@ import { Stage, Layer, Rect, Line, Text, Group } from 'react-konva';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
-    ArrowLeft, Plus, Upload, Download, CloudUpload, RotateCcw,
+    ArrowLeft, Plus, Upload, Download, CloudUpload, CloudDownload, RotateCcw,
     Save, Copy, Trash2, Search, Eye, EyeOff, Box, Shapes, Sliders,
     Monitor, RotateCw, Sparkles, Plug, HelpCircle,
 } from 'lucide-react';
 import {
-    GROUPS, SYM_2D_OPTIONS, SYM_3D_OPTIONS, MAT_3D_OPTIONS, groupName,
-    listAdminCatalogItems, getBuiltinItem, getItemGlbSource,
-    saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
+    GROUPS, CORE_GROUPS, SYM_2D_OPTIONS, SYM_3D_OPTIONS, MAT_3D_OPTIONS, groupName,
+    listAdminCatalogItems, listFadiItems, getBuiltinItem, getItemGlbSource,
+    saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog, resetFadiCatalog,
     getCatalogSyncPayload, applyCatalogSyncPayload,
-    exportCatalogSnapshot, importCatalogSnapshot, isSketchUpPackage, importSketchUpPackage,
-    subscribeCatalog, isDesktopCatalogSupported,
+    getFadiCatalogSyncPayload, applyFadiCatalogSyncPayload,
+    exportCatalogSnapshot, exportFadiSnapshot, importCatalogSnapshot,
+    isSketchUpPackage, importSketchUpPackage,
+    isFadiContextActive, subscribeCatalog, isDesktopCatalogSupported,
 } from '../lib/furnitureCatalog';
 import { Symbol2D, itemFill } from '../plan/FurnitureLayer';
 import {
@@ -304,7 +306,9 @@ function MaterialPicker({ label, value, onChange }) {
 export default function CatalogAdminScreen({ onBack }) {
     const [, setTick] = useState(0);
     const [search, setSearch] = useState('');
-    const [groupFilter, setGroupFilter] = useState('all');
+    const [groupFilter, setGroupFilter] = useState(() => (isFadiContextActive() ? 'fadi' : 'all'));
+    const [importToFadi, setImportToFadi] = useState(() => isFadiContextActive());
+    const [fadiCloudBusy, setFadiCloudBusy] = useState(false);
     const [selectedKey, setSelectedKey] = useState(() => listAdminCatalogItems()[0]?.key || '');
     const [draft, setDraft] = useState(() => makeDraftFromItem(listAdminCatalogItems()[0]));
     const [pendingGlbData, setPendingGlbData] = useState(undefined);
@@ -352,6 +356,7 @@ export default function CatalogAdminScreen({ onBack }) {
 
     const selectedOrig = useMemo(() => items.find(i => i.key === selectedKey) || null, [items, selectedKey]);
     const modifiedCount = useMemo(() => items.filter(i => i.isModified).length, [items]);
+    const fadiItems = useMemo(() => items.filter(i => i.isFadi), [items]);
     const svgValid = useMemo(() => {
         if (!draft?.svg2d?.trim()) return true;
         return /<(svg|path|rect|circle|ellipse|line|polygon|polyline)\b/i.test(draft.svg2d);
@@ -359,11 +364,13 @@ export default function CatalogAdminScreen({ onBack }) {
 
     const patchDraft = (patch) => setDraft(prev => (prev ? { ...prev, ...patch } : prev));
 
-    const handleCreateNew = () => {
+    const handleCreateNew = (forceFadi = false) => {
+        const asFadi = forceFadi === true || groupFilter === 'fadi' || importToFadi;
         const newDraft = {
             key: '',
-            name: 'Mẫu nội thất mới',
-            group: groupFilter !== 'all' && groupFilter !== 'modified' ? groupFilter : 'other',
+            name: asFadi ? 'Mẫu FADI mới' : 'Mẫu nội thất mới',
+            library: asFadi ? 'fadi' : 'global',
+            group: asFadi ? 'fadi' : (groupFilter !== 'all' && groupFilter !== 'modified' ? groupFilter : 'other'),
             w: 1200,
             d: 600,
             h: 850,
@@ -393,7 +400,7 @@ export default function CatalogAdminScreen({ onBack }) {
         setSelectedKey(created.key);
         setDraft(makeDraftFromItem(created));
         setPendingGlbData(undefined);
-        toast('Đã thêm mẫu mới vào thư viện', 'ok');
+        toast(asFadi ? 'Đã thêm mẫu mới vào Thư viện FADI' : 'Đã thêm mẫu mới vào thư viện', 'ok');
     };
 
     const handleSave = () => {
@@ -402,7 +409,10 @@ export default function CatalogAdminScreen({ onBack }) {
             toast('Vui lòng nhập tên món nội thất', 'err');
             return;
         }
-        const saved = saveCatalogItem(draft, pendingGlbData !== undefined ? { glbData: pendingGlbData } : {});
+        const saved = saveCatalogItem({
+            ...draft,
+            library: draft.group === 'fadi' ? 'fadi' : 'global',
+        }, pendingGlbData !== undefined ? { glbData: pendingGlbData } : {});
         setSelectedKey(saved.key);
         setDraft(makeDraftFromItem(saved));
         setPendingGlbData(undefined);
@@ -445,30 +455,58 @@ export default function CatalogAdminScreen({ onBack }) {
     };
 
     const handleResetAll = () => {
-        if (!window.confirm('Khôi phục TOÀN BỘ thư viện 2D & 3D về mặc định ban đầu? Mọi mẫu thêm mới và tuỳ chỉnh sẽ bị xoá.')) return;
+        if (!window.confirm('Khôi phục TOÀN BỘ thư viện 2D & 3D về mặc định ban đầu? Mọi mẫu thêm mới (gồm cả FADI) sẽ bị xoá.')) return;
         resetAllCatalog();
         const first = listAdminCatalogItems()[0];
         if (first) selectItem(first);
         toast('Đã khôi phục toàn bộ thư viện gốc', 'ok');
     };
 
+    const handleResetFadi = () => {
+        if (!window.confirm('Xoá toàn bộ món đang lưu trong Thư viện FADI trên máy này?')) return;
+        resetFadiCatalog();
+        const first = listAdminCatalogItems()[0];
+        if (first) selectItem(first);
+        toast('Đã xoá sạch kho Thư viện FADI cục bộ', 'ok');
+    };
+
     const handleExportJson = () => {
         const json = exportCatalogSnapshot({ includeGlb: true });
         downloadText(json, `MKG_ThuVien_2D_3D_${stamp()}.json`, 'application/json');
-        toast('Đã xuất file JSON thư viện 2D & 3D', 'ok');
+        toast('Đã xuất file JSON Kho chung', 'ok');
+    };
+
+    const handleExportFadiJson = () => {
+        const json = exportFadiSnapshot({ includeGlb: true });
+        downloadText(json, `FADI_ThuVien_2D_3D_${stamp()}.json`, 'application/json');
+        toast(`Đã xuất JSON Thư viện FADI (${fadiItems.length} món)`, 'ok');
     };
 
     const importFromJsonText = (text) => {
         const parsed = JSON.parse(text);
         if (isSketchUpPackage(parsed)) {
-            const res = importSketchUpPackage(parsed);
-            setGroupFilter('all');
+            const targetLib = (importToFadi || groupFilter === 'fadi') ? 'fadi' : 'auto';
+            const res = importSketchUpPackage(parsed, { library: targetLib });
+            if (res.library === 'fadi') setGroupFilter('fadi');
+            else setGroupFilter('all');
             if (res.items[0]) selectItem(res.items[0]);
             setTab('3d');
-            toast(`Đã nhập ${res.count} món nội thất (2D + 3D) từ Plugin SketchUp!`, 'ok');
+            toast(
+                res.library === 'fadi'
+                    ? `Đã nhập ${res.count} món vào Thư viện FADI từ SketchUp! Bấm "Đẩy Cloud FADI" để phát hành.`
+                    : `Đã nhập ${res.count} món nội thất (2D + 3D) từ Plugin SketchUp!`,
+                'ok'
+            );
             return;
         }
         importCatalogSnapshot(parsed);
+        if (parsed?.app === 'MKG_FADI_CATALOG' || parsed?.library === 'fadi') {
+            setGroupFilter('fadi');
+            const firstFadi = listFadiItems({ includeHidden: true })[0];
+            if (firstFadi) selectItem(firstFadi);
+            toast(`Đã nhập Thư viện FADI (${listFadiItems({ includeHidden: true }).length} món) thành công`, 'ok');
+            return;
+        }
         const cur = listAdminCatalogItems().find(i => i.key === selectedKey) || listAdminCatalogItems()[0];
         if (cur) selectItem(cur);
         toast('Đã nhập thư viện JSON thành công', 'ok');
@@ -592,16 +630,16 @@ export default function CatalogAdminScreen({ onBack }) {
         }
         setCloudBusy(true);
         try {
-            const res = await pb.pushCloudCatalog(getCatalogSyncPayload());
+            const res = await pb.pushCloudCatalog(getCatalogSyncPayload({ includeGlb: true }), 'global');
             if (res.ok) {
-                toast('Đã đẩy cấu hình thư viện 2D/3D lên Cloud', 'ok');
+                toast('Đã đẩy cấu hình Kho chung (2D/3D) lên Cloud', 'ok');
             } else {
-                const remote = await pb.fetchCloudCatalog();
+                const remote = await pb.fetchCloudCatalog('global');
                 if (remote) {
                     applyCatalogSyncPayload(remote, { force: true });
                     const cur = listAdminCatalogItems().find(i => i.key === selectedKey) || listAdminCatalogItems()[0];
                     if (cur) selectItem(cur);
-                    toast('Đã tải cấu hình thư viện mới từ Cloud', 'ok');
+                    toast('Đã tải cấu hình Kho chung mới từ Cloud', 'ok');
                 } else {
                     toast('Không đẩy được lên Cloud: ' + (res.reason || 'Cần quyền Admin hoặc collection furniture_catalog'), 'err');
                 }
@@ -610,6 +648,53 @@ export default function CatalogAdminScreen({ onBack }) {
             toast('Lỗi đồng bộ Cloud: ' + err.message, 'err');
         } finally {
             setCloudBusy(false);
+        }
+    };
+
+    const handleSyncFadiCloud = async () => {
+        if (fadiCloudBusy) return;
+        if (!pb.isLoggedIn()) {
+            toast('Vui lòng đăng nhập tài khoản Admin / Superuser trước khi đẩy Cloud FADI', 'err');
+            return;
+        }
+        setFadiCloudBusy(true);
+        try {
+            const payload = getFadiCatalogSyncPayload({ includeGlb: true });
+            const res = await pb.pushCloudCatalog(payload, 'fadi');
+            if (res.ok) {
+                toast(`Đã đẩy Thư viện FADI (${payload.customItems.length} món, kèm 2D & 3D) lên Cloud!`, 'ok');
+            } else {
+                toast('Không đẩy được Cloud FADI: ' + (res.reason || 'Cần quyền Admin hoặc collection furniture_catalog'), 'err');
+            }
+        } catch (err) {
+            toast('Lỗi đẩy Cloud FADI: ' + err.message, 'err');
+        } finally {
+            setFadiCloudBusy(false);
+        }
+    };
+
+    const handlePullFadiCloud = async () => {
+        if (fadiCloudBusy) return;
+        if (!pb.isLoggedIn()) {
+            toast('Vui lòng đăng nhập để tải Thư viện FADI từ Cloud', 'err');
+            return;
+        }
+        setFadiCloudBusy(true);
+        try {
+            const remote = await pb.fetchCloudCatalog('fadi');
+            if (remote) {
+                applyFadiCatalogSyncPayload(remote, { force: true });
+                const firstFadi = listFadiItems({ includeHidden: true })[0];
+                if (firstFadi) selectItem(firstFadi);
+                setGroupFilter('fadi');
+                toast(`Đã tải Thư viện FADI từ Cloud (${listFadiItems({ includeHidden: true }).length} món)`, 'ok');
+            } else {
+                toast('Trên Cloud hiện chưa có bản lưu Thư viện FADI nào', 'err');
+            }
+        } catch (err) {
+            toast('Lỗi tải Cloud FADI: ' + err.message, 'err');
+        } finally {
+            setFadiCloudBusy(false);
         }
     };
 
@@ -680,7 +765,7 @@ export default function CatalogAdminScreen({ onBack }) {
                 </div>
 
                 <div className="cat-admin-toolbar">
-                    <button className="cat-btn primary" onClick={handleCreateNew}>
+                    <button className="cat-btn primary" onClick={() => handleCreateNew(false)}>
                         <Plus size={15} /> Thêm món mới
                     </button>
                     <a
@@ -699,6 +784,9 @@ export default function CatalogAdminScreen({ onBack }) {
                     </button>
                     <button className="cat-btn" onClick={handleExportJson}>
                         <Download size={15} /> Xuất JSON
+                    </button>
+                    <button className="cat-btn fadi-cloud" disabled={fadiCloudBusy} onClick={handleSyncFadiCloud} title="Đẩy toàn bộ Thư viện FADI (2D SVG + 3D SketchUp) lên Cloud để Team FADI tự nhận mặc định">
+                        <CloudUpload size={15} /> {fadiCloudBusy ? 'Đang đẩy FADI…' : `Đẩy Cloud FADI (${fadiItems.length})`}
                     </button>
                     <button className="cat-btn" disabled={cloudBusy} onClick={handleSyncCloud}>
                         <CloudUpload size={15} /> {cloudBusy ? 'Đang đồng bộ…' : 'Đồng bộ Cloud'}
@@ -723,22 +811,81 @@ export default function CatalogAdminScreen({ onBack }) {
                         />
                     </div>
                     <div className="cat-group-chips">
-                        <button className={`chip ${groupFilter === 'all' ? 'on' : ''}`} onClick={() => setGroupFilter('all')}>
+                        <button
+                            className={`chip ${groupFilter === 'all' ? 'on' : ''}`}
+                            onClick={() => { setGroupFilter('all'); setImportToFadi(false); }}
+                        >
                             Tất cả ({items.length})
                         </button>
-                        <button className={`chip ${groupFilter === 'modified' ? 'on' : ''}`} onClick={() => setGroupFilter('modified')}>
+                        <button
+                            className={`chip fadi-chip ${groupFilter === 'fadi' ? 'on' : ''}`}
+                            onClick={() => { setGroupFilter('fadi'); setImportToFadi(true); }}
+                        >
+                            Thư viện FADI ({fadiItems.length})
+                        </button>
+                        <button
+                            className={`chip ${groupFilter === 'modified' ? 'on' : ''}`}
+                            onClick={() => setGroupFilter('modified')}
+                        >
                             Đã sửa ({modifiedCount})
                         </button>
-                        {GROUPS.map(g => (
+                        {CORE_GROUPS.map(g => (
                             <button
                                 key={g.key}
                                 className={`chip ${groupFilter === g.key ? 'on' : ''}`}
-                                onClick={() => setGroupFilter(g.key)}
+                                onClick={() => { setGroupFilter(g.key); setImportToFadi(false); }}
                             >
                                 {g.name}
                             </button>
                         ))}
                     </div>
+
+                    {groupFilter === 'fadi' && (
+                        <div className="cat-fadi-banner">
+                            <div className="cat-fadi-banner-head">
+                                <b>Khung Thư viện FADI</b>
+                                <span>{fadiItems.length} mẫu</span>
+                            </div>
+                            <div className="cat-fadi-banner-sub">
+                                Tự động nạp mặc định cho <b>Team / chế độ FADI</b>; các team khác giữ ở dạng Option bật thêm.
+                            </div>
+                            <div className="cat-fadi-banner-actions">
+                                <button type="button" className="cat-mini-btn" onClick={() => handleCreateNew(true)}>
+                                    <Plus size={12} /> Thêm mẫu FADI
+                                </button>
+                                <button
+                                    type="button"
+                                    className="cat-mini-btn"
+                                    onClick={() => { setImportToFadi(true); glbInputRef.current?.click(); }}
+                                >
+                                    <Box size={12} /> Nhập SketchUp → FADI
+                                </button>
+                                <button type="button" className="cat-mini-btn fadi" disabled={fadiCloudBusy} onClick={handleSyncFadiCloud}>
+                                    <CloudUpload size={12} /> {fadiCloudBusy ? 'Đang đẩy…' : 'Đẩy Cloud FADI'}
+                                </button>
+                                <button type="button" className="cat-mini-btn" disabled={fadiCloudBusy} onClick={handlePullFadiCloud}>
+                                    <CloudDownload size={12} /> Tải Cloud FADI
+                                </button>
+                                <button type="button" className="cat-mini-btn" onClick={handleExportFadiJson}>
+                                    <Download size={12} /> Xuất JSON FADI
+                                </button>
+                                {fadiItems.length > 0 && (
+                                    <button type="button" className="cat-mini-btn danger" onClick={handleResetFadi}>
+                                        <RotateCcw size={12} /> Xoá kho FADI
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <label className="cat-fadi-import-toggle">
+                        <input
+                            type="checkbox"
+                            checked={importToFadi}
+                            onChange={(e) => setImportToFadi(e.target.checked)}
+                        />
+                        <span>Đưa file SketchUp kéo-thả / mới nhập vào <b>Thư viện FADI</b></span>
+                    </label>
 
                     <div className="cat-list">
                         {filteredItems.map((it) => {
@@ -753,10 +900,11 @@ export default function CatalogAdminScreen({ onBack }) {
                                     <div className="cat-item-top">
                                         <span className="cat-item-name">{it.name}</span>
                                         <div className="cat-item-badges">
-                                            {it.isCustom && <span className="cat-badge custom">Mới</span>}
+                                            {it.isFadi && <span className="cat-badge fadi">FADI</span>}
+                                            {!it.isFadi && it.isCustom && <span className="cat-badge custom">Mới</span>}
                                             {!it.isCustom && it.isModified && <span className="cat-badge mod">Đã sửa</span>}
                                             {it.svg2d && <span className="cat-badge svg">SVG</span>}
-                                            {hasGlb && <span className="cat-badge glb">GLB</span>}
+                                            {hasGlb && <span className="cat-badge glb">{(it.modelFormat || '3D').toUpperCase()}</span>}
                                             {it.hidden && <span className="cat-badge off">Ẩn</span>}
                                         </div>
                                     </div>
@@ -768,7 +916,11 @@ export default function CatalogAdminScreen({ onBack }) {
                             );
                         })}
                         {!filteredItems.length && (
-                            <div className="cat-empty">Không tìm thấy món phù hợp</div>
+                            <div className="cat-empty">
+                                {groupFilter === 'fadi'
+                                    ? 'Chưa có món nào trong Thư viện FADI — bấm "Nhập SketchUp → FADI" hoặc kéo thả file .mkglib.json vào đây'
+                                    : 'Không tìm thấy món phù hợp'}
+                            </div>
                         )}
                     </div>
                 </aside>
@@ -842,7 +994,7 @@ export default function CatalogAdminScreen({ onBack }) {
                                                 value={draft.group}
                                                 onChange={(e) => patchDraft({ group: e.target.value })}
                                             >
-                                                {GROUPS.map(g => (
+                                                {GROUPS.filter(g => g.key !== 'fadi' || !draft.isBuiltin).map(g => (
                                                     <option key={g.key} value={g.key}>{g.name}</option>
                                                 ))}
                                             </select>

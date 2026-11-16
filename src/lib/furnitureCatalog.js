@@ -3,13 +3,20 @@
 // nhưng vẫn tương thích ngược 100% với toàn bộ dự án cũ & bộ test hiện tại.
 import localforage from 'localforage';
 
-export const GROUPS = [
+export const CORE_GROUPS = [
     { key: 'bedroom', name: 'Phòng ngủ' },
     { key: 'living', name: 'Khách + ăn' },
     { key: 'kitchen', name: 'Bếp' },
     { key: 'wc', name: 'WC' },
     { key: 'elec', name: 'Điện & TB' },
     { key: 'other', name: 'Khác' },
+];
+
+export const FADI_GROUP = { key: 'fadi', name: 'Thư viện FADI', isFadi: true };
+
+export const GROUPS = [
+    ...CORE_GROUPS,
+    FADI_GROUP,
 ];
 
 export const SYM_2D_OPTIONS = [
@@ -165,10 +172,14 @@ export const BUILTIN_FURNITURE = {
         { key: 'washer_dryer', name: 'Tháp giặt sấy', w: 650, d: 650, h: 1750, z: 0, back: true, sym: 'washer' },
         { key: 'stairs', name: 'Thang bộ', w: 1000, d: 3000, h: 2800, z: 0, back: true, sym: 'stairs' },
     ],
+    fadi: [],
 };
 
 const STORAGE_KEY = 'mkg_furniture_catalog_v1';
 const STATE_ASSET_KEY = 'catalog_state_v1';
+const FADI_STORAGE_KEY = 'mkg_fadi_catalog_v1';
+const FADI_ASSET_KEY = 'fadi_catalog_state_v1';
+const FADI_OPT_KEY = 'mkg_fadi_lib_opt_v1';
 const GLB_PREFIX = 'glb_';
 
 let assetStore = null;
@@ -210,32 +221,136 @@ function emptyState() {
     };
 }
 
-function readLocalStateSync() {
+function emptyFadiState() {
+    return {
+        version: 1,
+        updatedAt: 0,
+        customItems: [],
+        deletedKeys: [],
+    };
+}
+
+function readLocalJson(storageKey, fallback) {
     try {
-        if (typeof localStorage === 'undefined' || typeof localStorage?.getItem !== 'function') return emptyState();
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return emptyState();
+        if (typeof localStorage === 'undefined' || typeof localStorage?.getItem !== 'function') return fallback();
+        const raw = localStorage.getItem(storageKey);
+        if (!raw) return fallback();
         const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return emptyState();
-        return {
-            version: 1,
-            updatedAt: Number(parsed.updatedAt) || 0,
-            overrides: parsed.overrides && typeof parsed.overrides === 'object' ? parsed.overrides : {},
-            customItems: Array.isArray(parsed.customItems) ? parsed.customItems : [],
-            deletedKeys: Array.isArray(parsed.deletedKeys) ? parsed.deletedKeys : [],
-        };
+        if (!parsed || typeof parsed !== 'object') return fallback();
+        return parsed;
     } catch {
-        return emptyState();
+        return fallback();
     }
 }
 
-let catalogState = readLocalStateSync();
+function normalizeGlobalState(parsed) {
+    if (!parsed || typeof parsed !== 'object') return emptyState();
+    return {
+        version: 1,
+        updatedAt: Number(parsed.updatedAt) || 0,
+        overrides: parsed.overrides && typeof parsed.overrides === 'object' ? parsed.overrides : {},
+        customItems: Array.isArray(parsed.customItems) ? parsed.customItems : [],
+        deletedKeys: Array.isArray(parsed.deletedKeys) ? parsed.deletedKeys : [],
+    };
+}
+
+function normalizeFadiState(parsed) {
+    if (!parsed || typeof parsed !== 'object') return emptyFadiState();
+    return {
+        version: 1,
+        updatedAt: Number(parsed.updatedAt) || 0,
+        customItems: Array.isArray(parsed.customItems) ? parsed.customItems : [],
+        deletedKeys: Array.isArray(parsed.deletedKeys) ? parsed.deletedKeys : [],
+    };
+}
+
+function readFadiOptInSync() {
+    try {
+        if (typeof localStorage === 'undefined' || typeof localStorage?.getItem !== 'function') return 'auto';
+        const v = localStorage.getItem(FADI_OPT_KEY);
+        return v === 'on' || v === 'off' ? v : 'auto';
+    } catch {
+        return 'auto';
+    }
+}
+
+let catalogState = normalizeGlobalState(readLocalJson(STORAGE_KEY, emptyState));
+let fadiState = normalizeFadiState(readLocalJson(FADI_STORAGE_KEY, emptyFadiState));
+let fadiTeamContext = false;
+let fadiOptIn = readFadiOptInSync();
 
 function notifyListeners() {
     catalogVersion += 1;
     for (const fn of LISTENERS) {
         try { fn(catalogVersion); } catch { /* ignore */ }
     }
+}
+
+export function detectUrlFadiMode() {
+    if (typeof window === 'undefined' || !window.location) return null;
+    try {
+        const sp = new URLSearchParams(window.location.search || '');
+        const fadiParam = (sp.get('fadi') || '').trim().toLowerCase();
+        if (fadiParam === '0' || fadiParam === 'false') return false;
+        if (fadiParam === '1' || fadiParam === 'true') return true;
+        const teamParam = (sp.get('team') || sp.get('brand') || '').trim().toLowerCase();
+        if (teamParam === 'fadi') return true;
+        const h = (window.location.hash || '').toLowerCase();
+        if (h.includes('fadi')) return true;
+        const host = (window.location.hostname || '').toLowerCase();
+        if (/^fadi[.-]/i.test(host)) return true;
+    } catch { /* ignore */ }
+    return null;
+}
+
+/** Cập nhật ngữ cảnh đội/chế độ từ App (`inFadi: true` khi ở Team FADI hoặc URL FADI). */
+export function setCatalogContext({ inFadi } = {}) {
+    const next = !!inFadi;
+    if (fadiTeamContext === next) return;
+    fadiTeamContext = next;
+    notifyListeners();
+}
+
+export function isFadiContextActive() {
+    const urlFlag = detectUrlFadiMode();
+    if (urlFlag !== null) return urlFlag;
+    return fadiTeamContext;
+}
+
+export function getFadiLibraryOption() {
+    return fadiOptIn;
+}
+
+/**
+ * Thư viện FADI có đang bật để sử dụng không:
+ * - Trong FADI: mặc định BẬT (chỉ tắt nếu người dùng chủ động tắt `'off'`).
+ * - Các chỗ khác: mặc định TẮT, chỉ bật khi người dùng chọn Option (`'on'`).
+ */
+export function isFadiLibraryEnabled() {
+    if (isFadiContextActive()) return fadiOptIn !== 'off';
+    return fadiOptIn === 'on';
+}
+
+export function setFadiLibraryEnabled(enabled) {
+    const next = isFadiContextActive()
+        ? (enabled ? 'auto' : 'off')
+        : (enabled ? 'on' : 'auto');
+    fadiOptIn = next;
+    try {
+        if (typeof localStorage !== 'undefined' && typeof localStorage?.setItem === 'function') {
+            if (next === 'auto') localStorage.removeItem(FADI_OPT_KEY);
+            else localStorage.setItem(FADI_OPT_KEY, next);
+        }
+    } catch { /* ignore */ }
+    notifyListeners();
+    return isFadiLibraryEnabled();
+}
+
+/** Danh sách tab hiển thị trong bộ chọn nội thất mặt bằng (`PlanEditor`). */
+export function listPickerGroups() {
+    if (!isFadiLibraryEnabled()) return [...CORE_GROUPS];
+    if (isFadiContextActive()) return [FADI_GROUP, ...CORE_GROUPS];
+    return [...CORE_GROUPS, FADI_GROUP];
 }
 
 function sanitizeGroup(gKey) {
@@ -247,6 +362,8 @@ function sanitizePatch(raw, base = null) {
     const validStr = (v) => (typeof v === 'string' ? v.trim() : '');
     if (raw.name != null) out.name = validStr(raw.name) || base?.name || 'Mẫu mới';
     if (raw.group != null) out.group = sanitizeGroup(raw.group);
+    if (raw.library != null) out.library = raw.library === 'fadi' ? 'fadi' : 'global';
+    if (raw.fadiRoom !== undefined) out.fadiRoom = validStr(raw.fadiRoom);
     if (raw.w != null && Number.isFinite(Number(raw.w))) out.w = Math.max(20, Math.round(Number(raw.w)));
     if (raw.d != null && Number.isFinite(Number(raw.d))) out.d = Math.max(20, Math.round(Number(raw.d)));
     if (raw.h != null && Number.isFinite(Number(raw.h))) out.h = Math.max(10, Math.round(Number(raw.h)));
@@ -284,13 +401,37 @@ export function isDesktopCatalogSupported() {
     return true;
 }
 
+function normalizeCustomEntry(c, forceFadi = false) {
+    const clean = sanitizePatch(c);
+    const isFadi = forceFadi || clean.library === 'fadi' || clean.group === 'fadi';
+    return {
+        mount: 'floor',
+        back: true,
+        sym: 'cab',
+        z: 0,
+        w: 1000,
+        d: 600,
+        h: 800,
+        ...clean,
+        key: String(c.key).trim(),
+        library: isFadi ? 'fadi' : 'global',
+        group: isFadi ? 'fadi' : sanitizeGroup(clean.group || c.group),
+        isBuiltin: false,
+        isCustom: true,
+        isFadi,
+        isModified: true,
+        hidden: !!c.hidden,
+    };
+}
+
 function rebuildCatalog() {
     BY_KEY.clear();
     const deleted = new Set(catalogState.deletedKeys || []);
+    const fadiDeleted = new Set(fadiState.deletedKeys || []);
     const grouped = Object.fromEntries(GROUPS.map(g => [g.key, []]));
 
-    for (const g of GROUPS) {
-        for (const base of BUILTIN_FURNITURE[g.key]) {
+    for (const g of CORE_GROUPS) {
+        for (const base of BUILTIN_FURNITURE[g.key] || []) {
             const ov = catalogState.overrides?.[base.key];
             const merged = {
                 mount: 'floor',
@@ -298,8 +439,10 @@ function rebuildCatalog() {
                 group: g.key,
                 ...(ov || {}),
                 key: base.key,
+                library: 'global',
                 isBuiltin: true,
                 isCustom: false,
+                isFadi: false,
                 isModified: !!(ov && Object.keys(ov).length > 0),
                 hidden: !!(ov?.hidden || deleted.has(base.key)),
             };
@@ -312,25 +455,16 @@ function rebuildCatalog() {
 
     for (const c of catalogState.customItems || []) {
         if (!c?.key || deleted.has(c.key)) continue;
-        const clean = sanitizePatch(c);
-        const item = {
-            mount: 'floor',
-            back: true,
-            sym: 'box',
-            z: 0,
-            w: 1000,
-            d: 600,
-            h: 800,
-            ...clean,
-            key: String(c.key).trim(),
-            group: sanitizeGroup(c.group),
-            isBuiltin: false,
-            isCustom: true,
-            isModified: true,
-            hidden: !!c.hidden,
-        };
+        const item = normalizeCustomEntry(c, false);
         BY_KEY.set(item.key, item);
         if (!item.hidden) grouped[item.group].push(item);
+    }
+
+    for (const c of fadiState.customItems || []) {
+        if (!c?.key || fadiDeleted.has(c.key)) continue;
+        const item = normalizeCustomEntry(c, true);
+        BY_KEY.set(item.key, item);
+        if (!item.hidden) grouped.fadi.push(item);
     }
 
     for (const g of GROUPS) {
@@ -341,7 +475,7 @@ function rebuildCatalog() {
 
 rebuildCatalog();
 
-function persistState(touchUpdatedAt = true) {
+function persistGlobalState(touchUpdatedAt = true) {
     if (touchUpdatedAt) {
         catalogState = { ...catalogState, updatedAt: Date.now() };
     }
@@ -355,6 +489,25 @@ function persistState(touchUpdatedAt = true) {
     const st = getAssetStore();
     if (st) {
         st.setItem(STATE_ASSET_KEY, catalogState).catch(() => {});
+    }
+    rebuildCatalog();
+    notifyListeners();
+}
+
+function persistFadiState(touchUpdatedAt = true) {
+    if (touchUpdatedAt) {
+        fadiState = { ...fadiState, updatedAt: Date.now() };
+    }
+    try {
+        if (typeof localStorage !== 'undefined' && typeof localStorage?.setItem === 'function') {
+            localStorage.setItem(FADI_STORAGE_KEY, JSON.stringify(fadiState));
+        }
+    } catch (err) {
+        console.warn('fadi catalog localStorage write:', err);
+    }
+    const st = getAssetStore();
+    if (st) {
+        st.setItem(FADI_ASSET_KEY, fadiState).catch(() => {});
     }
     rebuildCatalog();
     notifyListeners();
@@ -379,20 +532,23 @@ export async function initCatalogStore() {
     try {
         const storedState = await st.getItem(STATE_ASSET_KEY);
         if (storedState && Number(storedState.updatedAt || 0) > Number(catalogState.updatedAt || 0)) {
-            catalogState = {
-                ...emptyState(),
-                ...storedState,
-                overrides: storedState.overrides || {},
-                customItems: Array.isArray(storedState.customItems) ? storedState.customItems : [],
-                deletedKeys: Array.isArray(storedState.deletedKeys) ? storedState.deletedKeys : [],
-            };
+            catalogState = normalizeGlobalState(storedState);
             try {
                 if (typeof localStorage !== 'undefined' && typeof localStorage?.setItem === 'function') {
                     localStorage.setItem(STORAGE_KEY, JSON.stringify(catalogState));
                 }
             } catch { /* ignore */ }
-            rebuildCatalog();
         }
+        const storedFadi = await st.getItem(FADI_ASSET_KEY);
+        if (storedFadi && Number(storedFadi.updatedAt || 0) > Number(fadiState.updatedAt || 0)) {
+            fadiState = normalizeFadiState(storedFadi);
+            try {
+                if (typeof localStorage !== 'undefined' && typeof localStorage?.setItem === 'function') {
+                    localStorage.setItem(FADI_STORAGE_KEY, JSON.stringify(fadiState));
+                }
+            } catch { /* ignore */ }
+        }
+        rebuildCatalog();
         const keys = await st.keys();
         await Promise.all(
             keys.filter(k => String(k).startsWith(GLB_PREFIX)).map(async (k) => {
@@ -420,24 +576,28 @@ export function listAdminCatalogItems() {
     return [...BY_KEY.values()];
 }
 
-function slugKey(name) {
+export function listFadiItems({ includeHidden = false } = {}) {
+    return [...BY_KEY.values()].filter(it => it.isFadi && (includeHidden || !it.hidden));
+}
+
+function slugKey(name, prefix = 'custom_') {
     const base = String(name || 'mau_moi')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/đ/g, 'd').replace(/Đ/g, 'D')
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '_')
         .replace(/^_+|_+$/g, '') || 'mau_moi';
-    let candidate = `custom_${base}`;
+    let candidate = `${prefix}${base}`;
     let idx = 2;
     while (BY_KEY.has(candidate) || BUILTIN_BY_KEY.has(candidate)) {
-        candidate = `custom_${base}_${idx++}`;
+        candidate = `${prefix}${base}_${idx++}`;
     }
     return candidate;
 }
 
 /**
- * Lưu chỉnh sửa mẫu gốc hoặc thêm/sửa mẫu tự tạo.
- * opts: { glbDataUrl?: string, clearGlb?: boolean }
+ * Lưu chỉnh sửa mẫu gốc, mẫu tự tạo, hoặc mẫu thuộc Thư viện FADI.
+ * opts: { glbDataUrl?: string, glbData?: string, clearGlb?: boolean }
  */
 export function saveCatalogItem(itemPatch, opts = {}) {
     const requestedKey = String(itemPatch?.key || '').trim();
@@ -448,6 +608,8 @@ export function saveCatalogItem(itemPatch, opts = {}) {
 
     if (builtin) {
         const clean = sanitizePatch(itemPatch, builtin);
+        delete clean.library;
+        if (clean.group === 'fadi') clean.group = builtin.group;
         if (isClearGlb) {
             clean.hasLocalGlb = false;
             clean.glbFileName = '';
@@ -464,42 +626,57 @@ export function saveCatalogItem(itemPatch, opts = {}) {
             overrides: { ...catalogState.overrides, [finalKey]: nextOv },
             deletedKeys: [...deletedSet],
         };
-    } else {
-        if (!finalKey) finalKey = slugKey(itemPatch?.name);
-        const existingIdx = (catalogState.customItems || []).findIndex(x => x.key === finalKey);
-        const existing = existingIdx >= 0 ? catalogState.customItems[existingIdx] : null;
-        const clean = sanitizePatch(itemPatch, existing);
+        const st = getAssetStore();
         if (isClearGlb) {
-            clean.hasLocalGlb = false;
-            clean.glbFileName = '';
-            clean.modelFormat = '';
-            clean.glbUrl = '';
+            GLB_MEM_CACHE.delete(finalKey);
+            if (st) st.removeItem(`${GLB_PREFIX}${finalKey}`).catch(() => {});
         } else if (glbIncoming) {
-            clean.hasLocalGlb = true;
+            GLB_MEM_CACHE.set(finalKey, glbIncoming);
+            if (st) st.setItem(`${GLB_PREFIX}${finalKey}`, glbIncoming).catch(() => {});
         }
-        const nextItem = {
-            key: finalKey,
-            name: 'Mẫu nội thất mới',
-            group: 'other',
-            w: 1000,
-            d: 600,
-            h: 800,
-            z: 0,
-            back: true,
-            mount: 'floor',
-            sym: 'cab',
-            ...(existing || {}),
-            ...clean,
-        };
-        const nextCustom = [...(catalogState.customItems || [])];
-        if (existingIdx >= 0) nextCustom[existingIdx] = nextItem;
-        else nextCustom.unshift(nextItem);
-        catalogState = {
-            ...catalogState,
-            customItems: nextCustom,
-            deletedKeys: (catalogState.deletedKeys || []).filter(k => k !== finalKey),
-        };
+        persistGlobalState(true);
+        return catalogItem(finalKey);
     }
+
+    const existingInFadi = finalKey ? (fadiState.customItems || []).find(x => x.key === finalKey) : null;
+    const existingInGlobal = finalKey ? (catalogState.customItems || []).find(x => x.key === finalKey) : null;
+    const existing = existingInFadi || existingInGlobal || null;
+
+    const wantsFadi = itemPatch?.library === 'fadi'
+        || itemPatch?.group === 'fadi'
+        || (existingInFadi && itemPatch?.library !== 'global' && (itemPatch?.group === undefined || itemPatch?.group === 'fadi'));
+
+    if (!finalKey) {
+        finalKey = slugKey(itemPatch?.name, wantsFadi ? 'fadi_' : 'custom_');
+    }
+
+    const clean = sanitizePatch(itemPatch, existing);
+    if (isClearGlb) {
+        clean.hasLocalGlb = false;
+        clean.glbFileName = '';
+        clean.modelFormat = '';
+        clean.glbUrl = '';
+    } else if (glbIncoming) {
+        clean.hasLocalGlb = true;
+    }
+
+    const nextItem = {
+        key: finalKey,
+        name: wantsFadi ? 'Mẫu FADI mới' : 'Mẫu nội thất mới',
+        group: wantsFadi ? 'fadi' : 'other',
+        library: wantsFadi ? 'fadi' : 'global',
+        w: 1000,
+        d: 600,
+        h: 800,
+        z: 0,
+        back: true,
+        mount: 'floor',
+        sym: 'cab',
+        ...(existing || {}),
+        ...clean,
+        library: wantsFadi ? 'fadi' : 'global',
+        group: wantsFadi ? 'fadi' : sanitizeGroup(clean.group === 'fadi' ? 'other' : (clean.group || existing?.group || 'other')),
+    };
 
     const st = getAssetStore();
     if (isClearGlb) {
@@ -510,7 +687,44 @@ export function saveCatalogItem(itemPatch, opts = {}) {
         if (st) st.setItem(`${GLB_PREFIX}${finalKey}`, glbIncoming).catch(() => {});
     }
 
-    persistState(true);
+    if (wantsFadi) {
+        if (existingInGlobal) {
+            catalogState = {
+                ...catalogState,
+                customItems: (catalogState.customItems || []).filter(x => x.key !== finalKey),
+            };
+            persistGlobalState(true);
+        }
+        const nextFadi = [...(fadiState.customItems || [])];
+        const fIdx = nextFadi.findIndex(x => x.key === finalKey);
+        if (fIdx >= 0) nextFadi[fIdx] = nextItem;
+        else nextFadi.unshift(nextItem);
+        fadiState = {
+            ...fadiState,
+            customItems: nextFadi,
+            deletedKeys: (fadiState.deletedKeys || []).filter(k => k !== finalKey),
+        };
+        persistFadiState(true);
+    } else {
+        if (existingInFadi) {
+            fadiState = {
+                ...fadiState,
+                customItems: (fadiState.customItems || []).filter(x => x.key !== finalKey),
+            };
+            persistFadiState(true);
+        }
+        const nextCustom = [...(catalogState.customItems || [])];
+        const gIdx = nextCustom.findIndex(x => x.key === finalKey);
+        if (gIdx >= 0) nextCustom[gIdx] = nextItem;
+        else nextCustom.unshift(nextItem);
+        catalogState = {
+            ...catalogState,
+            customItems: nextCustom,
+            deletedKeys: (catalogState.deletedKeys || []).filter(k => k !== finalKey),
+        };
+        persistGlobalState(true);
+    }
+
     return catalogItem(finalKey);
 }
 
@@ -526,7 +740,7 @@ export function resetCatalogItem(key) {
     GLB_MEM_CACHE.delete(key);
     const st = getAssetStore();
     if (st) st.removeItem(`${GLB_PREFIX}${key}`).catch(() => {});
-    persistState(true);
+    persistGlobalState(true);
     return catalogItem(key);
 }
 
@@ -538,41 +752,121 @@ export function deleteCatalogItem(key) {
             [key]: { ...(catalogState.overrides?.[key] || {}), hidden: true },
         };
         catalogState = { ...catalogState, overrides: nextOv };
-    } else {
-        catalogState = {
-            ...catalogState,
-            customItems: (catalogState.customItems || []).filter(x => x.key !== key),
+        persistGlobalState(true);
+        return;
+    }
+
+    const inFadi = (fadiState.customItems || []).some(x => x.key === key);
+    if (inFadi) {
+        fadiState = {
+            ...fadiState,
+            customItems: (fadiState.customItems || []).filter(x => x.key !== key),
         };
         GLB_MEM_CACHE.delete(key);
         const st = getAssetStore();
         if (st) st.removeItem(`${GLB_PREFIX}${key}`).catch(() => {});
+        persistFadiState(true);
+        return;
     }
-    persistState(true);
-}
 
-export function resetAllCatalog() {
-    catalogState = emptyState();
-    const keys = [...GLB_MEM_CACHE.keys()];
-    GLB_MEM_CACHE.clear();
+    catalogState = {
+        ...catalogState,
+        customItems: (catalogState.customItems || []).filter(x => x.key !== key),
+    };
+    GLB_MEM_CACHE.delete(key);
     const st = getAssetStore();
-    if (st) {
-        for (const k of keys) st.removeItem(`${GLB_PREFIX}${k}`).catch(() => {});
-    }
-    persistState(true);
+    if (st) st.removeItem(`${GLB_PREFIX}${key}`).catch(() => {});
+    persistGlobalState(true);
 }
 
-export function getCatalogSyncPayload() {
-    return {
+export function resetFadiCatalog() {
+    const fadiKeys = new Set((fadiState.customItems || []).map(x => x.key));
+    fadiState = emptyFadiState();
+    const st = getAssetStore();
+    for (const k of fadiKeys) {
+        GLB_MEM_CACHE.delete(k);
+        if (st) st.removeItem(`${GLB_PREFIX}${k}`).catch(() => {});
+    }
+    persistFadiState(true);
+}
+
+export function resetAllCatalog({ includeFadi = true } = {}) {
+    catalogState = emptyState();
+    if (includeFadi) {
+        fadiState = emptyFadiState();
+        const keys = [...GLB_MEM_CACHE.keys()];
+        GLB_MEM_CACHE.clear();
+        const st = getAssetStore();
+        if (st) {
+            for (const k of keys) st.removeItem(`${GLB_PREFIX}${k}`).catch(() => {});
+        }
+        persistFadiState(true);
+    } else {
+        const st = getAssetStore();
+        const fadiKeys = new Set((fadiState.customItems || []).map(x => x.key));
+        for (const k of [...GLB_MEM_CACHE.keys()]) {
+            if (!fadiKeys.has(k)) {
+                GLB_MEM_CACHE.delete(k);
+                if (st) st.removeItem(`${GLB_PREFIX}${k}`).catch(() => {});
+            }
+        }
+    }
+    persistGlobalState(true);
+}
+
+function collectGlbAssetsForKeys(keySet, maxChars = 15_000_000) {
+    const out = {};
+    let used = 0;
+    for (const k of keySet) {
+        const val = GLB_MEM_CACHE.get(k);
+        if (typeof val === 'string' && val && (used + val.length) <= maxChars) {
+            out[k] = val;
+            used += val.length;
+        }
+    }
+    return out;
+}
+
+export function getCatalogSyncPayload({ includeGlb = false } = {}) {
+    const payload = {
         version: 1,
         updatedAt: catalogState.updatedAt || Date.now(),
         overrides: catalogState.overrides || {},
         customItems: catalogState.customItems || [],
         deletedKeys: catalogState.deletedKeys || [],
     };
+    if (includeGlb) {
+        const keys = new Set([
+            ...Object.keys(payload.overrides),
+            ...payload.customItems.map(x => x?.key).filter(Boolean),
+        ]);
+        const glbAssets = collectGlbAssetsForKeys(keys);
+        if (Object.keys(glbAssets).length > 0) payload.glbAssets = glbAssets;
+    }
+    return payload;
+}
+
+export function getFadiCatalogSyncPayload({ includeGlb = true } = {}) {
+    const payload = {
+        version: 1,
+        library: 'fadi',
+        updatedAt: fadiState.updatedAt || Date.now(),
+        customItems: fadiState.customItems || [],
+        deletedKeys: fadiState.deletedKeys || [],
+    };
+    if (includeGlb) {
+        const keys = new Set(payload.customItems.map(x => x?.key).filter(Boolean));
+        const glbAssets = collectGlbAssetsForKeys(keys);
+        if (Object.keys(glbAssets).length > 0) payload.glbAssets = glbAssets;
+    }
+    return payload;
 }
 
 export function applyCatalogSyncPayload(payload, { force = false } = {}) {
     if (!payload || typeof payload !== 'object') return false;
+    if (payload.library === 'fadi') {
+        return applyFadiCatalogSyncPayload(payload, { force });
+    }
     const remoteTs = Number(payload.updatedAt) || 0;
     const localTs = Number(catalogState.updatedAt) || 0;
     if (!force && remoteTs <= localTs) return false;
@@ -580,7 +874,9 @@ export function applyCatalogSyncPayload(payload, { force = false } = {}) {
         version: 1,
         updatedAt: remoteTs || Date.now(),
         overrides: payload.overrides && typeof payload.overrides === 'object' ? payload.overrides : {},
-        customItems: Array.isArray(payload.customItems) ? payload.customItems : [],
+        customItems: (Array.isArray(payload.customItems) ? payload.customItems : []).filter(
+            x => x && x.library !== 'fadi' && x.group !== 'fadi'
+        ),
         deletedKeys: Array.isArray(payload.deletedKeys) ? payload.deletedKeys : [],
     };
     if (payload.glbAssets && typeof payload.glbAssets === 'object') {
@@ -592,7 +888,33 @@ export function applyCatalogSyncPayload(payload, { force = false } = {}) {
             }
         }
     }
-    persistState(false);
+    persistGlobalState(false);
+    return true;
+}
+
+export function applyFadiCatalogSyncPayload(payload, { force = false } = {}) {
+    if (!payload || typeof payload !== 'object') return false;
+    const remoteTs = Number(payload.updatedAt) || 0;
+    const localTs = Number(fadiState.updatedAt) || 0;
+    if (!force && remoteTs <= localTs) return false;
+    fadiState = {
+        version: 1,
+        updatedAt: remoteTs || Date.now(),
+        customItems: (Array.isArray(payload.customItems) ? payload.customItems : [])
+            .filter(x => x && x.key)
+            .map(x => normalizeCustomEntry(x, true)),
+        deletedKeys: Array.isArray(payload.deletedKeys) ? payload.deletedKeys : [],
+    };
+    if (payload.glbAssets && typeof payload.glbAssets === 'object') {
+        const st = getAssetStore();
+        for (const [k, v] of Object.entries(payload.glbAssets)) {
+            if (typeof v === 'string' && v) {
+                GLB_MEM_CACHE.set(k, v);
+                if (st) st.setItem(`${GLB_PREFIX}${k}`, v).catch(() => {});
+            }
+        }
+    }
+    persistFadiState(false);
     return true;
 }
 
@@ -600,11 +922,17 @@ export function exportCatalogSnapshot({ includeGlb = false } = {}) {
     const snap = {
         app: 'MKG_CATALOG',
         exportedAt: new Date().toISOString(),
-        ...getCatalogSyncPayload(),
+        ...getCatalogSyncPayload({ includeGlb }),
     };
-    if (includeGlb && GLB_MEM_CACHE.size > 0) {
-        snap.glbAssets = Object.fromEntries(GLB_MEM_CACHE.entries());
-    }
+    return JSON.stringify(snap, null, 2);
+}
+
+export function exportFadiSnapshot({ includeGlb = true } = {}) {
+    const snap = {
+        app: 'MKG_FADI_CATALOG',
+        exportedAt: new Date().toISOString(),
+        ...getFadiCatalogSyncPayload({ includeGlb }),
+    };
     return JSON.stringify(snap, null, 2);
 }
 
@@ -614,9 +942,10 @@ export function isSketchUpPackage(obj) {
 
 /**
  * Nhập 1 hoặc nhiều món nội thất từ gói `.mkglib.json` xuất bởi Plugin SketchUp MKG.
- * Trả về { count, items }.
+ * opts: { library?: 'auto' | 'fadi' | 'global' }
+ * Trả về { count, items, library }.
  */
-export function importSketchUpPackage(jsonStringOrObj) {
+export function importSketchUpPackage(jsonStringOrObj, opts = {}) {
     const obj = typeof jsonStringOrObj === 'string'
         ? JSON.parse(jsonStringOrObj)
         : jsonStringOrObj;
@@ -626,15 +955,21 @@ export function importSketchUpPackage(jsonStringOrObj) {
     if (!obj.items.length) {
         throw new Error('Gói SketchUp không chứa món nội thất nào');
     }
+    const requestedLib = opts.library || 'auto';
     const savedItems = [];
     for (const raw of obj.items) {
         if (!raw || typeof raw !== 'object') continue;
         const rawKey = typeof raw.key === 'string' ? raw.key.trim() : '';
         const glbData = raw.glbData || raw.modelDataUrl || '';
+        const itemIsFadi = requestedLib === 'fadi'
+            || (requestedLib === 'auto' && (obj.library === 'fadi' || raw.library === 'fadi' || raw.group === 'fadi'));
+        const preserveKey = (rawKey.startsWith('custom_') || rawKey.startsWith('fadi_')) ? rawKey : '';
         const saved = saveCatalogItem({
-            key: rawKey.startsWith('custom_') ? rawKey : '',
+            key: preserveKey,
             name: String(raw.name || 'Mẫu SketchUp').trim() || 'Mẫu SketchUp',
-            group: raw.group || 'other',
+            library: itemIsFadi ? 'fadi' : 'global',
+            group: itemIsFadi ? 'fadi' : (raw.group || 'other'),
+            fadiRoom: itemIsFadi ? (raw.fadiRoom || (raw.group && raw.group !== 'fadi' ? raw.group : '')) : '',
             w: Number(raw.w) || 1000,
             d: Number(raw.d) || 600,
             h: Number(raw.h) || 800,
@@ -655,10 +990,15 @@ export function importSketchUpPackage(jsonStringOrObj) {
     if (!savedItems.length) {
         throw new Error('Không đọc được dữ liệu món hợp lệ trong gói SketchUp');
     }
-    return { count: savedItems.length, items: savedItems };
+    const fadiCount = savedItems.filter(x => x.isFadi).length;
+    return {
+        count: savedItems.length,
+        items: savedItems,
+        library: fadiCount === savedItems.length ? 'fadi' : (fadiCount > 0 ? 'mixed' : 'global'),
+    };
 }
 
-export function importCatalogSnapshot(jsonStringOrObj) {
+export function importCatalogSnapshot(jsonStringOrObj, opts = {}) {
     const obj = typeof jsonStringOrObj === 'string'
         ? JSON.parse(jsonStringOrObj)
         : jsonStringOrObj;
@@ -666,8 +1006,12 @@ export function importCatalogSnapshot(jsonStringOrObj) {
         throw new Error('File cấu hình thư viện không hợp lệ');
     }
     if (isSketchUpPackage(obj)) {
-        const res = importSketchUpPackage(obj);
+        const res = importSketchUpPackage(obj, opts);
         return res.count;
+    }
+    if (obj.app === 'MKG_FADI_CATALOG' || obj.library === 'fadi') {
+        applyFadiCatalogSyncPayload({ ...obj, updatedAt: Date.now() }, { force: true });
+        return listFadiItems({ includeHidden: true }).length;
     }
     if (!obj.overrides && !obj.customItems) {
         throw new Error('Thiếu dữ liệu overrides / customItems');

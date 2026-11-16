@@ -12,6 +12,10 @@ import ServiceBanner from '../ui/ServiceBanner';
 import ExperiencePreview from '../ui/ExperiencePreview';
 import { toast } from '../ui/Toast';
 import * as pb from '../lib/pb';
+import {
+    isFadiContextActive, isFadiLibraryEnabled, setFadiLibraryEnabled,
+    listFadiItems, applyFadiCatalogSyncPayload,
+} from '../lib/furnitureCatalog';
 
 const fmtSince = (ts) => {
     if (!ts) return 'Cloud';
@@ -26,7 +30,7 @@ export default function ProjectsScreen({
     projects, projectStats = {}, account, syncBusy, syncMsg, syncError, lastSyncAt,
     onOpen, onCreate, onRename, onDelete, onSetScope, onShare,
     onSync, onOpenSyncStatus, onOpenTeamAdmin, onOpenCustomerInbox, customerInboxCount,
-    onLogin, onLogout, onOpenExperience, onOpenBoardInventory, onOpenBoardMarket, onOpenCatalogAdmin, boardMarketCount = 0,
+    onLogin, onLogout, onTeamChange, onOpenExperience, onOpenBoardInventory, onOpenBoardMarket, onOpenCatalogAdmin, boardMarketCount = 0,
 }) {
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
@@ -397,11 +401,49 @@ export default function ProjectsScreen({
                             <div className="field" style={{ padding: '10px 0 4px' }}>
                                 <label>Đội mặc định cho dự án mới</label>
                                 <select value={pb.defaultTeamId() || (team?.id || '')}
-                                    onChange={e => { pb.setDefaultTeamId(e.target.value); setDefaultTick(t => t + 1); }}>
+                                    onChange={e => {
+                                        pb.setDefaultTeamId(e.target.value);
+                                        setDefaultTick(t => t + 1);
+                                        onTeamChange?.();
+                                    }}>
                                     {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                                 </select>
                             </div>
                         )}
+                        <button className="sheet-row" onClick={async () => {
+                            const next = !isFadiLibraryEnabled();
+                            setFadiLibraryEnabled(next);
+                            setDefaultTick(t => t + 1);
+                            if (next) {
+                                toast('Đã bật Thư viện FADI', 'ok');
+                                if (pb.isLoggedIn()) {
+                                    const remote = await pb.fetchCloudCatalog('fadi');
+                                    if (remote) {
+                                        applyFadiCatalogSyncPayload(remote, { force: true });
+                                        setDefaultTick(t => t + 1);
+                                    }
+                                }
+                            } else {
+                                toast('Đã tắt Thư viện FADI trên máy này');
+                            }
+                        }}>
+                            <Boxes size={19} style={{ color: isFadiLibraryEnabled() ? '#b45309' : 'var(--muted)' }} />
+                            <div style={{ flex: 1 }}>
+                                Thư viện nội thất FADI {isFadiContextActive() ? '(Mặc định FADI)' : '(Option)'}
+                                <div className="sub">
+                                    {isFadiLibraryEnabled()
+                                        ? `Đang bật (${listFadiItems().length} món) · Chạm để tắt`
+                                        : 'Đang ẩn — chạm để bật thêm Thư viện FADI vào bản vẽ'}
+                                </div>
+                            </div>
+                            <span style={{
+                                padding: '3px 9px', borderRadius: 999, fontSize: 11.5, fontWeight: 700,
+                                background: isFadiLibraryEnabled() ? '#fef3c7' : 'var(--bg-2)',
+                                color: isFadiLibraryEnabled() ? '#b45309' : 'var(--muted)',
+                            }}>
+                                {isFadiLibraryEnabled() ? 'Đang bật' : 'Tắt'}
+                            </span>
+                        </button>
                         {!pb.isSuperuser() && (
                             <button className="sheet-row" onClick={() => setPinForm({ old: '', next: '', again: '' })}>
                                 <KeyRound size={19} style={{ color: 'var(--violet)' }} />

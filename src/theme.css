@@ -2609,3 +2609,96 @@ a.cat-btn {
     border-radius: 4px;
     font-size: 11px;
 }
+
+.cat-btn.fadi-cloud {
+    background: #fffbeb;
+    border-color: #f59e0b;
+    color: #b45309;
+}
+
+.cat-btn.fadi-cloud:hover:not(:disabled) {
+    background: #fef3c7;
+}
+
+.chip.fadi-chip:not(.on) {
+    border-color: #f59e0b;
+    color: #b45309;
+    background: #fffbeb;
+}
+
+.chip.fadi-chip.on {
+    background: #d97706;
+    border-color: #d97706;
+    color: #ffffff;
+}
+
+.cat-fadi-banner {
+    margin: 0 10px 8px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+    border: 1px solid #fbbf24;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.cat-fadi-banner-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12.5px;
+    color: #92400e;
+}
+
+.cat-fadi-banner-head span {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(180, 83, 9, 0.14);
+}
+
+.cat-fadi-banner-sub {
+    font-size: 11.5px;
+    color: #78350f;
+    line-height: 1.4;
+}
+
+.cat-fadi-banner-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.cat-mini-btn.fadi {
+    background: #d97706;
+    border-color: #b45309;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+.cat-mini-btn.danger {
+    color: var(--red);
+    border-color: rgba(220, 38, 38, 0.35);
+    background: #fff5f5;
+}
+
+.cat-fadi-import-toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 10px 8px;
+    padding: 6px 9px;
+    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    font-size: 11.5px;
+    color: var(--ink-2);
+    cursor: pointer;
+}
+
+.cat-badge.fadi {
+    background: #fef3c7;
+    color: #b45309;
+}

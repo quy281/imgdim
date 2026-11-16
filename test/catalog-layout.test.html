@@ -5,10 +5,13 @@
 <script type="module">
 import { parseSvgSymbol, svgToNormalizedPolylines } from '/src/lib/svgSymbol.js';
 import {
-    GROUPS, FURNITURE, catalogItem, defaultSize, getItemGlbSource,
-    saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog,
-    exportCatalogSnapshot, importCatalogSnapshot, isSketchUpPackage, importSketchUpPackage,
+    GROUPS, CORE_GROUPS, FURNITURE, catalogItem, defaultSize, getItemGlbSource,
+    saveCatalogItem, resetCatalogItem, deleteCatalogItem, resetAllCatalog, resetFadiCatalog,
+    exportCatalogSnapshot, exportFadiSnapshot, importCatalogSnapshot, isSketchUpPackage, importSketchUpPackage,
+    getCatalogSyncPayload, getFadiCatalogSyncPayload, applyFadiCatalogSyncPayload,
+    listFadiItems, listPickerGroups, setCatalogContext, isFadiLibraryEnabled, setFadiLibraryEnabled,
 } from '/src/lib/furnitureCatalog.js';
+import { isFadiTeam } from '/src/lib/pb.js';
 import {
     buildFurniture3D, detect3DFormat, inspect3DModelBounds, extractTopViewSvgFrom3D,
 } from '/src/lib/room3dModels.js';
@@ -323,6 +326,69 @@ lines.push('--- 5. Nhap goi .mkglib.json xuat tu Plugin SketchUp ---');
     const snapCount = await importCatalogSnapshot(JSON.stringify(pkg));
     eq('importCatalogSnapshot tu chuyen tiep goi .mkglib.json', snapCount, 2);
 
+    resetAllCatalog();
+}
+
+lines.push('--- 6. Thu vien FADI: mac dinh trong FADI, option o cho khac & tach Cloud Sync ---');
+{
+    resetAllCatalog();
+    setCatalogContext({ inFadi: false });
+    setFadiLibraryEnabled(false);
+
+    ok('Ngoai FADI mac dinh KHONG bat Thu vien FADI', !isFadiLibraryEnabled());
+    eq('Ngoai FADI mac dinh chi hien 6 nhom co ban', listPickerGroups().length, CORE_GROUPS.length);
+    ok('isFadiTeam nhan dien dung Team FADI va loai MKG', isFadiTeam({ name: 'FADI', slug: 'fadi-x12a' }) && !isFadiTeam({ name: 'MKG', slug: 'mkg' }));
+
+    // Bat option o team khac
+    setFadiLibraryEnabled(true);
+    ok('Khi bat Option o team khac, Thu vien FADI duoc kich hoat', isFadiLibraryEnabled() && listPickerGroups().some(g => g.key === 'fadi'));
+
+    // Reset lai va vao ngu canh FADI
+    setFadiLibraryEnabled(false);
+    setCatalogContext({ inFadi: true });
+    ok('Trong FADI mac dinh TU DONG bat Thu vien FADI', isFadiLibraryEnabled());
+    ok('Trong FADI dat tab FADI len vi tri dau tien', listPickerGroups()[0]?.key === 'fadi');
+
+    // Nhap goi SketchUp vao Thu vien FADI & kiem tra tach biet kho global vs FADI
+    saveCatalogItem({ name: 'Mon Kho Chung Test', group: 'living', w: 900, d: 500, h: 750 });
+    const fadiPkg = {
+        app: 'MKG_SKETCHUP_EXPORT',
+        version: 1,
+        library: 'fadi',
+        items: [{
+            name: 'Sofa Signature FADI Test',
+            group: 'fadi',
+            sym: 'sofa',
+            w: 2200,
+            d: 920,
+            h: 820,
+            z: 0,
+            mount: 'floor',
+            back: true,
+            modelFormat: 'obj',
+            glbFileName: 'sofa_fadi.obj',
+            glbData: 'data:text/plain;charset=utf-8,v%200%200%200',
+        }],
+    };
+    const resFadi = importSketchUpPackage(fadiPkg);
+    eq('importSketchUpPackage nhap dung vao FADI', resFadi.count, 1);
+    ok('Key FADI bat dau bang fadi_ va nam trong FURNITURE.fadi', resFadi.items[0].key.startsWith('fadi_') && FURNITURE.fadi.length === 1);
+    ok('Kho chung getCatalogSyncPayload KHONG lan mon FADI', !getCatalogSyncPayload().customItems.some(x => x.key === resFadi.items[0].key));
+
+    const fadiCloud = getFadiCatalogSyncPayload({ includeGlb: true });
+    ok('getFadiCatalogSyncPayload dong goi du item FADI va glbAssets 3D', fadiCloud.customItems.length === 1 && !!fadiCloud.glbAssets?.[resFadi.items[0].key]);
+
+    resetFadiCatalog();
+    eq('resetFadiCatalog xoa sach kho FADI', listFadiItems().length, 0);
+    ok('resetFadiCatalog KHONG lam mat mon o kho chung', getCatalogSyncPayload().customItems.some(x => x.name === 'Mon Kho Chung Test'));
+
+    applyFadiCatalogSyncPayload(fadiCloud, { force: true });
+    eq('applyFadiCatalogSyncPayload khoi phuc du mon FADI', listFadiItems().length, 1);
+    ok('applyFadiCatalogSyncPayload khoi phuc luon glbData 3D', !!getItemGlbSource(resFadi.items[0].key));
+
+    // Don sach ve trang thai ban dau
+    setCatalogContext({ inFadi: false });
+    setFadiLibraryEnabled(false);
     resetAllCatalog();
 }
 

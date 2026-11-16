@@ -104,7 +104,7 @@ export function logout() { localStorage.removeItem(AUTH_KEY); }
 // ===== Đồng hồ =====
 // Header `Date` của server có độ phân giải giây — đủ tốt cho last-write-wins, và loại
 // hẳn trường hợp máy lệch giờ vài phút/vài ngày làm bản cũ thắng bản mới.
-let clockOffset = Number(localStorage.getItem(CLOCK_KEY)) || 0;
+let clockOffset = (typeof localStorage?.getItem === 'function' ? Number(localStorage.getItem(CLOCK_KEY)) : 0) || 0;
 
 function syncClock(res) {
     const d = res.headers.get('date');
@@ -2743,18 +2743,38 @@ export async function provisionUsers(onProgress) {
 
 // ===== Thư viện 2D & 3D dùng chung (Backend Catalog Admin) =====
 
+export function isFadiTeam(t) {
+    if (!t) return false;
+    const slug = String(t.slug || '').trim().toLowerCase();
+    const name = String(t.name || '').trim();
+    return slug === 'fadi' || slug.startsWith('fadi-') || /\bfadi\b/i.test(name);
+}
+
+export function isCurrentAccountFadi() {
+    if (!isLoggedIn()) return false;
+    if (isCustomer()) {
+        const cid = customerTeamId();
+        const t = myTeams().find(x => x.id === cid);
+        return isFadiTeam(t);
+    }
+    if (isFadiTeam(myTeam())) return true;
+    const email = String(me()?.email || '').toLowerCase();
+    const uname = String(me()?.username || '').toLowerCase();
+    if (/fadi/.test(uname) || /^fadi[@._-]|@fadi\./.test(email)) return true;
+    return false;
+}
+
 /**
  * Tải cấu hình thư viện 2D & 3D tùy biến từ PocketBase (nếu collection tồn tại).
+ * catalogKey: `'global'` (chung) hoặc `'fadi'` (Thư viện FADI).
  * Trả về `null` nếu offline, chưa đăng nhập hoặc chưa tạo collection trên server.
  */
-export async function fetchCloudCatalog() {
+export async function fetchCloudCatalog(catalogKey = 'global') {
     if (!isLoggedIn()) return null;
+    const key = String(catalogKey || 'global').trim() || 'global';
     try {
         const res = await api(
-            `collections/${FURNITURE_CATALOG}/records?${q({
-                filter: "catalog_key='global'",
-                perPage: 1,
-            })}`
+            `collections/${FURNITURE_CATALOG}/records?perPage=1&${q(`catalog_key='${esc(key)}'`)}`
         );
         const rec = res?.items?.[0];
         if (!rec) return null;
@@ -2765,19 +2785,17 @@ export async function fetchCloudCatalog() {
 }
 
 /**
- * Đẩy snapshot thư viện 2D & 3D lên PocketBase.
+ * Đẩy snapshot thư viện 2D & 3D lên PocketBase theo `catalogKey` (`'global'` hoặc `'fadi'`).
  * Nếu đang đăng nhập quyền superuser và collection chưa tồn tại, tự tạo collection.
  */
-export async function pushCloudCatalog(payload) {
+export async function pushCloudCatalog(payload, catalogKey = 'global') {
     if (!isLoggedIn()) return { ok: false, reason: 'Chưa đăng nhập PocketBase' };
+    const key = String(catalogKey || 'global').trim() || 'global';
     try {
         let existing = null;
         try {
             const res = await api(
-                `collections/${FURNITURE_CATALOG}/records?${q({
-                    filter: "catalog_key='global'",
-                    perPage: 1,
-                })}`
+                `collections/${FURNITURE_CATALOG}/records?perPage=1&${q(`catalog_key='${esc(key)}'`)}`
             );
             existing = res?.items?.[0] || null;
         } catch (err) {
@@ -2806,7 +2824,7 @@ export async function pushCloudCatalog(payload) {
             }
         }
         const body = {
-            catalog_key: 'global',
+            catalog_key: key,
             payload,
             updated_ms: payload?.updatedAt || now(),
             updated_by: ownerName() || ownerId() || '',

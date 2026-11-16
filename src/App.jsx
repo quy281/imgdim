@@ -22,7 +22,10 @@ import { newProject, newPlanDoc, newPhotoDoc, newBoardDoc } from './lib/planMode
 import { fileToPhoto, makePlanThumb } from './lib/image';
 import { genId } from './lib/geometry';
 import { getCurrentLocation } from './lib/location';
-import { initCatalogStore, applyCatalogSyncPayload } from './lib/furnitureCatalog';
+import {
+    initCatalogStore, applyCatalogSyncPayload, applyFadiCatalogSyncPayload,
+    isFadiLibraryEnabled, setCatalogContext,
+} from './lib/furnitureCatalog';
 
 const CatalogAdminScreen = lazy(() => import('./screens/CatalogAdminScreen'));
 
@@ -114,6 +117,36 @@ export default function App() {
     const nextBackgroundSync = useRef(0);
     const syncFailures = useRef(0);
 
+    const syncCloudCatalogs = useCallback(() => {
+        if (!pb.isLoggedIn()) return;
+        if (!pb.isCustomer()) {
+            pb.fetchCloudCatalog('global').then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
+        }
+        if (isFadiLibraryEnabled()) {
+            pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
+        }
+    }, []);
+
+    const syncFadiContext = useCallback((projObj = null) => {
+        const projTeam = projObj?.teamId
+            ? pb.myTeams().find(t => t.id === projObj.teamId)
+            : null;
+        const inFadi = pb.isCurrentAccountFadi() || pb.isFadiTeam(projTeam);
+        setCatalogContext({ inFadi });
+        return inFadi;
+    }, []);
+
+    // Đồng bộ ngữ cảnh FADI theo tài khoản / dự án đang mở
+    useEffect(() => {
+        const activeProj = route.projectId && Array.isArray(projects)
+            ? projects.find(p => p.id === route.projectId)
+            : null;
+        syncFadiContext(activeProj);
+        if (pb.isLoggedIn() && isFadiLibraryEnabled()) {
+            pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
+        }
+    }, [account, route.projectId, projects, syncFadiContext]);
+
     const clearProtectedState = () => {
         setProjects([]);
         setDocs([]);
@@ -184,7 +217,7 @@ export default function App() {
                 if (sw.adopted) toast(`Đã khôi phục ${sw.adopted} mục làm trước khi đăng nhập`, 'ok');
                 if (!pb.isCustomer() && !customerPortal) {
                     syncAll(true);
-                    refreshCustomerInboxCount(); pb.fetchCloudCatalog().then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
+                    refreshCustomerInboxCount(); syncFadiContext(); syncCloudCatalogs();
                 }
             } catch (err) {
                 // Fail closed: không đọc dữ liệu khi phiên không chắc chắn hợp lệ. Kho cũ
@@ -759,9 +792,13 @@ export default function App() {
             setDocs(r.projectId ? await db.listDocs(r.projectId) : []);
             if (sw.adopted) toast(`Đã khôi phục và gắn ${sw.adopted} mục trên máy vào tài khoản`, 'ok');
             else toast('Đăng nhập thành công', 'ok');
+            syncFadiContext();
             if (!pb.isCustomer()) {
                 syncAll(true);
                 refreshCustomerInboxCount();
+                syncCloudCatalogs();
+            } else if (isFadiLibraryEnabled()) {
+                pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
             }
             return user;
         } catch (err) {
@@ -804,6 +841,7 @@ export default function App() {
                 <CustomerLoginScreen
                     wrongAccount={pb.isLoggedIn()}
                     onLogout={logout}
+                onTeamChange={() => { syncFadiContext(); syncCloudCatalogs(); }}
                     onLogin={(identity, pin) => login(identity, pin, { customerOnly: true })}
                 />
                 <ToastHost />
@@ -914,6 +952,7 @@ export default function App() {
                 onCreate={createProject}
                 onSubmit={submitCustomerProject}
                 onLogout={logout}
+                onTeamChange={() => { syncFadiContext(); syncCloudCatalogs(); }}
                 submittingId={submittingId}
             />
         );
@@ -945,6 +984,7 @@ export default function App() {
                 customerInboxCount={customerInboxCount}
                 onLogin={login}
                 onLogout={logout}
+                onTeamChange={() => { syncFadiContext(); syncCloudCatalogs(); }}
             />
         );
     }

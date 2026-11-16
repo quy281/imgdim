@@ -4,7 +4,7 @@ import {
     ArrowLeft, Undo2, Redo2, Share2, BrickWall, Ruler, DoorOpen, AppWindow,
     MessageSquareText, Settings2, Trash2, X, Pencil, FlipHorizontal2, Image as ImageIcon, FileDown,
     ClipboardList, Check, Sofa, RotateCw, Maximize2, LayoutTemplate, Frame, Columns3,
-    MapPin, Box, Move, Boxes, FileSpreadsheet,
+    MapPin, Box, Move, Boxes, FileSpreadsheet, RefreshCw,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
@@ -13,7 +13,12 @@ import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
 import ColumnPreview from '../plan/ColumnPreview';
 import ElevationView from '../plan/ElevationView';
-import { GROUPS, FURNITURE, catalogItem, defaultSize, subscribeCatalog } from '../lib/furnitureCatalog';
+import {
+    catalogItem, defaultSize, subscribeCatalog,
+    isFadiContextActive, isFadiLibraryEnabled, setFadiLibraryEnabled,
+    listPickerGroups, applyFadiCatalogSyncPayload, FURNITURE,
+} from '../lib/furnitureCatalog';
+import * as pb from '../lib/pb';
 import {
     snapFurnitureSmart, resizeFurnitureEdge, resizeFurnitureEdgeByValue,
 } from '../lib/magnetSnap';
@@ -79,8 +84,53 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
     const [showSettings, setShowSettings] = useState(false);
     const [showNotes, setShowNotes] = useState(false);
     const [showFurnPicker, setShowFurnPicker] = useState(false);
-    const [furnGroup, setFurnGroup] = useState('bedroom');
+    const [furnGroup, setFurnGroup] = useState(() => (isFadiContextActive() && isFadiLibraryEnabled() ? 'fadi' : 'bedroom'));
+    const [fadiSyncBusy, setFadiSyncBusy] = useState(false);
     const [showFurnSizes, setShowFurnSizes] = useState(false);
+
+    const pickerGroups = listPickerGroups();
+    const activeFurnGroup = pickerGroups.some(g => g.key === furnGroup)
+        ? furnGroup
+        : (pickerGroups[0]?.key || 'bedroom');
+    const inFadiMode = isFadiContextActive();
+    const fadiEnabled = isFadiLibraryEnabled();
+
+    const pullFadiFromCloud = async (quiet = false) => {
+        if (fadiSyncBusy) return false;
+        if (!pb.isLoggedIn()) {
+            if (!quiet) toast('Cần đăng nhập để tải Thư viện FADI từ Cloud', 'err');
+            return false;
+        }
+        setFadiSyncBusy(true);
+        try {
+            const remote = await pb.fetchCloudCatalog('fadi');
+            if (remote) {
+                applyFadiCatalogSyncPayload(remote, { force: true });
+                if (!quiet) toast(`Đã tải ${(FURNITURE.fadi || []).length} món Thư viện FADI từ Cloud`, 'ok');
+                return true;
+            }
+            if (!quiet) toast('Cloud FADI chưa có dữ liệu — hãy đẩy từ Backend (PC)', 'err');
+            return false;
+        } catch (err) {
+            if (!quiet) toast('Không tải được Cloud FADI: ' + err.message, 'err');
+            return false;
+        } finally {
+            setFadiSyncBusy(false);
+        }
+    };
+
+    const handleToggleFadiOption = async () => {
+        const next = !fadiEnabled;
+        setFadiLibraryEnabled(next);
+        if (next) {
+            setFurnGroup('fadi');
+            await pullFadiFromCloud(true);
+            toast('Đã bật thêm Thư viện FADI', 'ok');
+        } else {
+            if (furnGroup === 'fadi') setFurnGroup('bedroom');
+            toast('Đã ẩn Thư viện FADI');
+        }
+    };
     const [templates, setTemplates] = useState(null);
     const [roomMenu, setRoomMenu] = useState(null);
     const [elev, setElev] = useState(null); // { roomId, faces:[{wallId,len,label}], wallId }
@@ -199,7 +249,12 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         setPreview(null);
         setOpeningSheet(null);
         setColDrag(null);
-        if (m === 'furniture') { setChain(null); setShowFurnPicker(true); return; }
+        if (m === 'furniture') {
+            setChain(null);
+            if (isFadiContextActive() && isFadiLibraryEnabled()) setFurnGroup('fadi');
+            setShowFurnPicker(true);
+            return;
+        }
         if (m === 'draw') {
             const plan = docRef.current.plan;
             if (plan.walls.length) {
@@ -1252,21 +1307,25 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
             {/* Furniture picker */}
             <Sheet open={showFurnPicker} onClose={() => { setShowFurnPicker(false); setModeRaw('select'); }}
                 title="Thư viện nội thất 2D/3D"
-                sub="Tự động magnet vào tường, góc cột & đồ gần nhau · Bấm Chỉnh sửa để scale 4 chiều">
+                sub={inFadiMode ? 'Đang dùng Thư viện FADI mặc định · Tự hít tường & đồ kề' : 'Tự động magnet vào tường, góc cột & đồ gần nhau · Bấm Chỉnh sửa để scale 4 chiều'}>
                 <div className="chip-row" style={{ marginBottom: 6 }}>
-                    {GROUPS.map(g => (
-                        <button key={g.key} className={`chip ${furnGroup === g.key ? 'on' : ''}`}
-                            onClick={() => setFurnGroup(g.key)}>
-                            {g.name}
+                    {pickerGroups.map(g => (
+                        <button
+                            key={g.key}
+                            className={`chip ${activeFurnGroup === g.key ? 'on' : ''}`}
+                            style={g.key === 'fadi' && activeFurnGroup !== 'fadi' ? { borderColor: '#f59e0b', color: '#b45309', background: '#fffbeb' } : undefined}
+                            onClick={() => setFurnGroup(g.key)}
+                        >
+                            {g.key === 'fadi' ? `FADI (${(FURNITURE.fadi || []).length})` : g.name}
                         </button>
                     ))}
                 </div>
-                <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
-                    {FURNITURE[furnGroup].map(it => {
+                <div style={{ maxHeight: '44vh', overflowY: 'auto' }}>
+                    {(FURNITURE[activeFurnGroup] || []).map(it => {
                         const sz = defaultSize(it.key, settings);
                         return (
                             <button key={it.key} className="sheet-row" onClick={() => addFurniture(it.key)}>
-                                <Sofa size={18} style={{ color: it.back ? 'var(--blue)' : 'var(--ok)' }} />
+                                <Sofa size={18} style={{ color: it.isFadi ? '#d97706' : (it.back ? 'var(--blue)' : 'var(--ok)') }} />
                                 <div style={{ flex: 1 }}>
                                     {it.name}
                                     <div className="sub">
@@ -1276,8 +1335,49 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                             </button>
                         );
                     })}
+                    {activeFurnGroup === 'fadi' && (FURNITURE.fadi || []).length === 0 && (
+                        <div style={{
+                            margin: '6px 4px', padding: 14, borderRadius: 12,
+                            background: '#fffbeb', border: '1px dashed #fbbf24', color: '#78350f',
+                            fontSize: 12.5, lineHeight: 1.5, textAlign: 'center',
+                        }}>
+                            <div style={{ fontWeight: 700, marginBottom: 4 }}>Thư viện FADI hiện chưa có món nào</div>
+                            <div style={{ marginBottom: 10 }}>
+                                Mở Backend Quản Trị (PC) để nhập mẫu từ SketchUp vào nhóm FADI rồi bấm <b>Đẩy Cloud FADI</b>, hoặc tải dữ liệu mới từ Cloud.
+                            </div>
+                            <button type="button" className="btn" disabled={fadiSyncBusy} onClick={() => pullFadiFromCloud(false)}>
+                                <RefreshCw size={14} className={fadiSyncBusy ? 'spin' : ''} /> {fadiSyncBusy ? 'Đang tải…' : 'Tải từ Cloud FADI'}
+                            </button>
+                        </div>
+                    )}
                 </div>
-                <button className="sheet-row" style={{ borderTop: '1px solid var(--line)', marginTop: 4 }}
+                {!inFadiMode ? (
+                    <button className="sheet-row" style={{ borderTop: '1px solid var(--line)', marginTop: 4 }}
+                        onClick={handleToggleFadiOption}>
+                        <Boxes size={18} style={{ color: fadiEnabled ? '#d97706' : 'var(--muted)' }} />
+                        <div style={{ flex: 1 }}>
+                            Thư viện nội thất FADI (Tuỳ chọn)
+                            <div className="sub">{fadiEnabled ? 'Đang bật trong danh sách trên — chạm để ẩn' : 'Chạm để nạp thêm đồ từ Thư viện FADI'}</div>
+                        </div>
+                        <span style={{
+                            padding: '3px 9px', borderRadius: 999, fontSize: 11.5, fontWeight: 700,
+                            background: fadiEnabled ? '#fef3c7' : 'var(--bg-2)',
+                            color: fadiEnabled ? '#b45309' : 'var(--muted)',
+                        }}>
+                            {fadiEnabled ? 'Đang bật' : 'Bật Option'}
+                        </span>
+                    </button>
+                ) : (
+                    <button className="sheet-row" style={{ borderTop: '1px solid var(--line)', marginTop: 4 }}
+                        disabled={fadiSyncBusy} onClick={() => pullFadiFromCloud(false)}>
+                        <RefreshCw size={18} className={fadiSyncBusy ? 'spin' : ''} style={{ color: '#d97706' }} />
+                        <div style={{ flex: 1 }}>
+                            Đồng bộ lại Thư viện FADI từ Cloud
+                            <div className="sub">Đang tự động dùng mặc định cho FADI ({(FURNITURE.fadi || []).length} món)</div>
+                        </div>
+                    </button>
+                )}
+                <button className="sheet-row" style={{ borderTop: '1px solid var(--line)' }}
                     onClick={() => { setShowFurnPicker(false); setShowFurnSizes(true); }}>
                     <Settings2 size={18} style={{ color: 'var(--ink-2)' }} />
                     <div style={{ flex: 1 }}>Sửa kích thước mặc định<div className="sub">Áp dụng cho món thêm sau</div></div>
@@ -1286,7 +1386,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                     <button className="sheet-row desktop-only"
                         onClick={() => { setShowFurnPicker(false); onOpenCatalogAdmin(); }}>
                         <Boxes size={18} style={{ color: 'var(--violet)' }} />
-                        <div style={{ flex: 1 }}>Mở Backend sửa thư viện 2D &amp; 3D (PC)<div className="sub">Sửa ký hiệu SVG 2D, màu, chất liệu &amp; nhập từ SketchUp</div></div>
+                        <div style={{ flex: 1 }}>Mở Backend sửa thư viện 2D &amp; 3D (PC)<div className="sub">Quản trị Kho chung, Thư viện FADI &amp; nhập từ SketchUp</div></div>
                     </button>
                 )}
             </Sheet>
@@ -1295,15 +1395,15 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
             <Sheet open={showFurnSizes} onClose={() => setShowFurnSizes(false)}
                 title="Kích thước mặc định" sub="Chạm để sửa — chỉ ảnh hưởng món thêm mới">
                 <div className="chip-row" style={{ marginBottom: 6 }}>
-                    {GROUPS.map(g => (
-                        <button key={g.key} className={`chip ${furnGroup === g.key ? 'on' : ''}`}
+                    {pickerGroups.map(g => (
+                        <button key={g.key} className={`chip ${activeFurnGroup === g.key ? 'on' : ''}`}
                             onClick={() => setFurnGroup(g.key)}>
                             {g.name}
                         </button>
                     ))}
                 </div>
                 <div style={{ maxHeight: '52vh', overflowY: 'auto' }}>
-                    {FURNITURE[furnGroup].map(it => {
+                    {(FURNITURE[activeFurnGroup] || []).map(it => {
                         const sz = defaultSize(it.key, settings);
                         const custom = !!settings.furnitureDefaults?.[it.key];
                         const saveSize = (w, d) => onChange({
