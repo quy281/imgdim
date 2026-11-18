@@ -17,7 +17,30 @@
 
 import { hashString } from './hash.js';
 
-const BASE = (globalThis.__MKG_PB_URL__ || 'https://db.mkg.vn').replace(/\/+$/, '');
+function resolveBackendBase() {
+    if (typeof globalThis.__MKG_PB_URL__ === 'string') {
+        return globalThis.__MKG_PB_URL__.replace(/\/+$/, '');
+    }
+    try {
+        const search = globalThis.location?.search || '';
+        const qMode = search ? new URLSearchParams(search).get('backend') : null;
+        if (qMode === 'cf' || qMode === 'pb') {
+            localStorage.setItem('ks_backend_mode', qMode);
+        }
+        const saved = localStorage.getItem('ks_backend_mode');
+        if (saved === 'cf') return '';
+        if (saved === 'pb') return 'https://db.mkg.vn';
+    } catch { /* ignore */ }
+    let envUrl;
+    try { envUrl = import.meta.env.VITE_BACKEND_URL; } catch { /* ignore outside Vite */ }
+    if (typeof envUrl === 'string') return envUrl.replace(/\/+$/, '');
+    return 'https://db.mkg.vn';
+}
+
+const BASE = resolveBackendBase();
+export function backendBase() { return BASE; }
+export function isCloudflareBackend() { return BASE === '' || !/db\.mkg\.vn/i.test(BASE); }
+export function backendLabel() { return isCloudflareBackend() ? 'Cloudflare D1 + R2' : 'db.mkg.vn'; }
 const COL = 'survey_items';
 const TEAMS = 'teams';
 const SHARES = 'shares';
@@ -2844,4 +2867,33 @@ export async function pushCloudCatalog(payload, catalogKey = 'global') {
     } catch (err) {
         return { ok: false, reason: sdkMsg(err) };
     }
+}
+
+// ===== Backup Cloudflare -> Google Drive & tai snapshot =====
+
+export async function fetchBackupStatus() {
+    requireAdmin();
+    return api('backup/status', { method: 'GET' }, 1);
+}
+
+export async function runCloudBackupNow(opts = {}) {
+    requireAdmin();
+    return api('backup/run', {
+        method: 'POST',
+        body: JSON.stringify(opts || {}),
+    }, 1);
+}
+
+export async function downloadBackupSnapshot() {
+    requireAdmin();
+    const auth = getAuth();
+    const res = await fetch(`${BASE}/api/backup/download`, {
+        headers: auth?.token ? { Authorization: auth.token } : {},
+    });
+    if (!res.ok) throw new PbError(`Khong tai duoc backup (${res.status})`, res.status);
+    const blob = await res.blob();
+    const disp = res.headers.get('content-disposition') || '';
+    const m = disp.match(/filename="?([^"]+)"?/i);
+    const filename = m?.[1] || `mkg-khaosat-backup-${new Date().toISOString().slice(0, 10)}.json.gz`;
+    return { blob, filename };
 }

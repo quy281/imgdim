@@ -568,7 +568,7 @@ export default function ProjectsScreen({
                     </>
                 )}
                 <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--muted)', paddingTop: 14 }}>
-                    MKG Khảo Sát v3.0 · db.mkg.vn
+                    MKG Khảo Sát v3.0 · {pb.backendLabel()}
                 </div>
             </Sheet>
 

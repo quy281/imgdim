@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     Users, Plus, ArrowLeft, Trash2, Copy, RefreshCw, AlertCircle, UserPlus, Database, ShieldCheck,
-    Send, UserRoundCheck, GripVertical, LayoutDashboard, Lock, MoveRight,
+    Send, UserRoundCheck, GripVertical, LayoutDashboard, Lock, MoveRight, CloudUpload, Download,
 } from 'lucide-react';
 import Sheet from './Sheet';
 import { toast } from './Toast';
@@ -38,6 +38,48 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
     const [dashboard, setDashboard] = useState(null);
     const [dragging, setDragging] = useState(null); // { type, item, fromTeamId }
     const [dropTeamId, setDropTeamId] = useState(null);
+    const [backupStatus, setBackupStatus] = useState(null);
+    const [backupBusy, setBackupBusy] = useState(false);
+
+    const refreshBackup = async () => {
+        if (!pb.isAdmin() || !pb.isCloudflareBackend()) return;
+        try {
+            setBackupStatus(await pb.fetchBackupStatus());
+        } catch { /* ignore */ }
+    };
+
+    const doRunBackup = async () => {
+        setBackupBusy(true);
+        try {
+            const res = await pb.runCloudBackupNow({ mediaBatchLimit: 80 });
+            await refreshBackup();
+            toast(`Backup ${res.status}: +${res.mediaSynced || 0} file mới, snapshot ${(Math.round((res.dbBytes || 0) / 1024))} KB`, 'ok');
+        } catch (err) {
+            toast('Backup lỗi: ' + err.message, 'err');
+        } finally {
+            setBackupBusy(false);
+        }
+    };
+
+    const doDownloadBackup = async () => {
+        setBackupBusy(true);
+        try {
+            const { blob, filename } = await pb.downloadBackupSnapshot();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            toast(`Đã tải ${filename}`, 'ok');
+        } catch (err) {
+            toast('Không tải được backup: ' + err.message, 'err');
+        } finally {
+            setBackupBusy(false);
+        }
+    };
 
     useEffect(() => {
         if (open) {
@@ -45,6 +87,8 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
             setCustomers(null); setCustomerForm(null); setCustomerRevealed(null);
             setSignupRequests([]); setSignupTeam({}); setSignupRevealed(null);
             setDashboard(null); setDragging(null); setDropTeamId(null);
+            setBackupStatus(null);
+            refreshBackup();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
@@ -704,7 +748,7 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                         {pb.isSuperuser() && confirmSetup && !busy && (
                             <>
                                 <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 10, color: 'var(--ink-2)' }}>
-                                    Thao tác này sẽ đổi cấu trúc dữ liệu trên máy chủ <b>db.mkg.vn</b>:
+                                    Thao tác này sẽ đổi cấu trúc dữ liệu trên máy chủ <b>{pb.backendLabel()}</b>:
                                     <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                                         <li>Tạo bảng <code>teams</code> và <code>shares</code></li>
                                         <li>Tạo hộp thư <code>customer_submissions</code> tách khỏi dữ liệu nội bộ</li>
@@ -848,7 +892,7 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                                     Gom toàn bộ dữ liệu về Founder, đội {confirmReassign.name}?
                                 </div>
                                 <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.55 }}>
-                                    Mọi bản ghi trên <b>db.mkg.vn</b> sẽ đổi chủ sở hữu sang{' '}
+                                    Mọi bản ghi trên <b>{pb.backendLabel()}</b> sẽ đổi chủ sở hữu sang{' '}
                                     <b>{pb.ownerName() || 'Founder'}</b>, đặt phạm vi đội và gắn vào đội{' '}
                                     <b>{confirmReassign.name}</b>. Nội dung khảo sát KHÔNG bị sửa.
                                     <div style={{ marginTop: 6 }}>
@@ -936,6 +980,54 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                         )}
                     </div>
                 </>
+            )}
+
+            {!selected && !error && !needsSetup && pb.isAdmin() && pb.isCloudflareBackend() && (
+                <div style={{
+                    margin: '4px 16px 16px', padding: 13, borderRadius: 13,
+                    background: 'var(--bg-2)', border: '1px solid var(--line)',
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <CloudUpload size={17} style={{ color: 'var(--blue)' }} />
+                        <div style={{ fontWeight: 800, fontSize: 13.5, flex: 1 }}>
+                            Sao lưu &amp; Backup (Cloudflare → Google Drive)
+                        </div>
+                        <button className="icon-btn" style={{ width: 28, height: 28 }} disabled={backupBusy} onClick={refreshBackup}>
+                            <RefreshCw size={14} className={backupBusy ? 'spin' : ''} />
+                        </button>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.55, marginBottom: 10 }}>
+                        {backupStatus ? (
+                            <>
+                                <div>
+                                    D1: <b>{backupStatus.d1Ready ? 'OK' : 'Thiếu'}</b>
+                                    {' · '}R2 Media: <b>{backupStatus.r2Ready ? 'OK' : 'Chưa bật'}</b>
+                                    {' · '}Google Drive: <b>{backupStatus.gdriveConfigured ? 'Đã kết nối' : 'Chưa đặt secret'}</b>
+                                </div>
+                                <div>
+                                    Đã backup ảnh/blob: <b>{backupStatus.manifestCount}</b>
+                                    {backupStatus.r2MediaCount != null ? ` / ${backupStatus.r2MediaCount}` : ''} file
+                                </div>
+                                {backupStatus.runs?.[0] && (
+                                    <div>
+                                        Lần gần nhất: <b>{backupStatus.runs[0].status}</b> lúc{' '}
+                                        {new Date(backupStatus.runs[0].started_at).toLocaleString('vi-VN')}
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            'Đang kiểm tra trạng thái backup định kỳ...'
+                        )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="btn btn-primary" style={{ flex: 1 }} disabled={backupBusy} onClick={doRunBackup}>
+                            <CloudUpload size={15} /> Backup ngay
+                        </button>
+                        <button className="btn" style={{ flex: 1 }} disabled={backupBusy} onClick={doDownloadBackup}>
+                            <Download size={15} /> Tải về PC
+                        </button>
+                    </div>
+                </div>
             )}
 
             {/* ===== Thành viên của 1 team ===== */}

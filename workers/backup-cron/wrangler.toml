@@ -1,0 +1,16 @@
+name = "mkg-khaosat-backup-cron"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[triggers]
+# Chay tu dong luc 02:00 sang gio Viet Nam (19:00 UTC) hang ngay
+crons = ["0 19 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mkg-khaosat-db"
+database_id = "813b8317-c182-44fa-8d87-76519fc0225c"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "mkg-khaosat-media"
