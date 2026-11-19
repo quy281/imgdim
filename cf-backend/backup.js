@@ -1,6 +1,7 @@
 // Engine sao luu dinh ky D1 + R2 -> Google Drive (tang dan / incremental, it RAM, an toan 128MB).
 
 import { genId15 } from './crypto.js';
+import { getR2QuotaStats, assertAndRecordR2Write, recordR2Delete } from './storage.js';
 import {
     isGdriveConfigured,
     getGdriveAccessToken,
@@ -82,13 +83,15 @@ async function listAllR2Objects(bucket, excludePrefix = 'backups/') {
     return out;
 }
 
-async function pruneOldR2Backups(bucket, keepCount = 30) {
+async function pruneOldR2Backups(env, keepCount = 7) {
+    const bucket = env.MEDIA;
     const listed = await bucket.list({ prefix: 'backups/db/', limit: 500 });
     const items = [...(listed.objects || [])].sort((a, b) => a.key.localeCompare(b.key)).reverse();
     if (items.length <= keepCount) return 0;
     let deleted = 0;
     for (const obj of items.slice(keepCount)) {
         await bucket.delete(obj.key).catch(() => {});
+        await recordR2Delete(env, obj.key);
         deleted++;
     }
     return deleted;
@@ -99,6 +102,7 @@ export async function runCloudBackup(env, opts = {}) {
     const triggerSource = opts.triggerSource || 'cron';
     const mediaBatchLimit = Math.max(1, Number(opts.mediaBatchLimit ?? env.BACKUP_MEDIA_BATCH ?? 45));
     const keepSnapshots = Math.max(3, Number(opts.keepSnapshots ?? env.GDRIVE_KEEP_SNAPSHOTS ?? 30));
+    const keepSnapshotsR2 = Math.max(2, Number(opts.keepSnapshotsR2 ?? env.R2_KEEP_SNAPSHOTS ?? 7));
     const runId = 'bk_' + genId15();
     const startedAt = Date.now();
     const isGz = typeof CompressionStream === 'function';
@@ -126,12 +130,13 @@ export async function runCloudBackup(env, opts = {}) {
         const gzBytes = await gzipString(JSON.stringify(snapshot));
         dbBytes = gzBytes.byteLength;
 
-        // 2. Luu 1 ban du phong noi bo tren R2 (neu R2 da bat)
+        // 2. Luu 1 ban du phong noi bo tren R2 (giu toi da 7 ban tren R2 de tiet kiem dung luong Free Tier)
         if (env.MEDIA) {
+            await assertAndRecordR2Write(env, r2BackupKey, gzBytes.byteLength);
             await env.MEDIA.put(r2BackupKey, gzBytes, {
                 httpMetadata: { contentType: isGz ? 'application/gzip' : 'application/json' },
             });
-            await pruneOldR2Backups(env.MEDIA, keepSnapshots).catch(() => {});
+            await pruneOldR2Backups(env, keepSnapshotsR2).catch(() => {});
         }
 
         // 3. Day ban chup D1 + media moi sang Google Drive (off-site)
@@ -266,6 +271,8 @@ export async function getBackupStatus(env) {
         if (objs) r2MediaCount = objs.length;
     }
 
+    const quota = await getR2QuotaStats(env).catch(() => null);
+
     return {
         backend: 'cloudflare',
         d1Ready: !!env.DB,
@@ -274,6 +281,7 @@ export async function getBackupStatus(env) {
         manifestCount: Number(mfRow?.count || 0),
         manifestBytes: Number(mfRow?.total_bytes || 0),
         r2MediaCount,
+        quota,
         runs: runsRes?.results || [],
     };
 }

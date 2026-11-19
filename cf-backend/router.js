@@ -279,7 +279,7 @@ async function handleUsers(req, env, auth, subPath, url) {
         const id = genId15();
         const ts = nowIso();
         const pwHash = await hashPasswordPBKDF2(pw);
-        const finalUname = username || email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + id.slice(0, 4);
+        const finalUname = (username || email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + id.slice(0, 4)) || null;
         try {
             await env.DB.prepare(
                 `INSERT INTO users (id, email, username, name, role, is_superuser, password_hash, token_version, verified, email_visibility, created_at, updated_at)

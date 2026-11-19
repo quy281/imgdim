@@ -1008,6 +1008,12 @@ export default function TeamAdminSheet({ open, onClose, needsSetupHint = false }
                                     Đã backup ảnh/blob: <b>{backupStatus.manifestCount}</b>
                                     {backupStatus.r2MediaCount != null ? ` / ${backupStatus.r2MediaCount}` : ''} file
                                 </div>
+                                {backupStatus.quota && (
+                                    <div>
+                                        Khống chế chi phí R2: <b>{(backupStatus.quota.r2Bytes / (1024 * 1024)).toFixed(1)} MB</b> / 8.192 MB Free
+                                        {' · '}Ghi/Đọc tháng: <b>{backupStatus.quota.classA}</b> / {Math.round(backupStatus.quota.classACap / 1000)}K
+                                    </div>
+                                )}
                                 {backupStatus.runs?.[0] && (
                                     <div>
                                         Lần gần nhất: <b>{backupStatus.runs[0].status}</b> lúc{' '}

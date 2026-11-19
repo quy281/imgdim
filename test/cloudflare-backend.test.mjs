@@ -303,5 +303,11 @@ const pulledD1Photo = pullD1Only.pulledDocs.find(d => d.id === 'd_photo_d1');
 check('KTS2 keo anh tu D1 media_blobs fallback ve thanh cong', typeof pulledD1Photo?.img === 'string' && pulledD1Photo.img.startsWith('data:'));
 env.MEDIA = savedMedia;
 
+// 9. Test khoa khong che chi phi R2 Free Tier (8GB cap & quota ledger)
+await pb.logout();
+await pb.loginSmart('admin', '2222');
+const bkStatus = await pb.fetchBackupStatus();
+check('BackupStatus bao R2 ledger dung luong va nguong khong che 8GB Free', bkStatus?.quota?.r2Bytes > 0 && bkStatus.quota.r2CapBytes === 8 * 1024 * 1024 * 1024);
+
 console.log(`\n===== CLOUDFLARE E2E TEST: ${pass} pass, ${fail} fail =====`);
 if (fail > 0) process.exit(1);

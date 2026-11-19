@@ -115,13 +115,20 @@ async function main() {
     console.log(`  D1 ${DB_NAME}: ${dbId || 'chua tao (chay --provision)'}`);
 
     console.log('\n> Kiem tra R2...');
-    const r2List = runCapture(['r2', 'bucket', 'list']);
-    let r2Enabled = r2List.ok;
-    let bucketExists = r2Enabled && r2List.out.includes(BUCKET_NAME);
-    if (!r2Enabled) {
+    let r2List = runCapture(['r2', 'bucket', 'list']);
+    if (!r2List.ok && !r2List.out.includes('10042')) {
+        r2List = runCapture(['r2', 'bucket', 'list']);
+    }
+    const r2Disabled = !r2List.ok && r2List.out.includes('10042');
+    const existingHasR2 = fs.existsSync(path.resolve('wrangler.toml'))
+        && /\n\[\[r2_buckets\]\]/.test(fs.readFileSync(path.resolve('wrangler.toml'), 'utf8'));
+    let bucketExists = r2List.ok ? r2List.out.includes(BUCKET_NAME) : (!r2Disabled && existingHasR2);
+    if (r2Disabled) {
         console.log('! R2 CHUA DUOC BAT tren Cloudflare Dashboard (code 10042).');
         console.log('  Hay mo https://dash.cloudflare.com -> muc R2 Object Storage -> bam Enable R2 (goi 10GB free, 0d egress).');
         console.log('  Sau khi bat xong, chay lai: node scripts/cf-setup.mjs --provision --deploy-cron --deploy-pages');
+    } else if (!r2List.ok) {
+        console.warn('! Loi tam thoi khi kiem tra R2; giu nguyen cau hinh bucket hien co.');
     } else if (!bucketExists && hasFlag('--provision')) {
         console.log(`> Tao R2 bucket "${BUCKET_NAME}"...`);
         execFileSync('npx', ['--no-install', 'wrangler', 'r2', 'bucket', 'create', BUCKET_NAME], { stdio: 'inherit', shell: true });

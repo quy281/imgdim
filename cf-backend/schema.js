@@ -186,6 +186,16 @@ export const DDL_STATEMENTS = [
         data_b64 TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS r2_ledger (
+        r2_key TEXT PRIMARY KEY,
+        size INTEGER NOT NULL DEFAULT 0,
+        updated_ms INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE TABLE IF NOT EXISTS quota_monthly (
+        month TEXT PRIMARY KEY,
+        class_a INTEGER NOT NULL DEFAULT 0,
+        class_b INTEGER NOT NULL DEFAULT 0
+    )`,
 ];
 
 export async function ensureD1Schema(db) {

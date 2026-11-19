@@ -19,8 +19,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+
+const execFileAsync = promisify(execFile);
 
 const args = process.argv.slice(2);
 const hasFlag = (f) => args.includes(f);
@@ -36,12 +39,46 @@ const RESTORE_FILE = argVal('--restore-file');
 const PB_URL = argVal('--pb-url', process.env.PB_URL || 'https://db.mkg.vn').replace(/\/+$/, '');
 const PB_EMAIL = argVal('--pb-email', process.env.PB_EMAIL || '');
 const PB_PASSWORD = argVal('--pb-password', process.env.PB_PASSWORD || '');
+const PB_HASH_DB = argVal('--pb-hash-db');
 const FALLBACK_PIN = argVal('--fallback-pin', '1111');
 const PUSH = hasFlag('--push');
 const DB_NAME = argVal('--db', 'mkg-khaosat-db');
 const BUCKET_NAME = argVal('--bucket', 'mkg-khaosat-media');
 const LOCAL = hasFlag('--local');
 const INLINE_JSON_LIMIT = 180_000;
+
+import bcrypt from 'bcryptjs';
+
+const COMMON_PINS = ['1111', '2222', '0000', '1234', '2580', '6666', '8888', '9999', '123456'];
+
+function convertCommonPinHash(bcryptHash) {
+    if (!bcryptHash || !String(bcryptHash).startsWith('$2')) return bcryptHash;
+    const norm = bcryptHash.startsWith('$2y$') ? '$2a$' + bcryptHash.slice(4) : bcryptHash;
+    for (const pin of COMMON_PINS) {
+        if (bcrypt.compareSync(`mkgks-${pin}-v1`, norm)) {
+            return pbkdf2Node(`mkgks-${pin}-v1`);
+        }
+    }
+    return bcryptHash;
+}
+
+function loadHashMapFromSqlite(dataDbPath) {
+    const out = { byId: new Map(), byEmail: new Map() };
+    if (!dataDbPath || !fs.existsSync(dataDbPath)) return out;
+    const sqlite = new DatabaseSync(dataDbPath, { readOnly: true });
+    const hasTable = (name) => !!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+    for (const tbl of ['users', '_superusers', '_admins']) {
+        if (!hasTable(tbl)) continue;
+        for (const r of sqlite.prepare(`SELECT * FROM "${tbl}"`).all()) {
+            const h = r.password || r.passwordHash || '';
+            if (!h) continue;
+            if (r.id) out.byId.set(r.id, h);
+            if (r.email) out.byEmail.set(String(r.email).toLowerCase(), h);
+        }
+    }
+    sqlite.close();
+    return out;
+}
 
 function pbkdf2Node(password) {
     const salt = crypto.randomBytes(16);
@@ -122,15 +159,16 @@ function fromPocketBaseBackupDir(pbDir, outDir) {
         const email = String(u.email || '').toLowerCase();
         if (email) seenEmails.add(email);
         const suMatch = suRows.find(s => String(s.email || '').toLowerCase() === email);
+        const hash = u.password || u.passwordHash || suMatch?.password || suMatch?.passwordHash || '';
         users.push({
             id: u.id,
-            email: u.email || '',
-            username: u.username || (email.split('@')[0] || u.id),
+            email: u.email || null,
+            username: u.username ? String(u.username) : null,
             name: u.name || '',
             role: u.role || '',
             is_superuser: suEmails.has(email) ? 1 : 0,
-            // Giu nguyen bcrypt hash tu PocketBase; neu la superuser thi dung hash su neu users rong
-            password_hash: u.password || u.passwordHash || suMatch?.password || suMatch?.passwordHash || '',
+            // Giu nguyen bcrypt hash tu PocketBase; tu dong chuyen PIN pho bien sang PBKDF2 nhanh <2ms
+            password_hash: convertCommonPinHash(hash),
             token_version: 1,
             verified: u.verified ? 1 : 1,
             email_visibility: u.emailVisibility ? 1 : 0,
@@ -148,7 +186,7 @@ function fromPocketBaseBackupDir(pbDir, outDir) {
             name: 'Founder',
             role: 'admin',
             is_superuser: 1,
-            password_hash: s.password || s.passwordHash || '',
+            password_hash: convertCommonPinHash(s.password || s.passwordHash || ''),
             token_version: 1,
             verified: 1,
             email_visibility: 1,
@@ -311,16 +349,27 @@ async function fromPocketBaseLive(pbUrl, email, password, outDir) {
 
     const defaultPinHash = pbkdf2Node(`mkgks-${FALLBACK_PIN}-v1`);
     const founderHash = pbkdf2Node(password);
+    const hashMap = loadHashMapFromSqlite(PB_HASH_DB ? path.resolve(PB_HASH_DB) : '');
+    let preservedHashes = 0;
 
     const pbUsers = await listAll('users');
     const suEmailLow = String(email).toLowerCase();
     const users = pbUsers.map(u => {
-        const isSu = String(u.email || '').toLowerCase() === suEmailLow ? 1 : 0;
+        const emailLow = String(u.email || '').toLowerCase();
+        const isSu = emailLow === suEmailLow ? 1 : 0;
+        const origHash = hashMap.byId.get(u.id) || (emailLow ? hashMap.byEmail.get(emailLow) : '') || '';
+        if (origHash) preservedHashes++;
+        const finalHash = isSu
+            ? founderHash
+            : (origHash ? convertCommonPinHash(origHash) : defaultPinHash);
         return {
-            id: u.id, email: u.email || '', username: u.username || u.email?.split('@')[0] || u.id,
-            name: u.name || '', role: u.role || '', is_superuser: isSu,
-            // HTTP API PocketBase an passwordHash -> dat hash PIN tam cho nhan vien/khach, giu mat khau that cho Founder
-            password_hash: isSu ? founderHash : defaultPinHash,
+            id: u.id,
+            email: u.email || null,
+            username: u.username ? String(u.username) : null,
+            name: u.name || '',
+            role: u.role || '',
+            is_superuser: isSu,
+            password_hash: finalHash,
             token_version: 1, verified: 1, email_visibility: u.emailVisibility ? 1 : 0,
             created_at: u.created || new Date().toISOString(),
             updated_at: u.updated || new Date().toISOString(),
@@ -335,6 +384,7 @@ async function fromPocketBaseLive(pbUrl, email, password, outDir) {
             updated_at: suRec.updated || new Date().toISOString(),
         });
     }
+    if (PB_HASH_DB) console.log(`> Da khoi phuc hash mat khau/PIN goc cho ${preservedHashes}/${users.length} users tu ${PB_HASH_DB}`);
 
     const teams = [];
     const team_members = [];
@@ -344,34 +394,41 @@ async function fromPocketBaseLive(pbUrl, email, password, outDir) {
     }
 
     const uploads = [];
-    const survey_items = [];
     const rawItems = await listAll('survey_items');
     console.log(`> Tai ${rawItems.length} records + anh tu survey_items...`);
-    for (const r of rawItems) {
-        const off = maybeOffloadJson(outDir, 'survey_items', r.id, r.data);
-        if (off.upload) uploads.push(off.upload);
-        let photoR2 = '';
-        if (r.photo) {
-            const url = `${pbUrl}/api/files/survey_items/${r.id}/${encodeURIComponent(r.photo)}${fTok ? `?token=${fTok}` : ''}`;
-            const imgRes = await fetch(url);
-            if (imgRes.ok) {
-                const buf = Buffer.from(await imgRes.arrayBuffer());
-                photoR2 = `photos/${r.id}/${String(r.photo).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-                uploads.push(stageBlob(outDir, photoR2, buf, imgRes.headers.get('content-type') || 'image/jpeg'));
+    const survey_items = new Array(rawItems.length);
+    let dlIdx = 0;
+    const dlWorker = async () => {
+        for (;;) {
+            const idx = dlIdx++;
+            if (idx >= rawItems.length) return;
+            const r = rawItems[idx];
+            const off = maybeOffloadJson(outDir, 'survey_items', r.id, r.data);
+            if (off.upload) uploads.push(off.upload);
+            let photoR2 = '';
+            if (r.photo) {
+                const url = `${pbUrl}/api/files/survey_items/${r.id}/${encodeURIComponent(r.photo)}${fTok ? `?token=${fTok}` : ''}`;
+                const imgRes = await fetch(url);
+                if (imgRes.ok) {
+                    const buf = Buffer.from(await imgRes.arrayBuffer());
+                    photoR2 = `photos/${r.id}/${String(r.photo).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+                    uploads.push(stageBlob(outDir, photoR2, buf, imgRes.headers.get('content-type') || 'image/jpeg'));
+                }
             }
+            survey_items[idx] = {
+                id: r.id, owner: r.owner || '', owner_name: r.owner_name || '',
+                item_id: r.item_id || r.id, kind: r.kind || 'doc', project_id: r.project_id || r.item_id || '',
+                name: r.name || '', scope: r.scope || 'team', team: r.team || '',
+                updated_ms: Number(r.updated_ms || 0), deleted: r.deleted ? 1 : 0,
+                rev: Number(r.rev || 1), schema_v: Number(r.schema_v || 3),
+                photo: r.photo || '', photo_r2_key: photoR2, photo_hash: r.photo_hash || '',
+                data_json: off.jsonText, data_r2_key: off.r2Key,
+                created_at: r.created || new Date().toISOString(),
+                updated_at: r.updated || new Date().toISOString(),
+            };
         }
-        survey_items.push({
-            id: r.id, owner: r.owner || '', owner_name: r.owner_name || '',
-            item_id: r.item_id || r.id, kind: r.kind || 'doc', project_id: r.project_id || r.item_id || '',
-            name: r.name || '', scope: r.scope || 'team', team: r.team || '',
-            updated_ms: Number(r.updated_ms || 0), deleted: r.deleted ? 1 : 0,
-            rev: Number(r.rev || 1), schema_v: Number(r.schema_v || 3),
-            photo: r.photo || '', photo_r2_key: photoR2, photo_hash: r.photo_hash || '',
-            data_json: off.jsonText, data_r2_key: off.r2Key,
-            created_at: r.created || new Date().toISOString(),
-            updated_at: r.updated || new Date().toISOString(),
-        });
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, Math.max(1, rawItems.length)) }, dlWorker));
 
     const deletions = (await listAll('deletions')).map(d => ({
         id: d.id, item_id: d.item_id, kind: d.kind || 'doc',
@@ -460,10 +517,15 @@ const TABLE_COLS = {
     experience_posts: ['id', 'owner', 'owner_name', 'category', 'type', 'title', 'desc', 'detail_url', 'embed_url', 'status', 'submitted_ms', 'reviewed_by', 'reviewed_ms', 'created_at', 'updated_at'],
     backup_media_manifest: ['r2_key', 'etag', 'size', 'gdrive_file_id', 'gdrive_folder_id', 'backed_up_at'],
     media_blobs: ['key', 'content_type', 'size', 'data_b64', 'updated_at'],
+    r2_ledger: ['r2_key', 'size', 'updated_ms'],
 };
 
 function runWrangler(wranglerArgs) {
     execFileSync('npx', ['--no-install', 'wrangler', ...wranglerArgs], { stdio: 'inherit', shell: true });
+}
+
+async function runWranglerAsync(wranglerArgs) {
+    await execFileAsync('npx', ['--no-install', 'wrangler', ...wranglerArgs], { shell: true });
 }
 
 async function main() {
@@ -477,6 +539,15 @@ async function main() {
     if (RESTORE_FILE) data = fromCloudBackupFile(path.resolve(RESTORE_FILE));
     else if (PB_DIR) data = fromPocketBaseBackupDir(path.resolve(PB_DIR), OUT_DIR);
     else data = await fromPocketBaseLive(PB_URL, PB_EMAIL, PB_PASSWORD, OUT_DIR);
+
+    if (data.uploads.length && !data.tables.r2_ledger) {
+        const tsMs = Date.now();
+        data.tables.r2_ledger = data.uploads.map(u => ({
+            r2_key: u.key,
+            size: fs.statSync(u.file).size,
+            updated_ms: tsMs,
+        }));
+    }
 
     const schemaSql = fs.readFileSync(path.resolve('cloudflare/migrations/0001_init.sql'), 'utf8');
     const lines = [schemaSql, ''];
@@ -501,11 +572,18 @@ async function main() {
 
     console.log(`> Upload ${data.uploads.length} file vao R2 ${BUCKET_NAME} (${modeFlag})...`);
     let ok = 0;
-    for (const u of data.uploads) {
-        runWrangler(['r2', 'object', 'put', `${BUCKET_NAME}/${u.key}`, '--file', u.file, '--content-type', u.contentType, modeFlag]);
-        ok++;
-        if (ok % 10 === 0 || ok === data.uploads.length) console.log(`  R2 uploaded ${ok}/${data.uploads.length}`);
-    }
+    let idx = 0;
+    const worker = async () => {
+        for (;;) {
+            const cur = idx++;
+            if (cur >= data.uploads.length) return;
+            const u = data.uploads[cur];
+            await runWranglerAsync(['r2', 'object', 'put', `${BUCKET_NAME}/${u.key}`, '--file', u.file, '--content-type', u.contentType, modeFlag]);
+            ok++;
+            if (ok % 10 === 0 || ok === data.uploads.length) console.log(`  R2 uploaded ${ok}/${data.uploads.length}`);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(5, Math.max(1, data.uploads.length)) }, worker));
     console.log('\nHOAN TAT MIGRATE / RESTORE CLOUDFLARE!');
 }
 
