@@ -4,7 +4,9 @@ import { ExternalLink, AlertCircle, RefreshCw, ChevronLeft, ChevronRight, X } fr
 import PlanGrid from '../plan/PlanGrid';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
+import RoomFloorsLayer from '../plan/RoomFloorsLayer';
 import FurnitureLayer from '../plan/FurnitureLayer';
+import CutoutCanvas from '../plan/CutoutCanvas';
 import NoteMarker from '../photo/NoteMarker';
 import { bboxOfPlan } from '../lib/geometry';
 import * as pb from '../lib/pb';
@@ -44,6 +46,7 @@ function PlanCanvas({ doc }) {
                         <PlanGrid stageScale={view.scale} stagePos={{ x: view.x, y: view.y }} stageSize={size}
                             contentBounds={bboxOfPlan(doc.plan, doc.notes, doc.furniture)}
                             gridMinor={100} gridMajor={1000} />
+                        <RoomFloorsLayer plan={doc.plan} />
                         <WallsLayer plan={doc.plan} scale={view.scale} sel={null}
                             listening={false} showHandles={false} />
                         <RoomLabels plan={doc.plan} scale={view.scale} listening={false} />
@@ -57,6 +60,31 @@ function PlanCanvas({ doc }) {
                         </Group>
                     </Layer>
                 </Stage>
+            )}
+        </div>
+    );
+}
+
+function CutoutReadOnlyCanvas({ doc }) {
+    const wrapRef = useRef(null);
+    const [size, setSize] = useState({ width: 0, height: 0 });
+    const [selId, setSelId] = useState(() => doc?.cutout?.cutouts?.[0]?.id || null);
+    useEffect(() => {
+        const el = wrapRef.current;
+        if (!el) return;
+        const ro = new ResizeObserver(() => setSize({ width: el.offsetWidth, height: el.offsetHeight }));
+        ro.observe(el);
+        setSize({ width: el.offsetWidth, height: el.offsetHeight });
+        return () => ro.disconnect();
+    }, []);
+    const cutout = doc?.cutout || { w: 1000, h: 550, cutouts: [] };
+    const ow = cutout.w || 1000, oh = cutout.h || 550;
+    const scale = size.width ? Math.min(size.width / (ow + 260), size.height / (oh + 260)) * 0.88 : 0.2;
+    const view = { scale, x: size.width / 2 - (ow / 2) * scale, y: size.height / 2 - (oh / 2) * scale };
+    return (
+        <div ref={wrapRef} style={{ flex: 1, minHeight: 0, background: cutout.theme === 'light' ? '#f1f5f9' : '#0b1324', position: 'relative' }}>
+            {size.width > 0 && (
+                <CutoutCanvas stageSize={size} view={view} cutout={cutout} selId={selId} readOnly onSelectHole={setSelId} />
             )}
         </div>
     );
@@ -176,9 +204,11 @@ export default function ShareViewer({ code, data: inlineData, decodeError }) {
 
     const data = state.data;
     const plans = data?.docs || [];
+    const cutouts = data?.cutouts || [];
     const photos = data?.photos || [];
     const tabs = [
         ...plans.map((d, i) => ({ label: d.name, kind: 'plan', idx: i })),
+        ...cutouts.map((d, i) => ({ label: `✂️ ${d.name}`, kind: 'cutout', idx: i })),
         ...(photos.length ? [{ label: `Ảnh (${photos.length})`, kind: 'photos' }] : []),
     ];
     const active = tabs[Math.min(tab, tabs.length - 1)];
@@ -227,6 +257,7 @@ export default function ShareViewer({ code, data: inlineData, decodeError }) {
             )}
 
             {data && active?.kind === 'plan' && <PlanCanvas key={active.idx} doc={plans[active.idx]} />}
+            {data && active?.kind === 'cutout' && <CutoutReadOnlyCanvas key={`cut-${active.idx}`} doc={cutouts[active.idx]} />}
             {data && active?.kind === 'photos' && <PhotoGallery photos={photos} />}
             {data && !active && <Centered>Không có dữ liệu để xem</Centered>}
         </div>

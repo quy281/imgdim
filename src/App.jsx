@@ -4,6 +4,7 @@ import ProjectScreen from './screens/ProjectScreen';
 import PlanEditor from './screens/PlanEditor';
 import PhotoEditor from './screens/PhotoEditor';
 import BoardEditor from './screens/BoardEditor';
+import CutoutEditor from './screens/CutoutEditor';
 import BoardInventoryScreen from './screens/BoardInventoryScreen';
 import BoardMarketScreen from './screens/BoardMarketScreen';
 import ExperienceScreen from './screens/ExperienceScreen';
@@ -19,6 +20,7 @@ import { ToastHost, toast } from './ui/Toast';
 import * as db from './lib/db';
 import * as pb from './lib/pb';
 import { newProject, newPlanDoc, newPhotoDoc, newBoardDoc } from './lib/planModel';
+import { newCutoutDoc, makeCutoutThumb, SURFACE_PRESETS } from './lib/cutoutModel';
 import { fileToPhoto, makePlanThumb } from './lib/image';
 import { genId } from './lib/geometry';
 import { getCurrentLocation } from './lib/location';
@@ -63,9 +65,10 @@ function buildProjectStats(allDocs) {
         if (doc.type === 'board') continue;
         const projectId = String(doc.projectId || '');
         if (!projectId) continue;
-        const item = stats[projectId] || { photos: 0, plans: 0, total: 0, thumb: null, thumbType: null };
+        const item = stats[projectId] || { photos: 0, plans: 0, cutouts: 0, total: 0, thumb: null, thumbType: null };
         if (doc.type === 'photo') item.photos += 1;
         if (doc.type === 'plan') item.plans += 1;
+        if (doc.type === 'cutout') item.cutouts += 1;
         item.total += 1;
         if (doc.thumb) {
             const t = Number(doc.updatedAt || doc.createdAt || 0);
@@ -381,7 +384,7 @@ export default function App() {
 
     const openDoc = (doc) => {
         navigate({
-            screen: doc.type === 'plan' ? 'plan' : doc.type === 'board' ? 'board' : 'photo',
+            screen: doc.type === 'plan' ? 'plan' : doc.type === 'board' ? 'board' : doc.type === 'cutout' ? 'cutout' : 'photo',
             projectId: doc.projectId,
             docId: doc.id,
         });
@@ -450,6 +453,7 @@ export default function App() {
                 ...doc,
                 updatedAt: pb.now(),
                 ...(doc.type === 'plan' ? { thumb: makePlanThumb(doc.plan) } : null),
+                ...(doc.type === 'cutout' ? { thumb: makeCutoutThumb(doc.cutout) } : null),
             };
             try {
                 // Phải chờ IndexedDB xác nhận trước khi đánh dấu pending/sync. Nếu bỏ
@@ -495,6 +499,24 @@ export default function App() {
         setDocs(prev => [...prev, doc]);
         markDirty('doc', doc);
         navigate({ screen: 'board', projectId, docId: doc.id });
+    };
+
+    const createCutoutDoc = async (presetKey = 'lavabo_top') => {
+        const projectId = routeRef.current.projectId;
+        const count = docsRef.current.filter(d => d.type === 'cutout').length + 1;
+        const preset = SURFACE_PRESETS.find(s => s.key === presetKey);
+        const raw = newCutoutDoc(projectId, `${preset?.name || 'Đo lỗ'} ${count}`, presetKey);
+        const doc = {
+            ...raw,
+            thumb: makeCutoutThumb(raw.cutout),
+            createdAt: pb.now(),
+            updatedAt: pb.now(),
+        };
+        await db.putDoc(doc);
+        refreshProjectStats();
+        setDocs(prev => [...prev, doc]);
+        markDirty('doc', doc);
+        navigate({ screen: 'cutout', projectId, docId: doc.id });
     };
 
     const importPhotos = async (files) => {
@@ -882,12 +904,14 @@ export default function App() {
     };
 
     let screen;
-    if ((route.screen === 'plan' || route.screen === 'photo' || route.screen === 'board') && currentDoc) {
+    if ((route.screen === 'plan' || route.screen === 'photo' || route.screen === 'board' || route.screen === 'cutout') && currentDoc) {
         screen = route.screen === 'plan'
             ? <PlanEditor key={currentDoc.id} doc={currentDoc} projectName={currentProject?.name || ''} onChange={updateDoc} onBack={goBack} onOpenCatalogAdmin={() => navigate({ screen: 'catalog-admin' })} />
             : route.screen === 'board'
                 ? <BoardEditor key={currentDoc.id} doc={currentDoc} onChange={updateDoc} onBack={goBack} />
-                : <PhotoEditor key={currentDoc.projectId || 'photo-album'} doc={currentDoc} photos={projectPhotos} onSwitchPhoto={switchPhotoDoc} onChange={updateDoc} onBack={goBack} />;
+                : route.screen === 'cutout'
+                    ? <CutoutEditor key={currentDoc.id} doc={currentDoc} projectName={currentProject?.name || ''} onChange={updateDoc} onBack={goBack} />
+                    : <PhotoEditor key={currentDoc.projectId || 'photo-album'} doc={currentDoc} photos={projectPhotos} onSwitchPhoto={switchPhotoDoc} onChange={updateDoc} onBack={goBack} />;
     } else if (route.screen === 'catalog-admin') {
         screen = (
             <Suspense fallback={<div className="loading-screen"><div className="loading-spinner" /><div>Đang mở Backend thư viện…</div></div>}>
@@ -935,6 +959,7 @@ export default function App() {
                 onBack={goBack}
                 onOpenDoc={openDoc}
                 onCreatePlan={createPlanDoc}
+                onCreateCutout={createCutoutDoc}
                 onImportPhotos={importPhotos}
                 onRenameProject={renameProject}
                 onRenameDoc={renameDoc}

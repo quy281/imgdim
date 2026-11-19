@@ -25,8 +25,9 @@ const fmtDate = (s) => {
 async function buildPayload(project) {
     const docs = await db.listDocs(project.id);
     const plans = docs.filter(d => d.type === 'plan');
+    const cutouts = docs.filter(d => d.type === 'cutout');
     const photos = docs.filter(d => d.type === 'photo' && d.thumb);
-    if (!plans.length && !photos.length) throw new Error('Dự án chưa có mặt bằng hoặc ảnh nào để chia sẻ');
+    if (!plans.length && !cutouts.length && !photos.length) throw new Error('Dự án chưa có mặt bằng, bản đo lỗ hoặc ảnh nào để chia sẻ');
     return {
         v: 3,
         projectName: project.name,
@@ -35,6 +36,7 @@ async function buildPayload(project) {
             id: d.id, name: d.name, plan: d.plan,
             notes: d.notes || [], furniture: d.furniture || [],
         })),
+        cutouts: cutouts.map(d => ({ id: d.id, name: d.name, cutout: d.cutout })),
         photos: photos.map(d => ({ id: d.id, name: d.name, thumb: d.thumb, lines: d.lines || [], w: d.w, h: d.h })),
     };
 }

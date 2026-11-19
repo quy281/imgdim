@@ -1,16 +1,18 @@
 import React, { useState, useRef } from 'react';
 import {
-    ArrowLeft, Camera, Images, PencilRuler, MoreVertical, Pencil, Trash2, FileText,
+    ArrowLeft, Camera, Images, PencilRuler, MoreVertical, Pencil, Trash2, FileText, Scan, Flame, Droplets, Plug, Maximize2,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
 import Confirm from '../ui/Confirm';
 import ServiceBanner from '../ui/ServiceBanner';
 import ExperiencePreview from '../ui/ExperiencePreview';
+import { SURFACE_PRESETS } from '../lib/cutoutModel';
 
-export default function ProjectScreen({ project, docs, onBack, onOpenDoc, onCreatePlan, onImportPhotos, onRenameProject, onRenameDoc, onDeleteDoc, onOpenExperience }) {
+export default function ProjectScreen({ project, docs, onBack, onOpenDoc, onCreatePlan, onCreateCutout, onImportPhotos, onRenameProject, onRenameDoc, onDeleteDoc, onOpenExperience }) {
     const [filter, setFilter] = useState('all');
     const [menuFor, setMenuFor] = useState(null); // doc object
+    const [showCutoutPicker, setShowCutoutPicker] = useState(false);
     const [textSheet, setTextSheet] = useState(null);
     const [confirm, setConfirm] = useState(null);
     const cameraRef = useRef(null);
@@ -18,6 +20,7 @@ export default function ProjectScreen({ project, docs, onBack, onOpenDoc, onCrea
 
     const shown = docs.filter(d => filter === 'all' || d.type === filter);
     const plans = docs.filter(d => d.type === 'plan').length;
+    const cutouts = docs.filter(d => d.type === 'cutout').length;
     const photos = docs.filter(d => d.type === 'photo').length;
 
     const pickFiles = async (e) => {
@@ -34,14 +37,17 @@ export default function ProjectScreen({ project, docs, onBack, onOpenDoc, onCrea
                     title: 'Đổi tên dự án', initial: project.name, onOK: (name) => onRenameProject(project.id, name),
                 })}>
                     <div className="hdr-title">{project.name}</div>
-                    <div className="hdr-sub">{plans} mặt bằng · {photos} ảnh</div>
+                    <div className="hdr-sub">
+                        {plans} mặt bằng{cutouts > 0 ? ` · ${cutouts} đo lỗ` : ''} · {photos} ảnh
+                    </div>
                 </div>
             </div>
 
             <div className="scroll-body">
-                <div className="chip-row">
+                <div className="chip-row" style={{ flexWrap: 'wrap' }}>
                     <button className={`chip ${filter === 'all' ? 'on' : ''}`} onClick={() => setFilter('all')}>Tất cả</button>
                     <button className={`chip ${filter === 'plan' ? 'on' : ''}`} onClick={() => setFilter('plan')}>Mặt bằng</button>
+                    <button className={`chip ${filter === 'cutout' ? 'on' : ''}`} onClick={() => setFilter('cutout')}>Đo lỗ</button>
                     <button className={`chip ${filter === 'photo' ? 'on' : ''}`} onClick={() => setFilter('photo')}>Ảnh</button>
                 </div>
 
@@ -58,9 +64,15 @@ export default function ProjectScreen({ project, docs, onBack, onOpenDoc, onCrea
                                 {d.thumb
                                     ? <img className="doc-thumb" src={d.thumb} alt={d.name} />
                                     : <div className="doc-thumb" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>
-                                        {d.type === 'plan' ? <PencilRuler size={30} /> : <Images size={30} />}
+                                        {d.type === 'plan'
+                                            ? <PencilRuler size={30} />
+                                            : d.type === 'cutout'
+                                                ? <Scan size={30} />
+                                                : <Images size={30} />}
                                     </div>}
-                                <div className="doc-type-badge">{d.type === 'plan' ? '📐 MB' : '📷'}</div>
+                                <div className="doc-type-badge">
+                                    {d.type === 'plan' ? '📐 MB' : d.type === 'cutout' ? '✂️ Đo lỗ' : '📷'}
+                                </div>
                                 <button className="doc-kebab" onClick={(e) => { e.stopPropagation(); setMenuFor(d); }}>
                                     <MoreVertical size={16} />
                                 </button>
@@ -86,7 +98,34 @@ export default function ProjectScreen({ project, docs, onBack, onOpenDoc, onCrea
                 <button className="btn" style={{ borderColor: '#f5c6c4', color: 'var(--red-dark)', background: 'var(--red-soft)' }} onClick={onCreatePlan}>
                     <PencilRuler size={19} /> Mặt bằng
                 </button>
+                {onCreateCutout && (
+                    <button className="btn" style={{ borderColor: '#bae6fd', color: '#0369a1', background: '#f0f9ff' }} onClick={() => setShowCutoutPicker(true)}>
+                        <Scan size={19} /> Đo lỗ
+                    </button>
+                )}
             </div>
+
+            {/* Chọn mẫu bề mặt đo lỗ (bếp, lavabo, ổ điện) */}
+            <Sheet open={showCutoutPicker} onClose={() => setShowCutoutPicker(false)} title="Tạo bản đo lỗ khoét mới" sub="Chọn bề mặt cần đo để nạp sẵn kích thước chuẩn">
+                {SURFACE_PRESETS.map(p => {
+                    const Icon = p.key === 'kitchen_top' || p.key === 'island_top'
+                        ? Flame
+                        : p.key === 'lavabo_top'
+                            ? Droplets
+                            : p.key === 'wall_elec'
+                                ? Plug
+                                : Maximize2;
+                    return (
+                        <button key={p.key} className="sheet-row" onClick={() => { setShowCutoutPicker(false); onCreateCutout(p.key); }}>
+                            <Icon size={19} style={{ color: p.key === 'wall_elec' ? '#10b981' : p.key === 'lavabo_top' ? '#0ea5e9' : '#f59e0b' }} />
+                            <div style={{ flex: 1 }}>
+                                {p.name}
+                                <div className="sub">{p.w} × {p.h} mm · dày {p.thickness}mm</div>
+                            </div>
+                        </button>
+                    );
+                })}
+            </Sheet>
 
             {/* Per-doc menu */}
             <Sheet open={!!menuFor} onClose={() => setMenuFor(null)} title={menuFor?.name}>

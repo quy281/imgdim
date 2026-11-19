@@ -3,7 +3,7 @@ import {
     FolderOpen, Plus, Settings, MoreVertical, Pencil, Trash2,
     Cloud, CloudOff, RefreshCw, LogIn, LogOut, CheckCircle2,
     Share2, ListChecks, Users, Lock, ShieldCheck, Check, KeyRound, Inbox, AlertCircle,
-    UserPlus, Store, PackageOpen, Grid2X2, List, Images, PencilRuler, Boxes,
+    UserPlus, Store, PackageOpen, Grid2X2, List, Images, PencilRuler, Boxes, Scan,
 } from 'lucide-react';
 import Sheet from '../ui/Sheet';
 import TextSheet from '../ui/TextSheet';
@@ -201,6 +201,7 @@ export default function ProjectsScreen({
                                             <div className="project-name">{p.name}</div>
                                             <div className="project-stats">
                                                 <span><PencilRuler size={13} />{stats.plans || 0} bản vẽ</span>
+                                                {(stats.cutouts || 0) > 0 && <span><Scan size={13} />{stats.cutouts} đo lỗ</span>}
                                                 <span><Images size={13} />{stats.photos || 0} hình</span>
                                             </div>
                                             {/* Hiện CẢ hai việc: chia sẻ cho đội nào, và của ai. Bản cũ thấy
