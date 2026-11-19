@@ -22,15 +22,16 @@ const BACKUP_TABLES = [
     'signup_requests',
     'experience_posts',
     'backup_media_manifest',
+    'media_blobs',
 ];
 
 export async function dumpDatabaseSnapshot(db) {
     const tables = {};
     for (const table of BACKUP_TABLES) {
         const rows = [];
-        const pageSize = 400;
+        const pageSize = table === 'media_blobs' ? 20 : 400;
         for (let offset = 0; ; offset += pageSize) {
-            const res = await db.prepare(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`).bind(pageSize, offset).all();
+            const res = await db.prepare(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`).bind(pageSize, offset).all().catch(() => ({ results: [] }));
             const batch = res?.results || [];
             rows.push(...batch);
             if (batch.length < pageSize) break;

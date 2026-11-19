@@ -280,5 +280,28 @@ check('Snapshot Gzip tren Google Drive giai nen duoc & du 12 bang', unzipped.for
 const bk2 = await runCloudBackup(env, { triggerSource: 'cron', mediaBatchLimit: 50 });
 check('Backup lan 2 bo qua file media cu (incremental mediaSkipped >= 2)', bk2.mediaSynced === 0 && bk2.mediaSkipped >= 2);
 
+// 8. Test D1-only fallback khi R2 chua bat (env.MEDIA = null) -> anh & FADI <1.5MB van sync & tai duoc 100%
+const savedMedia = env.MEDIA;
+env.MEDIA = null;
+pb.logout();
+await pb.loginSmart('kts1', '5678');
+const syncD1Only = await pb.fullSync({
+    projects: [],
+    docs: [
+        { id: 'd_photo_d1', projectId: 'p_cf_1', type: 'photo', name: 'Anh fallback D1', img: tinyJpgBase64, lines: [], createdAt: 1000, updatedAt: 3300 },
+    ],
+    tombstones: [],
+    scopeDirty: [],
+});
+check('Khong co R2 (MEDIA=null): push anh <=1.4MB fallback vao D1 media_blobs thanh cong', syncD1Only.pushed === 1 && syncD1Only.failedIds.length === 0);
+const blobRow = sqlite.prepare("SELECT size, data_b64 FROM media_blobs WHERE key LIKE 'photos/%'").get();
+check('D1 media_blobs luu tru binary anh dung kich thuoc', !!blobRow && blobRow.size > 0 && blobRow.data_b64.length > 0);
+pb.logout();
+await pb.loginSmart('kts2', '1111');
+const pullD1Only = await pb.fullSync({ projects: [], docs: [], tombstones: [], scopeDirty: [] });
+const pulledD1Photo = pullD1Only.pulledDocs.find(d => d.id === 'd_photo_d1');
+check('KTS2 keo anh tu D1 media_blobs fallback ve thanh cong', typeof pulledD1Photo?.img === 'string' && pulledD1Photo.img.startsWith('data:'));
+env.MEDIA = savedMedia;
+
 console.log(`\n===== CLOUDFLARE E2E TEST: ${pass} pass, ${fail} fail =====`);
 if (fail > 0) process.exit(1);

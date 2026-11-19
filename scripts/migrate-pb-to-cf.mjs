@@ -459,6 +459,7 @@ const TABLE_COLS = {
     signup_requests: ['id', 'name', 'email', 'phone', 'note', 'status', 'requested_ms', 'reviewed_ms', 'reviewed_by', 'team', 'user', 'created_at', 'updated_at'],
     experience_posts: ['id', 'owner', 'owner_name', 'category', 'type', 'title', 'desc', 'detail_url', 'embed_url', 'status', 'submitted_ms', 'reviewed_by', 'reviewed_ms', 'created_at', 'updated_at'],
     backup_media_manifest: ['r2_key', 'etag', 'size', 'gdrive_file_id', 'gdrive_folder_id', 'backed_up_at'],
+    media_blobs: ['key', 'content_type', 'size', 'data_b64', 'updated_at'],
 };
 
 function runWrangler(wranglerArgs) {
