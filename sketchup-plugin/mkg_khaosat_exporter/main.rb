@@ -1,12 +1,16 @@
 # encoding: UTF-8
-# MKG Khảo Sát — SketchUp Extension Main Module (v1.0.2)
+# MKG Khảo Sát — SketchUp Extension Main Module (v1.1.0)
 # Chỉ xuất khối Solid & Màu sắc (tự loại bỏ Tag Label, liên kết, chữ, kích thước, texture ảnh)
+# Hỗ trợ đẩy trực tiếp lên Thư viện do.mkg.vn (không cần mở Backend) + xuất .mkglib.json
 # Tương thích SketchUp 2017 -> 2026 (Windows & macOS, Ruby 2.2 -> Ruby 3.2+)
 
 require 'sketchup.rb'
 require 'json'
 require 'base64'
 require 'time'
+require 'net/http'
+require 'uri'
+require 'openssl'
 
 module MKG
   module KhaoSatExporter
@@ -680,7 +684,96 @@ module MKG
       }
     end
 
-    def perform_export_mkglib(model, targets, payload)
+    PREF_SECTION = 'MKG_KhaoSat_Exporter'.freeze unless defined?(PREF_SECTION)
+    DEFAULT_API_BASE = 'https://do.mkg.vn'.freeze unless defined?(DEFAULT_API_BASE)
+
+    def read_pref(key, fallback = '')
+      v = Sketchup.read_default(PREF_SECTION, key.to_s, fallback)
+      v.nil? ? fallback : v.to_s
+    rescue StandardError
+      fallback
+    end
+
+    def write_pref(key, val)
+      Sketchup.write_default(PREF_SECTION, key.to_s, val.to_s)
+    rescue StandardError
+      nil
+    end
+
+    def normalize_api_base(url)
+      s = url.to_s.strip.sub(%r{/+\z}, '')
+      s = DEFAULT_API_BASE if s.empty?
+      s = "https://#{s}" unless s.match?(%r{\Ahttps?://}i)
+      s
+    end
+
+    def http_post_json(url_str, body_obj, token = nil)
+      uri = URI.parse(url_str)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.open_timeout = 15
+      http.read_timeout = 90
+      if uri.scheme == 'https'
+        http.use_ssl = true
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+      end
+      req = Net::HTTP::Post.new(uri.request_uri)
+      req['Content-Type'] = 'application/json; charset=utf-8'
+      req['Accept'] = 'application/json'
+      req['Authorization'] = "Bearer #{token}" if token && !token.empty?
+      req.body = JSON.generate(body_obj).encode('UTF-8')
+      res = http.request(req)
+      raw = res.body.to_s.force_encoding('UTF-8')
+      parsed = begin
+        JSON.parse(raw)
+      rescue StandardError
+        {}
+      end
+      { code: res.code.to_i, data: parsed, raw: raw }
+    end
+
+    def cloud_authenticate!(base_url, identity, secret)
+      ident = identity.to_s.strip
+      sec = secret.to_s.strip
+      raise 'Vui lòng nhập Tài khoản (Email/Username) và PIN hoặc Mật khẩu.' if ident.empty? || sec.empty?
+
+      candidates = []
+      if /\A\d{4,8}\z/.match?(sec)
+        candidates << ['collections/users/auth-with-password', "mkgks-#{sec}-v1"]
+        candidates << ['collections/_superusers/auth-with-password', sec] if ident.include?('@')
+        candidates << ['collections/users/auth-with-password', sec]
+      elsif ident.include?('@')
+        candidates << ['collections/_superusers/auth-with-password', sec]
+        candidates << ['collections/users/auth-with-password', sec]
+      else
+        candidates << ['collections/users/auth-with-password', sec]
+        candidates << ['collections/_superusers/auth-with-password', sec]
+      end
+
+      last_msg = 'Sai tài khoản, PIN hoặc mật khẩu.'
+      candidates.each do |path, pw|
+        res = http_post_json("#{base_url}/api/#{path}", { 'identity' => ident, 'password' => pw })
+        if res[:code] == 200 && res[:data]['token'].to_s != ''
+          token = res[:data]['token'].to_s
+          rec = res[:data]['record'] || {}
+          disp = rec['name'].to_s.strip
+          disp = rec['username'].to_s.strip if disp.empty?
+          disp = rec['email'].to_s.strip if disp.empty?
+          disp = ident if disp.empty?
+          write_pref('api_base', base_url)
+          write_pref('auth_token', token)
+          write_pref('auth_identity', ident)
+          write_pref('auth_name', disp)
+          return { 'token' => token, 'name' => disp, 'identity' => ident }
+        elsif res[:data]['message'].to_s != '' && res[:code] >= 500
+          last_msg = "Lỗi máy chủ (#{res[:code]}): #{res[:data]['message']}"
+          break
+        end
+      end
+
+      raise last_msg
+    end
+
+    def build_export_items(model, targets, payload)
       selected_map = {}
       (payload['items'] || []).each { |row| selected_map[row['id']] = row if row['enabled'] != false }
 
@@ -699,19 +792,9 @@ module MKG
                          end
                        end
 
-      if chosen_targets.empty?
-        UI.messagebox('Chưa có món nào được tích chọn để xuất.')
-        return false
-      end
+      raise 'Chưa có món nào được tích chọn để xuất.' if chosen_targets.empty?
 
-      default_file = chosen_targets.length == 1 ? "#{slugify(chosen_targets[0][:name])}.mkglib.json" : 'MKG_ThuVien_SketchUp.mkglib.json'
-      all_fadi = payload['target_library'] == 'fadi' || (!chosen_targets.empty? && chosen_targets.all? { |t| t[:group] == 'fadi' })
-      default_file = chosen_targets.length == 1 ? "#{slugify(chosen_targets[0][:name])}.mkglib.json" : 'FADI_ThuVien_SketchUp.mkglib.json' if all_fadi
-      out_path = UI.savepanel('Lưu gói Thư viện MKG (.mkglib.json)', '', default_file)
-      return false unless out_path && !out_path.empty?
-
-      out_path = "#{out_path}.mkglib.json" unless out_path.downcase.end_with?('.json')
-
+      all_fadi = payload['target_library'] == 'fadi' || chosen_targets.all? { |t| t[:group] == 'fadi' }
       exported_items = chosen_targets.map do |t|
         res = export_single_target(model, t, payload)
         res.delete('daeXml')
@@ -721,6 +804,17 @@ module MKG
         end
         res
       end
+      [chosen_targets, exported_items, all_fadi]
+    end
+
+    def perform_export_mkglib(model, targets, payload)
+      chosen_targets, exported_items, all_fadi = build_export_items(model, targets, payload)
+      default_file = chosen_targets.length == 1 ? "#{slugify(chosen_targets[0][:name])}.mkglib.json" : 'MKG_ThuVien_SketchUp.mkglib.json'
+      default_file = chosen_targets.length == 1 ? "#{slugify(chosen_targets[0][:name])}.mkglib.json" : 'FADI_ThuVien_SketchUp.mkglib.json' if all_fadi
+      out_path = UI.savepanel('Lưu gói Thư viện MKG (.mkglib.json)', '', default_file)
+      return false unless out_path && !out_path.empty?
+
+      out_path = "#{out_path}.mkglib.json" unless out_path.downcase.end_with?('.json')
 
       pkg = {
         'app'        => 'MKG_SKETCHUP_EXPORT',
@@ -734,14 +828,57 @@ module MKG
       File.binwrite(out_path, JSON.pretty_generate(pkg).encode('UTF-8'))
       UI.messagebox(
         "Đã xuất thành công #{exported_items.length} món nội thất (chỉ Solid & màu sắc)!\n\n" \
-        "File: #{out_path}\n\n" \
-        "Kéo thả file này vào trang Backend https://do.mkg.vn/?backend=1 trên máy tính để nạp ngay."
+        "File: #{out_path}"
       )
       true
     rescue StandardError => e
       loc = e.backtrace && !e.backtrace.empty? ? "\n(#{e.backtrace[0]})" : ''
       UI.messagebox("Lỗi khi xuất thư viện MKG:\n#{e.message}#{loc}")
       false
+    end
+
+    def perform_export_cloud(model, targets, payload)
+      base_url = normalize_api_base(payload['api_base'] || read_pref('api_base', DEFAULT_API_BASE))
+      token = read_pref('auth_token', '')
+      ident = payload['identity'].to_s.strip
+      sec = payload['secret'].to_s.strip
+
+      if !ident.empty? && !sec.empty?
+        auth_res = cloud_authenticate!(base_url, ident, sec)
+        token = auth_res['token']
+      elsif token.empty?
+        raise 'Chưa đăng nhập tài khoản do.mkg.vn — hãy nhập Email/Username và PIN hoặc Mật khẩu.'
+      else
+        write_pref('api_base', base_url)
+      end
+
+      _chosen, exported_items, all_fadi = build_export_items(model, targets, payload)
+      req_body = {
+        'library' => all_fadi ? 'fadi' : 'auto',
+        'items'   => exported_items
+      }
+
+      res = http_post_json("#{base_url}/api/catalog/sketchup-import", req_body, token)
+      if res[:code] == 401
+        write_pref('auth_token', '')
+        if !ident.empty? && !sec.empty?
+          auth_res = cloud_authenticate!(base_url, ident, sec)
+          res = http_post_json("#{base_url}/api/catalog/sketchup-import", req_body, auth_res['token'])
+        else
+          raise 'Phiên đăng nhập đã hết hạn — vui lòng nhập lại tài khoản/PIN.'
+        end
+      end
+
+      unless res[:code] >= 200 && res[:code] < 300
+        msg = res[:data]['message'].to_s
+        msg = "HTTP #{res[:code]}: #{res[:raw][0, 180]}" if msg.empty?
+        raise msg
+      end
+
+      count = (res[:data]['count'] || exported_items.length).to_i
+      libs = Array(res[:data]['catalogs']).map { |k| k == 'fadi' ? 'Thư viện FADI' : 'Kho chung' }.uniq.join(' + ')
+      libs = all_fadi ? 'Thư viện FADI' : 'Kho chung' if libs.empty?
+      { ok: true, count: count, libs: libs, base_url: base_url }
     end
 
     def quick_export_dae
@@ -769,11 +906,11 @@ module MKG
 
     def show_guide_dialog
       UI.messagebox(
-        "HƯỚNG DẪN XUẤT MODEL SKETCHUP SANG MKG KHẢO SÁT (do.mkg.vn)\n\n" \
+        "HƯỚNG DẪN XUẤT MODEL SKETCHUP THẲNG LÊN MKG KHẢO SÁT (do.mkg.vn)\n\n" \
         "1. Đóng gói mỗi món nội thất thành 1 Group hoặc Component riêng.\n" \
         "2. Plugin tự động lọc sạch chỉ giữ khối Solid & màu sắc (bỏ qua Tag Label, chữ, dim, ốc cam chốt liên kết).\n" \
-        "3. Chọn 1 hoặc nhiều món cùng lúc → chuột phải → Xuất .mkglib.json.\n" \
-        "4. Trên trình duyệt máy tính mở https://do.mkg.vn/?backend=1 → kéo thả file .mkglib.json vào."
+        "3. Chọn 1 hoặc nhiều món cùng lúc → bấm icon MKG hoặc chuột phải → Xuất thẳng lên Thư viện.\n" \
+        "4. Đăng nhập tài khoản/PIN 1 lần duy nhất → bấm \"Xuất thẳng lên Thư viện\" (không cần mở Backend PC)."
       )
     end
 
@@ -792,9 +929,9 @@ module MKG
 
       unless defined?(UI::HtmlDialog)
         t0 = targets[0]
-        prompts = ['Tên món:', 'Nhóm (bedroom/living/kitchen/wc/elec/other):', 'Kiểu lắp (floor/wall/ceiling):', 'Cao độ Z (mm):', 'Áp tường (true/false):']
+        prompts = ['Tên món:', 'Nhóm (bedroom/living/kitchen/wc/elec/other/fadi):', 'Kiểu lắp (floor/wall/ceiling):', 'Cao độ Z (mm):', 'Áp tường (true/false):']
         defaults = [t0[:name], t0[:group], t0[:mount], t0[:z].to_s, t0[:back].to_s]
-        ans = UI.inputbox(prompts, defaults, 'MKG Khảo Sát — Xuất .mkglib.json')
+        ans = UI.inputbox(prompts, defaults, 'MKG Khảo Sát — Xuất lên Thư viện')
         return unless ans
         t0[:name] = ans[0]
         t0[:group] = ans[1]
@@ -817,18 +954,24 @@ module MKG
             'enabled' => true
           }
         end,
-        'groups' => GROUPS
+        'groups' => GROUPS,
+        'auth' => {
+          'api_base' => read_pref('api_base', DEFAULT_API_BASE),
+          'identity' => read_pref('auth_identity', ''),
+          'name' => read_pref('auth_name', ''),
+          'connected' => !read_pref('auth_token', '').empty?
+        }
       }
 
       dlg = UI::HtmlDialog.new(
-        dialog_title: "MKG Khảo Sát v#{PLUGIN_VERSION} — Xuất Thư Viện 2D & 3D",
+        dialog_title: "MKG Khảo Sát v#{PLUGIN_VERSION} — Xuất Thẳng Lên Thư Viện",
         preferences_key: 'com.mkg.khaosat.exporter',
         scrollable: true,
         resizable: true,
-        width: 720,
-        height: 540,
+        width: 750,
+        height: 610,
         min_width: 560,
-        min_height: 420
+        min_height: 460
       )
 
       @export_busy = false
@@ -838,11 +981,32 @@ module MKG
         @export_busy = true
         begin
           payload = JSON.parse(json_str.to_s)
-          dlg.close
-          perform_export_mkglib(model, targets, payload)
+          mode = payload['mode'] || 'cloud'
+          if mode == 'file'
+            dlg.close
+            perform_export_mkglib(model, targets, payload)
+          else
+            res = perform_export_cloud(model, targets, payload)
+            dlg.close
+            UI.messagebox(
+              "Đã đẩy trực tiếp #{res[:count]} món nội thất lên Thư viện!\n\n" \
+              "Máy chủ: #{res[:base_url]}\n" \
+              "Danh mục: #{res[:libs]}\n\n" \
+              "Trên web do.mkg.vn, bấm biểu tượng Làm mới (↻) trong bảng Thư viện hoặc mở lại mặt bằng để dùng ngay."
+            )
+          end
+        rescue StandardError => e
+          safe_msg = e.message.to_s.encode('UTF-8', invalid: :replace, undef: :replace, replace: '?')
+          err_json = JSON.generate({ 'message' => safe_msg })
+          dlg.execute_script("window.__mkgExportError && window.__mkgExportError((#{err_json}).message);")
         ensure
           @export_busy = false
         end
+      end
+
+      dlg.add_action_callback('logoutMkg') do |_ctx|
+        write_pref('auth_token', '')
+        write_pref('auth_name', '')
       end
 
       dlg.add_action_callback('cancelDialog') do |_ctx|
@@ -872,16 +1036,21 @@ module MKG
           .opt-item { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
           .opt-item label { font-weight: 600; color: #334155; }
           .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; line-height: 1.35; }
-          select, input[type="text"], input[type="number"] { padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12.5px; width: 100%; background: #fff; }
-          .tbl-wrap { max-height: 290px; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; }
+          select, input[type="text"], input[type="password"], input[type="number"] { padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12.5px; width: 100%; background: #fff; }
+          .auth-card { background: #fff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 9px 12px; margin-bottom: 10px; }
+          .auth-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 8px; align-items: end; }
+          .auth-connected { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+          .auth-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: #047857; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 4px 10px; border-radius: 999px; }
+          .err-box { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; font-size: 12px; font-weight: 600; display: none; }
+          .tbl-wrap { max-height: 250px; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; }
           table { width: 100%; border-collapse: collapse; }
           th, td { padding: 7px 8px; border-bottom: 1px solid #f1f5f9; text-align: left; font-size: 12.5px; }
           th { background: #f1f5f9; color: #334155; font-weight: 700; position: sticky; top: 0; z-index: 2; }
           td.center, th.center { text-align: center; }
-          .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
+          .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 8px; flex-wrap: wrap; }
           .note { color: #64748b; font-size: 11.5px; }
-          .btns { display: flex; gap: 8px; }
-          button { padding: 8px 14px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-weight: 600; font-size: 13px; }
+          .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+          button { padding: 7px 12px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-weight: 600; font-size: 12.5px; }
           button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
           button.primary:hover:not(:disabled) { background: #1d4ed8; }
           button:disabled { opacity: 0.6; cursor: wait; }
@@ -890,9 +1059,31 @@ module MKG
         <body>
           <div class="hdr">
             <div>
-              <h2>Xuất sang Thư viện 2D &amp; 3D — MKG Khảo Sát</h2>
-              <small>Chỉ xuất khối Solid &amp; Màu sắc (bỏ Label, liên kết, dim, chữ) · Chuẩn tâm đáy (0,0,0) mm</small>
+              <h2>Xuất thẳng lên Thư viện 2D &amp; 3D — do.mkg.vn</h2>
+              <small>Chỉ xuất khối Solid &amp; Màu sắc (bỏ Label, liên kết, dim, chữ) · Đẩy trực tiếp vào app không cần mở Backend</small>
             </div>
+          </div>
+
+          <div class="auth-card">
+            <div id="authConnectedBox" class="auth-connected" style="display:none">
+              <div class="auth-badge">● Đã kết nối: <span id="authNameLbl"></span> (<span id="authHostLbl"></span>)</div>
+              <button type="button" onclick="switchAccount()" style="font-size:11.5px;padding:4px 9px">Đổi tài khoản / PIN</button>
+            </div>
+            <div id="authLoginBox" class="auth-row">
+              <div class="opt-item">
+                <label for="authIdent">Tài khoản do.mkg.vn (Email / Username)</label>
+                <input type="text" id="authIdent" placeholder="quy28181818@gmail.com hoặc KTS..." />
+              </div>
+              <div class="opt-item">
+                <label for="authSecret">PIN (4-8 số) hoặc Mật khẩu</label>
+                <input type="password" id="authSecret" placeholder="Nhập PIN hoặc mật khẩu" />
+              </div>
+              <div class="opt-item">
+                <label for="apiBase">Máy chủ Cloud</label>
+                <input type="text" id="apiBase" value="https://do.mkg.vn" />
+              </div>
+            </div>
+            <div id="errBox" class="err-box"></div>
           </div>
 
           <div class="opts">
@@ -929,9 +1120,10 @@ module MKG
           <div class="foot">
             <div class="note" id="summary"></div>
             <div class="btns">
-              <button type="button" onclick="assignAllFadi()" style="border-color:#f59e0b;color:#b45309;background:#fffbeb">Đưa tất cả vào FADI</button>
+              <button type="button" onclick="assignAllFadi()" style="border-color:#f59e0b;color:#b45309;background:#fffbeb">Vào FADI</button>
               <button type="button" onclick="sketchup.cancelDialog()">Huỷ</button>
-              <button type="button" id="btnExport" class="primary" onclick="doExport()">Xuất file .mkglib.json</button>
+              <button type="button" id="btnSaveFile" onclick="doExport('file')">Lưu .mkglib.json</button>
+              <button type="button" id="btnExport" class="primary" onclick="doExport('cloud')">Xuất thẳng lên Thư viện</button>
             </div>
           </div>
 
@@ -941,7 +1133,50 @@ module MKG
             const summary = document.getElementById('summary');
             const chkAll = document.getElementById('chkAll');
             const btnExport = document.getElementById('btnExport');
+            const btnSaveFile = document.getElementById('btnSaveFile');
+            const errBox = document.getElementById('errBox');
+            const authConnectedBox = document.getElementById('authConnectedBox');
+            const authLoginBox = document.getElementById('authLoginBox');
+            const authIdent = document.getElementById('authIdent');
+            const authSecret = document.getElementById('authSecret');
+            const apiBase = document.getElementById('apiBase');
             let exporting = false;
+            let connected = !!(DATA.auth && DATA.auth.connected);
+
+            function syncAuthUI() {
+              if (DATA.auth && DATA.auth.api_base) apiBase.value = DATA.auth.api_base;
+              if (DATA.auth && DATA.auth.identity) authIdent.value = DATA.auth.identity;
+              if (connected) {
+                document.getElementById('authNameLbl').textContent = (DATA.auth && DATA.auth.name) || authIdent.value || 'MKG';
+                document.getElementById('authHostLbl').textContent = apiBase.value || 'https://do.mkg.vn';
+                authConnectedBox.style.display = 'flex';
+                authLoginBox.style.display = 'none';
+              } else {
+                authConnectedBox.style.display = 'none';
+                authLoginBox.style.display = 'grid';
+              }
+            }
+
+            function switchAccount() {
+              connected = false;
+              authSecret.value = '';
+              sketchup.logoutMkg();
+              syncAuthUI();
+              authIdent.focus();
+            }
+
+            window.__mkgExportError = function(msg) {
+              exporting = false;
+              btnExport.disabled = false;
+              btnSaveFile.disabled = false;
+              btnExport.textContent = 'Xuất thẳng lên Thư viện';
+              errBox.textContent = msg || 'Có lỗi xảy ra khi đẩy lên Cloud';
+              errBox.style.display = 'block';
+              if (/đăng nhập|hết hạn|tài khoản|PIN/i.test(errBox.textContent)) {
+                connected = false;
+                syncAuthUI();
+              }
+            };
 
             function render() {
               tbody.innerHTML = '';
@@ -978,7 +1213,7 @@ module MKG
 
             function updateSummary() {
               const cnt = DATA.items.filter(x => x.enabled).length;
-              summary.textContent = `Đã chọn ${cnt} / ${DATA.items.length} đối tượng để đóng gói`;
+              summary.textContent = `Đã chọn ${cnt} / ${DATA.items.length} đối tượng`;
             }
 
             chkAll.addEventListener('change', () => {
@@ -991,14 +1226,27 @@ module MKG
               render();
             }
 
-            function doExport() {
+            function doExport(mode) {
               if (exporting) return;
+              errBox.style.display = 'none';
+              if (mode === 'cloud' && !connected) {
+                if (!authIdent.value.trim() || !authSecret.value.trim()) {
+                  errBox.textContent = 'Nhập Tài khoản và PIN/Mật khẩu để đẩy thẳng lên thư viện do.mkg.vn.';
+                  errBox.style.display = 'block';
+                  return;
+                }
+              }
               exporting = true;
               btnExport.disabled = true;
-              btnExport.textContent = 'Đang xử lý…';
+              btnSaveFile.disabled = true;
+              btnExport.textContent = mode === 'cloud' ? 'Đang đẩy lên Cloud…' : 'Đang xuất file…';
               const enabledItems = DATA.items.filter(x => x.enabled);
               const allFadi = enabledItems.length > 0 && enabledItems.every(x => x.group === 'fadi');
               const payload = {
+                mode: mode || 'cloud',
+                api_base: apiBase.value.trim(),
+                identity: connected ? '' : authIdent.value.trim(),
+                secret: connected ? '' : authSecret.value.trim(),
                 front_axis: document.getElementById('frontAxis').value,
                 include_svg: document.getElementById('incSvg').checked,
                 solid_only: document.getElementById('solidOnly').checked,
@@ -1008,6 +1256,7 @@ module MKG
               sketchup.exportMkg(JSON.stringify(payload));
             }
 
+            syncAuthUI();
             render();
           </script>
         </body>
@@ -1016,10 +1265,10 @@ module MKG
     end
 
     unless file_loaded?(__FILE__)
-      cmd_pkg = UI::Command.new('Xuất gói Thư viện MKG (.mkglib.json)') { open_export_dialog }
-      cmd_pkg.tooltip = 'MKG Khảo Sát: Xuất Group/Component đang chọn sang Thư viện 2D + 3D (.mkglib.json)'
-      cmd_pkg.status_bar_text = 'Xuất 1 hoặc nhiều món nội thất từ SketchUp sang gói thư viện do.mkg.vn'
-      cmd_pkg.menu_text = 'Xuất sang Thư viện MKG (.mkglib.json) — 2D + 3D chuẩn'
+      cmd_pkg = UI::Command.new('Xuất thẳng lên Thư viện MKG (do.mkg.vn)') { open_export_dialog }
+      cmd_pkg.tooltip = 'MKG Khảo Sát: Xuất Group/Component đang chọn thẳng lên Thư viện 2D + 3D (do.mkg.vn)'
+      cmd_pkg.status_bar_text = 'Xuất trực tiếp 1 hoặc nhiều món nội thất từ SketchUp lên thư viện do.mkg.vn'
+      cmd_pkg.menu_text = 'Xuất thẳng lên Thư viện MKG (do.mkg.vn) — 2D + 3D'
 
       icon_24 = File.join(plugin_dir, 'icons', 'mkg_24.png')
       icon_32 = File.join(plugin_dir, 'icons', 'mkg_32.png')
@@ -1049,7 +1298,7 @@ module MKG
         end
         if has_comp
           context_menu.add_separator
-          context_menu.add_item('MKG Khảo Sát: Xuất món này ra Thư viện 2D/3D (.mkglib.json)') { open_export_dialog }
+          context_menu.add_item('MKG Khảo Sát: Xuất thẳng món này lên Thư viện (do.mkg.vn)') { open_export_dialog }
         end
       end
 

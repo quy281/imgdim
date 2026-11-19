@@ -18,7 +18,7 @@ import ElevationView from '../plan/ElevationView';
 import {
     catalogItem, defaultSize, subscribeCatalog,
     isFadiContextActive, isFadiLibraryEnabled, setFadiLibraryEnabled,
-    listPickerGroups, applyFadiCatalogSyncPayload, FURNITURE,
+    listPickerGroups, applyCatalogSyncPayload, applyFadiCatalogSyncPayload, FURNITURE,
 } from '../lib/furnitureCatalog';
 import * as pb from '../lib/pb';
 import {
@@ -139,24 +139,33 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
     const inFadiMode = isFadiContextActive();
     const fadiEnabled = isFadiLibraryEnabled();
 
-    const pullFadiFromCloud = async (quiet = false) => {
+    const pullFadiFromCloud = async (quiet = false, src = furnSource) => {
         if (fadiSyncBusy) return false;
         if (!pb.isLoggedIn()) {
-            if (!quiet) toast('Cần đăng nhập để tải Thư viện FADI từ Cloud', 'err');
+            if (!quiet) toast('Cần đăng nhập để tải Thư viện từ Cloud', 'err');
             return false;
         }
         setFadiSyncBusy(true);
         try {
-            const remote = await pb.fetchCloudCatalog('fadi');
+            const key = src === 'online' ? 'fadi' : 'global';
+            const remote = await pb.fetchCloudCatalog(key);
             if (remote) {
-                applyFadiCatalogSyncPayload(remote, { force: true });
-                if (!quiet) toast(`Đã tải ${(FURNITURE.fadi || []).length} món Thư viện FADI từ Cloud`, 'ok');
+                if (key === 'fadi') applyFadiCatalogSyncPayload(remote, { force: true });
+                else applyCatalogSyncPayload(remote, { force: true });
+                if (!quiet) {
+                    toast(
+                        key === 'fadi'
+                            ? `Đã cập nhật ${(FURNITURE.fadi || []).length} món Thư viện FADI`
+                            : 'Đã cập nhật Thư viện Kho chung từ Cloud',
+                        'ok'
+                    );
+                }
                 return true;
             }
-            if (!quiet) toast('Cloud FADI chưa có dữ liệu — hãy đẩy từ Backend (PC)', 'err');
+            if (!quiet) toast(`Cloud ${key === 'fadi' ? 'FADI' : 'Kho chung'} chưa có mẫu tuỳ biến nào`, 'err');
             return false;
         } catch (err) {
-            if (!quiet) toast('Không tải được Cloud FADI: ' + err.message, 'err');
+            if (!quiet) toast('Không tải được Cloud: ' + err.message, 'err');
             return false;
         } finally {
             setFadiSyncBusy(false);
@@ -168,7 +177,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         if (nextSrc === 'online') {
             if (!isFadiLibraryEnabled()) setFadiLibraryEnabled(true);
             if (!(FURNITURE.fadi || []).length && pb.isLoggedIn()) {
-                await pullFadiFromCloud(true);
+                await pullFadiFromCloud(true, 'online');
             }
         }
     };

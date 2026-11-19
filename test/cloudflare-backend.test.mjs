@@ -309,5 +309,69 @@ await pb.loginSmart('admin', '2222');
 const bkStatus = await pb.fetchBackupStatus();
 check('BackupStatus bao R2 ledger dung luong va nguong khong che 8GB Free', bkStatus?.quota?.r2Bytes > 0 && bkStatus.quota.r2CapBytes === 8 * 1024 * 1024 * 1024);
 
+// 10. Test SketchUp plugin direct cloud import (POST /api/catalog/sketchup-import)
+const unauthSkp = await fetch('https://cf.local/api/catalog/sketchup-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [{ name: 'Ghe Test', w: 500, d: 500, h: 800 }] }),
+});
+check('SketchUp direct import chua dang nhap bi chan (401)', unauthSkp.status === 401);
+
+const custAuthRes = await fetch('https://cf.local/api/collections/users/auth-with-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identity: 'khachcf', password: 'mkgks-8888-v1' }),
+});
+const custAuthJson = await custAuthRes.json();
+const custSkp = await fetch('https://cf.local/api/catalog/sketchup-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${custAuthJson.token}` },
+    body: JSON.stringify({ items: [{ name: 'Ghe Customer', w: 500, d: 500, h: 800 }] }),
+});
+check('SketchUp direct import bang tai khoan Customer bi chan (403)', custSkp.status === 403);
+
+const adminAuthRes = await fetch('https://cf.local/api/collections/users/auth-with-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identity: 'admin', password: 'mkgks-2222-v1' }),
+});
+const adminAuthJson = await adminAuthRes.json();
+const bigDaeUri = 'data:model/vnd.collada+xml;base64,' + Buffer.from('A'.repeat(190_000)).toString('base64');
+const skpImportRes = await fetch('https://cf.local/api/catalog/sketchup-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminAuthJson.token}` },
+    body: JSON.stringify({
+        library: 'auto',
+        items: [
+            { name: 'Bàn Ăn Gỗ Sồi', group: 'living', w: 1800, d: 900, h: 750, z: 0, mount: 'floor', back: true, modelFormat: 'dae', glbFileName: 'ban_an.dae', glbData: bigDaeUri },
+            { name: 'Tủ Rượu FADI', group: 'fadi', fadiRoom: 'living', w: 1200, d: 450, h: 2400, z: 0, mount: 'floor', back: true, modelFormat: 'dae', glbData: 'data:model/vnd.collada+xml;base64,ZmFkaQ==' },
+        ],
+    }),
+});
+const skpImportJson = await skpImportRes.json();
+check(
+    'SketchUp direct import day dong thoi global (R2 offload) + fadi thanh cong',
+    skpImportRes.status === 200 && skpImportJson.ok === true && skpImportJson.count === 2
+        && skpImportJson.catalogs.includes('global') && skpImportJson.catalogs.includes('fadi')
+);
+const globalCatRow = sqlite.prepare("SELECT payload_json, payload_r2_key FROM furniture_catalog WHERE catalog_key = 'global'").get();
+check('Catalog global >180KB sau SketchUp import tu dong offload len R2', globalCatRow.payload_json === null && globalCatRow.payload_r2_key.startsWith('json-blobs/catalog/'));
+
+const globalPulled = await pb.fetchCloudCatalog('global');
+const banItem = globalPulled?.customItems?.find(x => x.name === 'Bàn Ăn Gỗ Sồi');
+check('fetchCloudCatalog global lay duoc mon SketchUp + model glbAssets tu R2', !!banItem && globalPulled?.glbAssets?.[banItem.key] === bigDaeUri);
+
+await fetch('https://cf.local/api/catalog/sketchup-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminAuthJson.token}` },
+    body: JSON.stringify({
+        library: 'fadi',
+        items: [{ name: 'Tủ Rượu FADI', group: 'fadi', fadiRoom: 'living', w: 1400, d: 500, h: 2500 }],
+    }),
+});
+const fadiPulled2 = await pb.fetchCloudCatalog('fadi');
+const matchingRuou = (fadiPulled2?.customItems || []).filter(x => x.name === 'Tủ Rượu FADI');
+check('Re-import trung ten vao FADI cap nhat de (khong nhan ban) & giu item cu fadi_tu1', matchingRuou.length === 1 && matchingRuou[0].w === 1400 && fadiPulled2.customItems.some(x => x.key === 'fadi_tu1'));
+
 console.log(`\n===== CLOUDFLARE E2E TEST: ${pass} pass, ${fail} fail =====`);
 if (fail > 0) process.exit(1);

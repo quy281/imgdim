@@ -980,6 +980,172 @@ async function handleFurnitureCatalog(req, env, auth, subPath, url) {
     return errRes('Not found', 404);
 }
 
+function slugifyCatalogKey(name, prefix) {
+    const base = String(name || 'mau_sketchup')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'mau_sketchup';
+    return `${prefix}${base}`;
+}
+
+function sanitizeIncomingSketchUpItem(raw, key, isFadi) {
+    const validStr = (v) => (typeof v === 'string' ? v.trim() : '');
+    const mount = raw.mount === 'wall' || raw.mount === 'ceiling' ? raw.mount : 'floor';
+    const glbData = validStr(raw.glbData || raw.modelDataUrl || '');
+    const validGroups = new Set(['bedroom', 'living', 'kitchen', 'wc', 'elec', 'other']);
+    const group = isFadi ? 'fadi' : (validGroups.has(raw.group) ? raw.group : 'other');
+    const fadiRoom = isFadi ? validStr(raw.fadiRoom || (raw.group && raw.group !== 'fadi' ? raw.group : '')) : '';
+    return {
+        key,
+        name: validStr(raw.name) || 'Mẫu SketchUp',
+        library: isFadi ? 'fadi' : 'global',
+        group,
+        ...(fadiRoom ? { fadiRoom } : {}),
+        w: Math.max(20, Math.round(Number(raw.w) || 1000)),
+        d: Math.max(20, Math.round(Number(raw.d) || 600)),
+        h: Math.max(10, Math.round(Number(raw.h) || 800)),
+        z: Math.max(0, Math.round(Number(raw.z) || 0)),
+        mount,
+        back: raw.back !== undefined ? !!raw.back : true,
+        noSnapContact: !!raw.noSnapContact,
+        sym: validStr(raw.sym) || 'cab',
+        svg2d: typeof raw.svg2d === 'string' ? raw.svg2d.trim() : '',
+        glbFileName: validStr(raw.glbFileName) || `${key}.dae`,
+        modelFormat: validStr(raw.modelFormat || (glbData ? 'dae' : '')).toLowerCase(),
+        glbRotX: Number(raw.glbRotX) || 0,
+        glbRotY: Number(raw.glbRotY) || 0,
+        hasLocalGlb: !!glbData,
+        isBuiltin: false,
+        isCustom: true,
+    };
+}
+
+async function handleSketchUpDirectImport(req, env, auth) {
+    if (req.method !== 'POST') return errRes('Method not allowed', 405);
+    if (!auth) return errRes('Cần đăng nhập tài khoản MKG để đẩy thư viện', 401);
+    if (!isStaff(auth)) return errRes('Chỉ tài khoản nhân viên hoặc quản trị mới có quyền đẩy thư viện', 403);
+
+    const body = await req.json().catch(() => null);
+    if (!body || !Array.isArray(body.items) || !body.items.length) {
+        return errRes('Gói dữ liệu SketchUp trống hoặc không hợp lệ', 400);
+    }
+
+    const reqLib = body.library === 'fadi' ? 'fadi' : body.library === 'global' ? 'global' : 'auto';
+    const buckets = { global: [], fadi: [] };
+    for (const raw of body.items) {
+        if (!raw || typeof raw !== 'object') continue;
+        const isFadi = reqLib === 'fadi'
+            || (reqLib === 'auto' && (raw.library === 'fadi' || raw.group === 'fadi'));
+        buckets[isFadi ? 'fadi' : 'global'].push(raw);
+    }
+
+    const nowMs = Date.now();
+    const updatedBy = auth.user?.name || auth.user?.email || 'sketchup';
+    const savedSummaries = [];
+    const touchedCatalogs = [];
+
+    for (const catalogKey of ['global', 'fadi']) {
+        const incoming = buckets[catalogKey];
+        if (!incoming.length) continue;
+        const isFadi = catalogKey === 'fadi';
+
+        const existingRec = await env.DB.prepare('SELECT * FROM furniture_catalog WHERE catalog_key = ?').bind(catalogKey).first();
+        const existingPayload = existingRec
+            ? await loadJsonWithOffload(env, existingRec.payload_json, existingRec.payload_r2_key)
+            : null;
+
+        const payload = existingPayload && typeof existingPayload === 'object'
+            ? {
+                version: 1,
+                ...(isFadi ? { library: 'fadi' } : { overrides: existingPayload.overrides || {} }),
+                updatedAt: nowMs,
+                customItems: Array.isArray(existingPayload.customItems) ? [...existingPayload.customItems] : [],
+                deletedKeys: Array.isArray(existingPayload.deletedKeys) ? [...existingPayload.deletedKeys] : [],
+                glbAssets: existingPayload.glbAssets && typeof existingPayload.glbAssets === 'object'
+                    ? { ...existingPayload.glbAssets } : {},
+            }
+            : {
+                version: 1,
+                ...(isFadi ? { library: 'fadi' } : { overrides: {} }),
+                updatedAt: nowMs,
+                customItems: [],
+                deletedKeys: [],
+                glbAssets: {},
+            };
+
+        const usedKeys = new Set(payload.customItems.map(x => x?.key).filter(Boolean));
+
+        for (const raw of incoming) {
+            const cleanName = String(raw.name || 'Mẫu SketchUp').trim() || 'Mẫu SketchUp';
+            const rawKey = typeof raw.key === 'string' ? raw.key.trim() : '';
+            let idx = -1;
+            if (rawKey) {
+                idx = payload.customItems.findIndex(x => x?.key === rawKey);
+            }
+            if (idx === -1) {
+                const nameLower = cleanName.toLowerCase();
+                idx = payload.customItems.findIndex(x => String(x?.name || '').trim().toLowerCase() === nameLower);
+            }
+
+            let finalKey = idx >= 0 ? payload.customItems[idx].key : rawKey;
+            if (!finalKey) {
+                const baseKey = slugifyCatalogKey(cleanName, isFadi ? 'fadi_' : 'custom_');
+                finalKey = baseKey;
+                let suffix = 2;
+                while (usedKeys.has(finalKey)) {
+                    finalKey = `${baseKey}_${suffix++}`;
+                }
+            }
+            usedKeys.add(finalKey);
+
+            const entry = sanitizeIncomingSketchUpItem(raw, finalKey, isFadi);
+            const glbData = typeof (raw.glbData || raw.modelDataUrl) === 'string' ? (raw.glbData || raw.modelDataUrl).trim() : '';
+            if (glbData) {
+                payload.glbAssets[finalKey] = glbData;
+                entry.hasLocalGlb = true;
+            }
+            payload.deletedKeys = payload.deletedKeys.filter(k => k !== finalKey);
+
+            if (idx >= 0) payload.customItems[idx] = { ...payload.customItems[idx], ...entry };
+            else payload.customItems.push(entry);
+
+            savedSummaries.push({
+                key: finalKey,
+                name: entry.name,
+                library: catalogKey,
+                group: entry.group,
+                w: entry.w,
+                d: entry.d,
+                h: entry.h,
+            });
+        }
+
+        const { jsonText, r2Key } = await storeJsonWithOffload(env, 'catalog', catalogKey, payload, existingRec?.payload_r2_key || null);
+        const ts = nowIso();
+        if (existingRec?.id) {
+            await env.DB.prepare(
+                `UPDATE furniture_catalog SET payload_json=?, payload_r2_key=?, updated_ms=?, updated_by=?, updated_at=? WHERE id=?`
+            ).bind(jsonText, r2Key, nowMs, updatedBy, ts, existingRec.id).run();
+        } else {
+            await env.DB.prepare(
+                `INSERT INTO furniture_catalog (id, catalog_key, payload_json, payload_r2_key, updated_ms, updated_by, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(genId15(), catalogKey, jsonText, r2Key, nowMs, updatedBy, ts, ts).run();
+        }
+        touchedCatalogs.push(catalogKey);
+    }
+
+    return jsonRes({
+        ok: true,
+        count: savedSummaries.length,
+        updatedAt: nowMs,
+        catalogs: touchedCatalogs,
+        items: savedSummaries,
+    });
+}
+
 async function handleSignupRequests(req, env, auth, subPath) {
     if (req.method === 'POST' && subPath === '/records') {
         const { fields } = await readBody(req);
@@ -1168,6 +1334,9 @@ export async function handleApiRequest(request, env) {
 
         if (subPath === '/backup/status' || subPath === '/backup/run' || subPath === '/backup/download') {
             return await handleBackupEndpoints(request, env, auth, subPath);
+        }
+        if (subPath === '/catalog/sketchup-import') {
+            return await handleSketchUpDirectImport(request, env, auth);
         }
         if (subPath.startsWith('/files/')) {
             return await handleFiles(request, env, auth, subPath, url);

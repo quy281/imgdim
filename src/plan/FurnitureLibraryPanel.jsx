@@ -302,17 +302,15 @@ export default function FurnitureLibraryPanel({
                                 </button>
 
                                 <div className="flib-tool-icons">
-                                    {furnSource === 'online' && (
-                                        <button
-                                            type="button"
-                                            className="mkg-icon-btn"
-                                            disabled={fadiSyncBusy}
-                                            onClick={() => onPullFadi(false)}
-                                            title="Đồng bộ lại từ Cloud FADI"
-                                        >
-                                            <RefreshCw size={14} className={fadiSyncBusy ? 'spin' : ''} />
-                                        </button>
-                                    )}
+                                    <button
+                                        type="button"
+                                        className="mkg-icon-btn"
+                                        disabled={fadiSyncBusy}
+                                        onClick={() => onPullFadi(false, furnSource)}
+                                        title={furnSource === 'online' ? 'Tải lại Thư viện FADI từ Cloud' : 'Tải lại Thư viện Kho chung từ Cloud'}
+                                    >
+                                        <RefreshCw size={14} className={fadiSyncBusy ? 'spin' : ''} />
+                                    </button>
                                     <button
                                         type="button"
                                         className={`mkg-icon-btn ${showFurnDims ? 'is-on' : ''}`}
@@ -496,7 +494,7 @@ export default function FurnitureLibraryPanel({
                                                     type="button"
                                                     className="btn flib-empty-btn"
                                                     disabled={fadiSyncBusy}
-                                                    onClick={() => onPullFadi(false)}
+                                                    onClick={() => onPullFadi(false, 'online')}
                                                 >
                                                     <RefreshCw size={13} className={fadiSyncBusy ? 'spin' : ''} />
                                                     {fadiSyncBusy ? 'Đang tải…' : 'Tải Cloud FADI'}

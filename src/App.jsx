@@ -241,6 +241,7 @@ export default function App() {
             if (document.visibilityState === 'visible' && pb.isLoggedIn() && !pb.isCustomer() && !customerPortal) {
                 syncAll(true);
                 refreshCustomerInboxCount();
+                syncCloudCatalogs();
             }
         };
         const onOnline = () => {
