@@ -26,7 +26,7 @@ Lenh nay se tu:
 - Mo `[[r2_buckets]]` trong `wrangler.toml` & `workers/backup-cron/wrangler.toml` va deploy lai Cloudflare Pages (`imgdim`) + Backup Worker.
 
 > **Luu y gioi han Cron mien phi cua Cloudflare**: Tai khoan Cloudflare hien tai da dung het 5/5 Cron Trigger goi Free (ma loi `10072`). Co 2 cach bat chay tu dong 02:00 sang VN:
-> - **Cach 1 (0d, khong can nang goi CF)**: Them secret `BACKUP_SECRET` vao GitHub Repo (`quy281/imgdim` -> Settings -> Secrets and variables -> Actions) de [daily-backup.yml](.github/workflows/daily-backup.yml) goi `POST https://do.mkg.vn/api/backup/run` luc 02:00 sang hang ngay.
+> - **Cach 1 (0d, khong can nang goi CF)**: Tao file `.github/workflows/daily-backup.yml` tren GitHub (theo mau trong [`scripts/github-daily-backup.yml.example`](scripts/github-daily-backup.yml.example)) va them secret `BACKUP_SECRET` vao GitHub Repo (`quy281/imgdim` -> Settings -> Secrets and variables -> Actions) de chay `POST https://do.mkg.vn/api/backup/run` luc 02:00 sang hang ngay.
 > - **Cach 2**: Nang cap Workers Paid (\$5/thang — tang gioi han Cron len 1.000 va CPU tu 10ms len 30s, tot cho ca verify bcrypt lan dau) hoac xoa bot 1 Cron cu tren Dashboard roi chay `node scripts/cf-setup.mjs --deploy-cron`.
 
 ### Buoc 3: Chuyen toan bo du lieu cu tu `db.mkg.vn` sang Cloudflare

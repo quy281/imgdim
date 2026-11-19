@@ -1,0 +1,21 @@
+name: Daily Cloudflare Backup to Google Drive
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 02:00 AM gio Viet Nam (UTC+7)
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Backup Endpoint
+        run: |
+          if [ -z "${{ secrets.BACKUP_SECRET }}" ]; then
+            echo "Chua cau hinh GitHub Secret BACKUP_SECRET — bo qua luot chay nay."
+            exit 0
+          fi
+          curl --fail-with-body -sS -X POST "https://do.mkg.vn/api/backup/run" \
+            -H "Authorization: Bearer ${{ secrets.BACKUP_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d '{"mediaBatchLimit": 80}'
