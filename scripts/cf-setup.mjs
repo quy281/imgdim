@@ -44,7 +44,19 @@ function parseD1Uuid(listOut, dbName) {
     return '';
 }
 
-function updateCronWranglerToml(dbId) {
+function r2Block(bucketExists) {
+    if (bucketExists) {
+        return `[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "${BUCKET_NAME}"`;
+    }
+    return `# Bo comment khoi nay sau khi bat R2 tren Dashboard va chay: node scripts/cf-setup.mjs --provision
+# [[r2_buckets]]
+# binding = "MEDIA"
+# bucket_name = "${BUCKET_NAME}"`;
+}
+
+function updateCronWranglerToml(dbId, bucketExists) {
     const content = `name = "mkg-khaosat-backup-cron"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
@@ -58,17 +70,14 @@ binding = "DB"
 database_name = "${DB_NAME}"
 database_id = "${dbId}"
 
-[[r2_buckets]]
-binding = "MEDIA"
-bucket_name = "${BUCKET_NAME}"
+${r2Block(bucketExists)}
 `;
     fs.writeFileSync(WORKER_TOML, content, 'utf8');
 }
 
-function generateWranglerPagesExample(dbId) {
-    const outPath = path.resolve('wrangler.pages.toml.example');
-    const content = `# Doi ten thanh wrangler.toml SAU KHI da bat R2 tren Cloudflare Dashboard va tao bucket "${BUCKET_NAME}".
-name = "${PAGES_PROJECT}"
+function writePagesWranglerToml(dbId, bucketExists) {
+    const outPath = path.resolve('wrangler.toml');
+    const content = `name = "${PAGES_PROJECT}"
 pages_build_output_dir = "dist"
 compatibility_date = "2026-01-01"
 
@@ -77,9 +86,7 @@ binding = "DB"
 database_name = "${DB_NAME}"
 database_id = "${dbId || '<D1_DATABASE_ID>'}"
 
-[[r2_buckets]]
-binding = "MEDIA"
-bucket_name = "${BUCKET_NAME}"
+${r2Block(bucketExists)}
 `;
     fs.writeFileSync(outPath, content, 'utf8');
 }
@@ -107,17 +114,6 @@ async function main() {
     }
     console.log(`  D1 ${DB_NAME}: ${dbId || 'chua tao (chay --provision)'}`);
 
-    if (dbId && hasFlag('--provision')) {
-        console.log('> Ap schema 0001_init.sql len D1 (--remote)...');
-        execFileSync('npx', ['--no-install', 'wrangler', 'd1', 'execute', DB_NAME, '--remote', '--file', MIGRATION_SQL, '--yes'], {
-            stdio: 'inherit', shell: true,
-        });
-        updateCronWranglerToml(dbId);
-        generateWranglerPagesExample(dbId);
-    } else if (dbId) {
-        generateWranglerPagesExample(dbId);
-    }
-
     console.log('\n> Kiem tra R2...');
     const r2List = runCapture(['r2', 'bucket', 'list']);
     let r2Enabled = r2List.ok;
@@ -125,7 +121,7 @@ async function main() {
     if (!r2Enabled) {
         console.log('! R2 CHUA DUOC BAT tren Cloudflare Dashboard (code 10042).');
         console.log('  Hay mo https://dash.cloudflare.com -> muc R2 Object Storage -> bam Enable R2 (goi 10GB free, 0d egress).');
-        console.log('  Sau khi bat xong, chay lai: node scripts/cf-setup.mjs --provision');
+        console.log('  Sau khi bat xong, chay lai: node scripts/cf-setup.mjs --provision --deploy-cron --deploy-pages');
     } else if (!bucketExists && hasFlag('--provision')) {
         console.log(`> Tao R2 bucket "${BUCKET_NAME}"...`);
         execFileSync('npx', ['--no-install', 'wrangler', 'r2', 'bucket', 'create', BUCKET_NAME], { stdio: 'inherit', shell: true });
@@ -134,28 +130,66 @@ async function main() {
         console.log(`  R2 bucket ${BUCKET_NAME}: ${bucketExists ? 'SAN SANG' : 'chua tao (chay --provision)'}`);
     }
 
-    if (hasFlag('--secrets')) {
-        const jwtSecret = crypto.randomBytes(32).toString('hex');
-        const backupSecret = crypto.randomBytes(24).toString('hex');
-        console.log('\n> Nap JWT_SECRET & BACKUP_SECRET len Pages Project...');
-        execFileSync('npx', ['--no-install', 'wrangler', 'pages', 'secret', 'put', 'JWT_SECRET', '--project-name', PAGES_PROJECT], {
-            input: jwtSecret, stdio: ['pipe', 'inherit', 'inherit'], shell: true,
+    if (dbId && hasFlag('--provision')) {
+        console.log('> Ap schema 0001_init.sql len D1 (--remote)...');
+        execFileSync('npx', ['--no-install', 'wrangler', 'd1', 'execute', DB_NAME, '--remote', '--file', MIGRATION_SQL, '--yes'], {
+            stdio: 'inherit', shell: true,
         });
-        execFileSync('npx', ['--no-install', 'wrangler', 'pages', 'secret', 'put', 'BACKUP_SECRET', '--project-name', PAGES_PROJECT], {
-            input: backupSecret, stdio: ['pipe', 'inherit', 'inherit'], shell: true,
-        });
-        execFileSync('npx', ['--no-install', 'wrangler', 'secret', 'put', 'BACKUP_SECRET'], {
-            cwd: path.resolve('workers/backup-cron'), input: backupSecret, stdio: ['pipe', 'inherit', 'inherit'], shell: true,
-        });
+        updateCronWranglerToml(dbId, bucketExists);
+        writePagesWranglerToml(dbId, bucketExists);
     }
 
     if (hasFlag('--deploy-cron')) {
-        if (!dbId || !bucketExists) {
-            console.error('Can D1 va R2 bucket san sang truoc khi deploy cron worker.');
+        if (!dbId) {
+            console.error('Can D1 san sang truoc khi deploy cron worker.');
             process.exit(1);
         }
-        execFileSync('npx', ['--no-install', 'wrangler', 'deploy'], {
-            cwd: path.resolve('workers/backup-cron'), stdio: 'inherit', shell: true,
+        updateCronWranglerToml(dbId, bucketExists);
+        console.log('\n> Deploy Cron Worker mkg-khaosat-backup-cron...');
+        try {
+            execFileSync('npx', ['--no-install', 'wrangler', 'deploy'], {
+                cwd: path.resolve('workers/backup-cron'), stdio: 'inherit', shell: true,
+            });
+        } catch (err) {
+            console.warn('! Luu y: Cron trigger tren Worker gap gioi han (vi du: 5/5 Cron Free cua Cloudflare).');
+            console.warn('  Worker endpoint van da duoc upload; co the dung GitHub Actions (.github/workflows/daily-backup.yml) de goi backup 02:00 sang hang ngay!');
+        }
+    }
+
+    if (hasFlag('--secrets')) {
+        const jwtSecret = crypto.randomBytes(32).toString('hex');
+        const backupSecret = crypto.randomBytes(24).toString('hex');
+        const tmpDir = path.resolve('.audit_tmp');
+        fs.mkdirSync(tmpDir, { recursive: true });
+        const pagesSecFile = path.join(tmpDir, `pages-sec-${Date.now()}.json`);
+        const workerSecFile = path.join(tmpDir, `worker-sec-${Date.now()}.json`);
+        try {
+            fs.writeFileSync(pagesSecFile, JSON.stringify({ JWT_SECRET: jwtSecret, BACKUP_SECRET: backupSecret }), 'utf8');
+            fs.writeFileSync(workerSecFile, JSON.stringify({ BACKUP_SECRET: backupSecret }), 'utf8');
+            console.log('\n> Nap JWT_SECRET & BACKUP_SECRET len Pages Project (imgdim)...');
+            execFileSync('npx', ['--no-install', 'wrangler', 'pages', 'secret', 'bulk', pagesSecFile, '--project-name', PAGES_PROJECT], {
+                stdio: 'inherit', shell: true,
+            });
+            console.log('\n> Nap BACKUP_SECRET len Cron Worker...');
+            execFileSync('npx', ['--no-install', 'wrangler', 'secret', 'bulk', workerSecFile], {
+                cwd: path.resolve('workers/backup-cron'), stdio: 'inherit', shell: true,
+            });
+        } finally {
+            fs.rmSync(pagesSecFile, { force: true });
+            fs.rmSync(workerSecFile, { force: true });
+        }
+    }
+
+    if (hasFlag('--deploy-pages')) {
+        if (!dbId) {
+            console.error('Can D1 san sang truoc khi deploy Pages.');
+            process.exit(1);
+        }
+        writePagesWranglerToml(dbId, bucketExists);
+        console.log('\n> Build & Deploy Cloudflare Pages (imgdim)...');
+        execFileSync('npm', ['run', 'build'], { stdio: 'inherit', shell: true });
+        execFileSync('npx', ['--no-install', 'wrangler', 'pages', 'deploy', 'dist', '--project-name', PAGES_PROJECT], {
+            stdio: 'inherit', shell: true,
         });
     }
 }

@@ -7,6 +7,7 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import readline from 'node:readline/promises';
 import path from 'node:path';
@@ -105,18 +106,23 @@ async function main() {
 
     if (PUSH_CF) {
         console.log('\n> Dang nap secrets len Cloudflare Pages (imgdim) & Backup Worker...');
-        for (const [k, v] of [
-            ['GDRIVE_CLIENT_ID', clientId],
-            ['GDRIVE_CLIENT_SECRET', clientSecret],
-            ['GDRIVE_REFRESH_TOKEN', tokJson.refresh_token],
-        ]) {
-            putSecret(['pages', 'secret', 'put', '--project-name', PAGES_PROJECT], k, v);
-            execFileSync('npx', ['--no-install', 'wrangler', 'secret', 'put', k], {
-                cwd: WORKER_DIR,
-                input: String(v),
-                stdio: ['pipe', 'inherit', 'inherit'],
-                shell: true,
+        const tmpDir = path.resolve('.audit_tmp');
+        fs.mkdirSync(tmpDir, { recursive: true });
+        const secFile = path.join(tmpDir, `gd-sec-${Date.now()}.json`);
+        try {
+            fs.writeFileSync(secFile, JSON.stringify({
+                GDRIVE_CLIENT_ID: clientId,
+                GDRIVE_CLIENT_SECRET: clientSecret,
+                GDRIVE_REFRESH_TOKEN: tokJson.refresh_token,
+            }), 'utf8');
+            execFileSync('npx', ['--no-install', 'wrangler', 'pages', 'secret', 'bulk', secFile, '--project-name', PAGES_PROJECT], {
+                stdio: 'inherit', shell: true,
             });
+            execFileSync('npx', ['--no-install', 'wrangler', 'secret', 'bulk', secFile], {
+                cwd: WORKER_DIR, stdio: 'inherit', shell: true,
+            });
+        } finally {
+            fs.rmSync(secFile, { force: true });
         }
         console.log('> Xong! Backup Cron se tu dong day D1 + R2 sang Google Drive moi dem.');
     }

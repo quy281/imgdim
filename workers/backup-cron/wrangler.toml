@@ -11,6 +11,7 @@ binding = "DB"
 database_name = "mkg-khaosat-db"
 database_id = "813b8317-c182-44fa-8d87-76519fc0225c"
 
-[[r2_buckets]]
-binding = "MEDIA"
-bucket_name = "mkg-khaosat-media"
+# Bo comment khoi nay sau khi bat R2 tren Dashboard va chay: node scripts/cf-setup.mjs --provision
+# [[r2_buckets]]
+# binding = "MEDIA"
+# bucket_name = "mkg-khaosat-media"
