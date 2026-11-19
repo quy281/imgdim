@@ -22,9 +22,17 @@ module MKG
       { 'key' => 'kitchen', 'name' => 'Bếp' },
       { 'key' => 'wc',      'name' => 'WC' },
       { 'key' => 'elec',    'name' => 'Điện & TB' },
-      { 'key' => 'other',   'name' => 'Khác' },
-      { 'key' => 'fadi',    'name' => 'Thư viện FADI' }
+      { 'key' => 'other',   'name' => 'Khác' }
     ].freeze unless defined?(GROUPS)
+
+    ROOM_NAMES = {
+      'bedroom' => 'Phòng ngủ',
+      'living'  => 'Khách + ăn',
+      'kitchen' => 'Bếp',
+      'wc'      => 'WC',
+      'elec'    => 'Điện & TB',
+      'other'   => 'Khác'
+    }.freeze unless defined?(ROOM_NAMES)
 
     JUNK_NAME_RE = Regexp.new(
       '(?:\b(?:' \
@@ -121,9 +129,7 @@ module MKG
       mount = 'floor'
       back = true
 
-      if f =~ /\bfadi\b/
-        group = 'fadi'
-      elsif f =~ /\b(giuong|bed|tap dau giuong|nightstand|ban trang diem|dresser|tu ao|wardrobe|tu quan ao|ban lam viec|desk)\b/
+      if f =~ /\b(giuong|bed|tap dau giuong|nightstand|ban trang diem|dresser|tu ao|wardrobe|tu quan ao|ban lam viec|desk)\b/
         group = 'bedroom'
       elsif f =~ /\b(sofa|ban tra|coffee|ke tv|tv stand|tivi|ban an|dining|armchair|ghe don|tham|rug|vach lam|cay xanh|plant)\b/
         group = 'living'
@@ -794,13 +800,18 @@ module MKG
 
       raise 'Chưa có món nào được tích chọn để xuất.' if chosen_targets.empty?
 
-      all_fadi = payload['target_library'] == 'fadi' || chosen_targets.all? { |t| t[:group] == 'fadi' }
+      target_lib = payload['target_library'].to_s == 'global' ? 'global' : 'fadi'
+      all_fadi = target_lib == 'fadi' || chosen_targets.all? { |t| t[:group] == 'fadi' }
       exported_items = chosen_targets.map do |t|
         res = export_single_target(model, t, payload)
         res.delete('daeXml')
-        if payload['target_library'] == 'fadi' || res['group'] == 'fadi'
+        room_key = res['group'].to_s
+        if all_fadi || room_key == 'fadi'
           res['library'] = 'fadi'
+          res['fadiRoom'] = ROOM_NAMES[room_key] || 'Khác'
           res['group'] = 'fadi'
+        else
+          res['library'] = 'global'
         end
         res
       end
@@ -853,8 +864,9 @@ module MKG
       end
 
       _chosen, exported_items, all_fadi = build_export_items(model, targets, payload)
+      write_pref('target_library', all_fadi ? 'fadi' : 'global')
       req_body = {
-        'library' => all_fadi ? 'fadi' : 'auto',
+        'library' => all_fadi ? 'fadi' : 'global',
         'items'   => exported_items
       }
 
@@ -977,7 +989,8 @@ module MKG
             'enabled' => true
           }
         end,
-        'groups' => GROUPS,
+        'groups' => GROUPS.reject { |g| g['key'] == 'fadi' },
+        'target_library' => read_pref('target_library', 'fadi') == 'global' ? 'global' : 'fadi',
         'auth' => {
           'api_base' => read_pref('api_base', DEFAULT_API_BASE),
           'identity' => read_pref('auth_identity', ''),
@@ -1058,7 +1071,7 @@ module MKG
           .hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
           .hdr h2 { margin: 0; font-size: 16px; color: #0f172a; }
           .hdr small { color: #475569; font-size: 11.5px; }
-          .opts { display: grid; grid-template-columns: 1.15fr 1fr 1.25fr; gap: 8px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; align-items: center; }
+          .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; align-items: center; }
           .opt-item { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
           .opt-item label { font-weight: 600; color: #334155; }
           .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; line-height: 1.35; }
@@ -1114,6 +1127,13 @@ module MKG
 
           <div class="opts">
             <div class="opt-item">
+              <label for="targetLib">Thư viện đích trên do.mkg.vn</label>
+              <select id="targetLib">
+                <option value="fadi">Thư viện FADI (Mở Web là thấy ngay)</option>
+                <option value="global">Kho chung (Mặc định theo phòng)</option>
+              </select>
+            </div>
+            <div class="opt-item">
               <label for="frontAxis">Hướng mặt trước trong SketchUp</label>
               <select id="frontAxis">
                 <option value="-Y">Mặc định Front (-Y nhìn vào)</option>
@@ -1146,7 +1166,6 @@ module MKG
           <div class="foot">
             <div class="note" id="summary"></div>
             <div class="btns">
-              <button type="button" onclick="assignAllFadi()" style="border-color:#f59e0b;color:#b45309;background:#fffbeb">Vào FADI</button>
               <button type="button" onclick="sketchup.cancelDialog()">Huỷ</button>
               <button type="button" id="btnSaveFile" onclick="doExport('file')">Lưu .mkglib.json</button>
               <button type="button" id="btnExport" class="primary" onclick="doExport('cloud')">Xuất thẳng lên Thư viện</button>
@@ -1166,10 +1185,12 @@ module MKG
             const authIdent = document.getElementById('authIdent');
             const authSecret = document.getElementById('authSecret');
             const apiBase = document.getElementById('apiBase');
+            const targetLib = document.getElementById('targetLib');
             let exporting = false;
             let connected = !!(DATA.auth && DATA.auth.connected);
 
             function syncAuthUI() {
+              if (targetLib) targetLib.value = DATA.target_library === 'global' ? 'global' : 'fadi';
               if (DATA.auth && DATA.auth.api_base) apiBase.value = DATA.auth.api_base;
               if (DATA.auth && DATA.auth.identity) authIdent.value = DATA.auth.identity;
               if (connected) {
@@ -1247,11 +1268,6 @@ module MKG
               render();
             });
 
-            function assignAllFadi() {
-              DATA.items.forEach(it => { it.group = 'fadi'; });
-              render();
-            }
-
             function doExport(mode) {
               if (exporting) return;
               errBox.style.display = 'none';
@@ -1266,8 +1282,6 @@ module MKG
               btnExport.disabled = true;
               btnSaveFile.disabled = true;
               btnExport.textContent = mode === 'cloud' ? 'Đang đẩy lên Cloud…' : 'Đang xuất file…';
-              const enabledItems = DATA.items.filter(x => x.enabled);
-              const allFadi = enabledItems.length > 0 && enabledItems.every(x => x.group === 'fadi');
               const payload = {
                 mode: mode || 'cloud',
                 api_base: apiBase.value.trim(),
@@ -1276,7 +1290,7 @@ module MKG
                 front_axis: document.getElementById('frontAxis').value,
                 include_svg: document.getElementById('incSvg').checked,
                 solid_only: document.getElementById('solidOnly').checked,
-                target_library: allFadi ? 'fadi' : 'auto',
+                target_library: targetLib ? targetLib.value : 'fadi',
                 items: DATA.items
               };
               sketchup.exportMkg(JSON.stringify(payload));

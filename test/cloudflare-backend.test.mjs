@@ -371,7 +371,7 @@ await fetch('https://cf.local/api/catalog/sketchup-import', {
 });
 const fadiPulled2 = await pb.fetchCloudCatalog('fadi');
 const matchingRuou = (fadiPulled2?.customItems || []).filter(x => x.name === 'Tủ Rượu FADI');
-check('Re-import trung ten vao FADI cap nhat de (khong nhan ban) & giu item cu fadi_tu1', matchingRuou.length === 1 && matchingRuou[0].w === 1400 && fadiPulled2.customItems.some(x => x.key === 'fadi_tu1'));
+check('Re-import trung ten vao FADI cap nhat de (khong nhan ban), giu item cu fadi_tu1 va chuan hoa fadiRoom', matchingRuou.length === 1 && matchingRuou[0].w === 1400 && matchingRuou[0].fadiRoom === 'Khách + ăn' && fadiPulled2.customItems.some(x => x.key === 'fadi_tu1'));
 
 console.log(`\n===== CLOUDFLARE E2E TEST: ${pass} pass, ${fail} fail =====`);
 if (fail > 0) process.exit(1);

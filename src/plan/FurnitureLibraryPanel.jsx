@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import Symbol2DSvg from './Symbol2DSvg';
 import {
-    CORE_GROUPS, FURNITURE, isDesktopCatalogSupported, isFadiLibraryEnabled, setFadiLibraryEnabled,
+    CORE_GROUPS, FURNITURE, getCatalogVersion, isDesktopCatalogSupported, isFadiLibraryEnabled, setFadiLibraryEnabled,
 } from '../lib/furnitureCatalog';
 import { FLOOR_MATERIALS, resolveRoomFloorMat } from '../lib/floorMaterials';
 
@@ -68,6 +68,7 @@ export default function FurnitureLibraryPanel({
     const rooms = doc?.plan?.rooms || [];
     const placedItems = doc?.furniture || [];
     const showAdminAction = isDesktopCatalogSupported() && typeof onOpenCatalogAdmin === 'function';
+    const catVer = getCatalogVersion();
 
     // Toàn bộ item đang có theo từng key để tra cứu nhanh cho Active / Favorites / Recent
     const allItemsMap = useMemo(() => {
@@ -81,7 +82,7 @@ export default function FurnitureLibraryPanel({
             m.set(it.key, it);
         }
         return m;
-    }, [doc, furnSource, fadiSyncBusy, FURNITURE.fadi?.length]);
+    }, [doc, furnSource, fadiSyncBusy, catVer]);
 
     const activeKindKeys = useMemo(() => {
         const seen = [];
@@ -117,7 +118,7 @@ export default function FurnitureLibraryPanel({
             cats.push({ key: k, name: k, count });
         }
         return cats;
-    }, [FURNITURE.fadi?.length, fadiSyncBusy]);
+    }, [catVer, fadiSyncBusy]);
 
     const toggleFavorite = (e, key) => {
         e.stopPropagation();
@@ -177,7 +178,7 @@ export default function FurnitureLibraryPanel({
     }, [
         searchQuery, smartFilter, furnSource, furnGroup, fadiSubRoom,
         activeKindKeys, favItemList, recentItemList, allItemsMap,
-        FURNITURE.fadi?.length, fadiSyncBusy,
+        catVer, fadiSyncBusy,
     ]);
 
     const activeFloorKeyForSelection = useMemo(() => {

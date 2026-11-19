@@ -105,7 +105,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
             return val;
         });
     };
-    const [furnSource, setFurnSource] = useState(() => (isFadiContextActive() && isFadiLibraryEnabled() ? 'online' : 'local'));
+    const [furnSource, setFurnSource] = useState('online');
     const [furnGroup, setFurnGroup] = useState('bedroom');
     const [fadiSyncBusy, setFadiSyncBusy] = useState(false);
     const [showFurnSizes, setShowFurnSizes] = useState(false);
@@ -174,13 +174,22 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
 
     const handleChangeFurnSource = async (nextSrc) => {
         setFurnSource(nextSrc);
-        if (nextSrc === 'online') {
-            if (!isFadiLibraryEnabled()) setFadiLibraryEnabled(true);
-            if (!(FURNITURE.fadi || []).length && pb.isLoggedIn()) {
-                await pullFadiFromCloud(true, 'online');
-            }
+        if (nextSrc === 'online' && !isFadiLibraryEnabled()) {
+            setFadiLibraryEnabled(true);
+        }
+        if (pb.isLoggedIn() && !pb.isCustomer()) {
+            await pullFadiFromCloud(true, nextSrc);
         }
     };
+
+    // Tự đồng bộ Thư viện Cloud (FADI + Kho chung) mỗi lần mở bảng Thư viện hoặc mở mặt bằng
+    useEffect(() => {
+        if (!pb.isLoggedIn() || pb.isCustomer()) return;
+        if (showFurnPicker) {
+            pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
+            pb.fetchCloudCatalog('global').then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
+        }
+    }, [showFurnPicker]);
     const [templates, setTemplates] = useState(null);
     const [roomMenu, setRoomMenu] = useState(null);
     const [elev, setElev] = useState(null); // { roomId, faces:[{wallId,len,label}], wallId }

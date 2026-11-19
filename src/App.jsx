@@ -121,13 +121,9 @@ export default function App() {
     const syncFailures = useRef(0);
 
     const syncCloudCatalogs = useCallback(() => {
-        if (!pb.isLoggedIn()) return;
-        if (!pb.isCustomer()) {
-            pb.fetchCloudCatalog('global').then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
-        }
-        if (isFadiLibraryEnabled()) {
-            pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
-        }
+        if (!pb.isLoggedIn() || pb.isCustomer()) return;
+        pb.fetchCloudCatalog('global').then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
+        pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
     }, []);
 
     const syncFadiContext = useCallback((projObj = null) => {
@@ -145,7 +141,7 @@ export default function App() {
             ? projects.find(p => p.id === route.projectId)
             : null;
         syncFadiContext(activeProj);
-        if (pb.isLoggedIn() && isFadiLibraryEnabled()) {
+        if (pb.isLoggedIn() && !pb.isCustomer()) {
             pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
         }
     }, [account, route.projectId, projects, syncFadiContext]);

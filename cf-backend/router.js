@@ -990,13 +990,23 @@ function slugifyCatalogKey(name, prefix) {
     return `${prefix}${base}`;
 }
 
+const SKETCHUP_ROOM_LABELS = {
+    bedroom: 'Phòng ngủ',
+    living: 'Khách + ăn',
+    kitchen: 'Bếp',
+    wc: 'WC',
+    elec: 'Điện & TB',
+    other: 'Khác',
+};
+
 function sanitizeIncomingSketchUpItem(raw, key, isFadi) {
     const validStr = (v) => (typeof v === 'string' ? v.trim() : '');
     const mount = raw.mount === 'wall' || raw.mount === 'ceiling' ? raw.mount : 'floor';
     const glbData = validStr(raw.glbData || raw.modelDataUrl || '');
     const validGroups = new Set(['bedroom', 'living', 'kitchen', 'wc', 'elec', 'other']);
     const group = isFadi ? 'fadi' : (validGroups.has(raw.group) ? raw.group : 'other');
-    const fadiRoom = isFadi ? validStr(raw.fadiRoom || (raw.group && raw.group !== 'fadi' ? raw.group : '')) : '';
+    const rawRoom = validStr(raw.fadiRoom || (raw.group && raw.group !== 'fadi' ? raw.group : ''));
+    const fadiRoom = isFadi ? (SKETCHUP_ROOM_LABELS[rawRoom] || rawRoom || 'Khác') : '';
     return {
         key,
         name: validStr(raw.name) || 'Mẫu SketchUp',
