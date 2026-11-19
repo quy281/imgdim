@@ -2,9 +2,11 @@ import React from 'react';
 import { Group, Line, Arc, Circle, Label, Tag, Text } from 'react-konva';
 import { wallQuad, dist, wallSegments, wallOutwardNormal } from '../lib/geometry';
 
-const WALL_FILL = '#334155';
+const WALL_FILL_CAD = '#334155';
+const WALL_FILL_PRES = '#8f949a';
+const WALL_OUTLINE_PRES = '#1e293b';
 const WALL_SELECTED = '#2563eb';
-const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
+const FONT = "'Plus Jakarta Sans', -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
 
 /**
  * Wall graph renderer: thick wall quads, joint patches, dimension labels,
@@ -17,10 +19,12 @@ const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
  *   onNodeDrag(nodeId, pos, commit)
  */
 const WallsLayer = ({
-    plan, scale, sel, listening, showHandles,
+    plan, scale, sel, listening, showHandles, themeMode = 'presentation',
     onWallTap, onLabelTap, onOpeningTap, onSegmentTap, onNodeDrag, snapFn,
 }) => {
     const inv = 1 / scale;
+    const isPres = themeMode !== 'cad';
+    const wallFill = isPres ? WALL_FILL_PRES : WALL_FILL_CAD;
     const nodeById = new Map(plan.nodes.map(n => [n.id, n]));
     const nodeTh = new Map();
     for (const w of plan.walls) {
@@ -46,93 +50,135 @@ const WallsLayer = ({
         onWallTap(w.id, t);
     };
 
+    const wallGeos = plan.walls.map(w => {
+        const a = nodeById.get(w.a);
+        const b = nodeById.get(w.b);
+        if (!a || !b) return null;
+        const wallLen = dist(a, b);
+        if (wallLen <= 0) return null;
+        const quad = wallQuad(a, b, w.thickness);
+        const ux = (b.x - a.x) / wallLen;
+        const uy = (b.y - a.y) / wallLen;
+        const nx = -uy, ny = ux;
+        const h = w.thickness / 2;
+        return { w, a, b, wallLen, quadPts: quad.flatMap(p => [p.x, p.y]), ux, uy, nx, ny, h };
+    }).filter(Boolean);
+
     return (
         <Group listening={listening}>
-            {plan.walls.map(w => {
-                const a = nodeById.get(w.a);
-                const b = nodeById.get(w.b);
-                if (!a || !b) return null;
-                const isSel = w.id === selWallId;
-                const quad = wallQuad(a, b, w.thickness);
-                const wallLen = dist(a, b);
-                if (wallLen <= 0) return null;
-                const ux = (b.x - a.x) / wallLen;
-                const uy = (b.y - a.y) / wallLen;
-                const nx = -uy, ny = ux;
-                const h = w.thickness / 2;
-
-                return (
-                    <Group key={w.id}>
+            {/* Pass 1 (Presentation): viền bao kiến trúc sắc nét bên ngoài toàn bộ hệ tường & cột */}
+            {isPres && (
+                <Group listening={false}>
+                    {wallGeos.map(({ w, quadPts }) => (
                         <Line
-                            points={quad.flatMap(p => [p.x, p.y])}
+                            key={`outline-${w.id}`}
+                            points={quadPts}
                             closed
-                            fill={isSel ? WALL_SELECTED : WALL_FILL}
-                            hitStrokeWidth={Math.max(w.thickness, 26 * inv)}
-                            onClick={(e) => tapWall(w, e)}
-                            onTap={(e) => tapWall(w, e)}
-                            onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'pointer'; }}
-                            onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
+                            fill={w.id === selWallId ? '#1d4ed8' : WALL_OUTLINE_PRES}
+                            stroke={w.id === selWallId ? '#1d4ed8' : WALL_OUTLINE_PRES}
+                            strokeWidth={2.8 * inv}
+                            lineJoin="round"
                         />
-                        {(w.openings || []).map(op => {
-                            const cx = a.x + op.t * (b.x - a.x);
-                            const cy = a.y + op.t * (b.y - a.y);
-                            const hw = op.width / 2;
-                            const p1x = cx - hw * ux, p1y = cy - hw * uy;
-                            const p2x = cx + hw * ux, p2y = cy + hw * uy;
-                            const isSelOp = op.id === selOpeningId;
-                            const opColor = isSelOp ? WALL_SELECTED : '#64748b';
-                            const tapOp = (e) => { e.cancelBubble = true; onOpeningTap(w.id, op.id); };
+                    ))}
+                    {plan.nodes.map(n => nodeTh.has(n.id) ? (
+                        <Circle
+                            key={`outline-node-${n.id}`}
+                            x={n.x}
+                            y={n.y}
+                            radius={nodeTh.get(n.id) / 2 + 1.4 * inv}
+                            fill={selNodeIds.includes(n.id) ? '#1d4ed8' : WALL_OUTLINE_PRES}
+                        />
+                    ) : null)}
+                </Group>
+            )}
 
-                            return (
-                                <Group key={op.id} onClick={tapOp} onTap={tapOp}>
-                                    {/* white gap in the wall */}
-                                    <Line
-                                        points={[
-                                            p1x + nx * h, p1y + ny * h,
-                                            p2x + nx * h, p2y + ny * h,
-                                            p2x - nx * h, p2y - ny * h,
-                                            p1x - nx * h, p1y - ny * h,
-                                        ]}
-                                        closed fill={isSelOp ? '#dbeafe' : '#ffffff'}
-                                        hitStrokeWidth={Math.max(w.thickness * 1.5, 30 * inv)}
-                                    />
-                                    {op.type === 'door' ? (
-                                        <>
-                                            <Line points={[p1x, p1y, p2x, p2y]}
-                                                stroke={opColor} strokeWidth={2 * inv} listening={false} />
-                                            <Arc
-                                                x={p1x} y={p1y}
-                                                innerRadius={0}
-                                                outerRadius={op.width}
-                                                angle={90}
-                                                rotation={Math.atan2(uy, ux) * 180 / Math.PI + (op.flipped ? -90 : 0)}
-                                                fill="rgba(37,99,235,0.07)"
-                                                stroke={opColor} strokeWidth={1.5 * inv}
-                                                listening={false}
-                                            />
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Line points={[p1x + nx * h * 0.6, p1y + ny * h * 0.6, p2x + nx * h * 0.6, p2y + ny * h * 0.6]}
-                                                stroke={opColor} strokeWidth={2 * inv} listening={false} />
-                                            <Line points={[p1x - nx * h * 0.6, p1y - ny * h * 0.6, p2x - nx * h * 0.6, p2y - ny * h * 0.6]}
-                                                stroke={opColor} strokeWidth={2 * inv} listening={false} />
-                                            <Line points={[p1x, p1y, p2x, p2y]}
-                                                stroke={opColor} strokeWidth={1 * inv} dash={[4 * inv, 3 * inv]} listening={false} />
-                                        </>
-                                    )}
-                                </Group>
-                            );
-                        })}
-                    </Group>
+            {/* Pass 2: Thân tường & khớp nối (poché xám kiến trúc trong chế độ trình bày) */}
+            {wallGeos.map(({ w, quadPts }) => {
+                const isSel = w.id === selWallId;
+                return (
+                    <Line
+                        key={w.id}
+                        points={quadPts}
+                        closed
+                        fill={isSel ? WALL_SELECTED : wallFill}
+                        hitStrokeWidth={Math.max(w.thickness, 26 * inv)}
+                        onClick={(e) => tapWall(w, e)}
+                        onTap={(e) => tapWall(w, e)}
+                        onMouseEnter={(e) => { e.target.getStage().container().style.cursor = 'pointer'; }}
+                        onMouseLeave={(e) => { e.target.getStage().container().style.cursor = 'default'; }}
+                    />
                 );
             })}
 
             {/* joint patches */}
             {plan.nodes.map(n => nodeTh.has(n.id) ? (
                 <Circle key={`patch-${n.id}`} x={n.x} y={n.y} radius={nodeTh.get(n.id) / 2}
-                    fill={selNodeIds.includes(n.id) ? WALL_SELECTED : WALL_FILL} listening={false} />
+                    fill={selNodeIds.includes(n.id) ? WALL_SELECTED : wallFill} listening={false} />
             ) : null)}
+
+            {/* Pass 3: Cửa đi & Cửa sổ nằm nổi sạch trên nền tường */}
+            {wallGeos.map(({ w, a, b, ux, uy, nx, ny, h }) => (
+                (w.openings || []).map(op => {
+                    const cx = a.x + op.t * (b.x - a.x);
+                    const cy = a.y + op.t * (b.y - a.y);
+                    const hw = op.width / 2;
+                    const p1x = cx - hw * ux, p1y = cy - hw * uy;
+                    const p2x = cx + hw * ux, p2y = cy + hw * uy;
+                    const isSelOp = op.id === selOpeningId;
+                    const opColor = isSelOp ? WALL_SELECTED : (isPres ? '#1e293b' : '#64748b');
+                    const opSubColor = isSelOp ? WALL_SELECTED : (isPres ? '#475569' : '#64748b');
+                    const tapOp = (e) => { e.cancelBubble = true; onOpeningTap(w.id, op.id); };
+
+                    return (
+                        <Group key={op.id} onClick={tapOp} onTap={tapOp}>
+                            {/* khoảng trổ cửa sáng trên mặt tường */}
+                            <Line
+                                points={[
+                                    p1x + nx * h, p1y + ny * h,
+                                    p2x + nx * h, p2y + ny * h,
+                                    p2x - nx * h, p2y - ny * h,
+                                    p1x - nx * h, p1y - ny * h,
+                                ]}
+                                closed fill={isSelOp ? '#dbeafe' : (isPres ? '#f4f3ef' : '#ffffff')}
+                                hitStrokeWidth={Math.max(w.thickness * 1.5, 30 * inv)}
+                            />
+                            {isPres && (
+                                <>
+                                    <Line points={[p1x + nx * h, p1y + ny * h, p1x - nx * h, p1y - ny * h]}
+                                        stroke={opColor} strokeWidth={1.3 * inv} listening={false} />
+                                    <Line points={[p2x + nx * h, p2y + ny * h, p2x - nx * h, p2y - ny * h]}
+                                        stroke={opColor} strokeWidth={1.3 * inv} listening={false} />
+                                </>
+                            )}
+                            {op.type === 'door' ? (
+                                <>
+                                    <Line points={[p1x, p1y, p2x, p2y]}
+                                        stroke={opColor} strokeWidth={2 * inv} listening={false} />
+                                    <Arc
+                                        x={p1x} y={p1y}
+                                        innerRadius={0}
+                                        outerRadius={op.width}
+                                        angle={90}
+                                        rotation={Math.atan2(uy, ux) * 180 / Math.PI + (op.flipped ? -90 : 0)}
+                                        fill={isPres ? 'rgba(30,41,59,0.035)' : 'rgba(37,99,235,0.07)'}
+                                        stroke={opSubColor} strokeWidth={1.25 * inv}
+                                        listening={false}
+                                    />
+                                </>
+                            ) : (
+                                <>
+                                    <Line points={[p1x + nx * h * 0.65, p1y + ny * h * 0.65, p2x + nx * h * 0.65, p2y + ny * h * 0.65]}
+                                        stroke={opColor} strokeWidth={1.6 * inv} listening={false} />
+                                    <Line points={[p1x - nx * h * 0.65, p1y - ny * h * 0.65, p2x - nx * h * 0.65, p2y - ny * h * 0.65]}
+                                        stroke={opColor} strokeWidth={1.6 * inv} listening={false} />
+                                    <Line points={[p1x, p1y, p2x, p2y]}
+                                        stroke={opSubColor} strokeWidth={1 * inv} dash={isPres ? undefined : [4 * inv, 3 * inv]} listening={false} />
+                                </>
+                            )}
+                        </Group>
+                    );
+                })
+            ))}
 
             {/* Kích thước để ngoài thành kích thước 2 tầng: Tầng 1 chuỗi cạnh tường + cửa, Tầng 2 tổng chiều dài tường */}
             {plan.walls.map(w => {

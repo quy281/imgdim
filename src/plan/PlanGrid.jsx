@@ -6,7 +6,7 @@ import { Shape } from 'react-konva';
  * Covers union(viewport, content bbox + 2000mm) so exports (which reset the stage
  * transform without re-rendering React) always have grid under the crop box.
  */
-const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 100, gridMajor = 1000 }) => {
+const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 100, gridMajor = 1000, themeMode = 'presentation' }) => {
     let x1 = -stagePos.x / stageScale;
     let y1 = -stagePos.y / stageScale;
     let x2 = (stageSize.width - stagePos.x) / stageScale;
@@ -18,7 +18,8 @@ const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 
         x2 = Math.max(x2, contentBounds.x + contentBounds.width + M);
         y2 = Math.max(y2, contentBounds.y + contentBounds.height + M);
     }
-    const showMinor = stageScale * gridMinor >= 6;
+    const isPres = themeMode !== 'cad';
+    const showMinor = stageScale * gridMinor >= (isPres ? 14 : 6);
 
     return (
         <Shape
@@ -27,7 +28,7 @@ const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 
                 ctx.beginPath();
                 ctx.rect(x1, y1, x2 - x1, y2 - y1);
                 ctx.closePath();
-                ctx.fillStyle = '#ffffff';
+                ctx.fillStyle = isPres ? '#c5c8c1' : '#ffffff';
                 ctx.fill();
 
                 const drawLines = (step, color, width) => {
@@ -42,8 +43,13 @@ const PlanGrid = ({ stageScale, stagePos, stageSize, contentBounds, gridMinor = 
                     }
                     ctx.stroke();
                 };
-                if (showMinor) drawLines(gridMinor, '#eef2f7', 1);
-                drawLines(gridMajor, '#dbe3ec', 1);
+                if (isPres) {
+                    if (showMinor) drawLines(gridMinor, 'rgba(255,255,255,0.06)', 1);
+                    drawLines(gridMajor, 'rgba(255,255,255,0.16)', 1);
+                } else {
+                    if (showMinor) drawLines(gridMinor, '#eef2f7', 1);
+                    drawLines(gridMajor, '#dbe3ec', 1);
+                }
             }}
             hitFunc={(ctx, shape) => {
                 ctx.beginPath();

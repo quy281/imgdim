@@ -7,10 +7,12 @@ import {
     MapPin, Box, Move, Boxes, FileSpreadsheet, RefreshCw, Lock, Unlock,
 } from 'lucide-react';
 import PlanGrid from '../plan/PlanGrid';
+import RoomFloorsLayer from '../plan/RoomFloorsLayer';
 import WallsLayer from '../plan/WallsLayer';
 import RoomLabels from '../plan/RoomLabels';
 import DrawPreview from '../plan/DrawPreview';
 import FurnitureLayer from '../plan/FurnitureLayer';
+import FurnitureLibraryPanel from '../plan/FurnitureLibraryPanel';
 import ColumnPreview from '../plan/ColumnPreview';
 import ElevationView from '../plan/ElevationView';
 import {
@@ -38,7 +40,7 @@ import {
     columnParts, resizeColumn, removeColumn, COLUMN_DEFAULT,
 } from '../lib/geometry';
 import {
-    addWallSegment, deleteWall, moveNode, renameRoom, recomputeRooms,
+    addWallSegment, deleteWall, moveNode, renameRoom, setRoomFloorMaterial, recomputeRooms,
     addOpening, removeOpening, updateOpening, insertTemplate, unlockWallSegments,
 } from '../lib/planModel';
 import { loadTemplates, saveTemplateFromRoom, deleteTemplate } from '../lib/roomTemplates';
@@ -83,8 +85,28 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
     const [showExport, setShowExport] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [showNotes, setShowNotes] = useState(false);
-    const [showFurnPicker, setShowFurnPicker] = useState(false);
-    const [furnGroup, setFurnGroup] = useState(() => (isFadiContextActive() && isFadiLibraryEnabled() ? 'fadi' : 'bedroom'));
+    const [showFurnPicker, setShowFurnPickerRaw] = useState(() => {
+        if (typeof window === 'undefined') return false;
+        if (!doc.plan.walls.length) return false;
+        if (window.innerWidth < 1024) return false;
+        try {
+            const saved = localStorage.getItem('mkg_lib_panel_open');
+            return saved === null ? true : saved === '1';
+        } catch {
+            return true;
+        }
+    });
+    const setShowFurnPicker = (nextVal) => {
+        setShowFurnPickerRaw(prev => {
+            const val = typeof nextVal === 'function' ? nextVal(prev) : !!nextVal;
+            if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
+                try { localStorage.setItem('mkg_lib_panel_open', val ? '1' : '0'); } catch { /* ignore */ }
+            }
+            return val;
+        });
+    };
+    const [furnSource, setFurnSource] = useState(() => (isFadiContextActive() && isFadiLibraryEnabled() ? 'online' : 'local'));
+    const [furnGroup, setFurnGroup] = useState('bedroom');
     const [fadiSyncBusy, setFadiSyncBusy] = useState(false);
     const [showFurnSizes, setShowFurnSizes] = useState(false);
     const [furnRotLock, setFurnRotLock] = useState(() => {
@@ -141,16 +163,13 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         }
     };
 
-    const handleToggleFadiOption = async () => {
-        const next = !fadiEnabled;
-        setFadiLibraryEnabled(next);
-        if (next) {
-            setFurnGroup('fadi');
-            await pullFadiFromCloud(true);
-            toast('Đã bật thêm Thư viện FADI', 'ok');
-        } else {
-            if (furnGroup === 'fadi') setFurnGroup('bedroom');
-            toast('Đã ẩn Thư viện FADI');
+    const handleChangeFurnSource = async (nextSrc) => {
+        setFurnSource(nextSrc);
+        if (nextSrc === 'online') {
+            if (!isFadiLibraryEnabled()) setFadiLibraryEnabled(true);
+            if (!(FURNITURE.fadi || []).length && pb.isLoggedIn()) {
+                await pullFadiFromCloud(true);
+            }
         }
     };
     const [templates, setTemplates] = useState(null);
@@ -273,8 +292,8 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         setColDrag(null);
         if (m === 'furniture') {
             setChain(null);
-            if (isFadiContextActive() && isFadiLibraryEnabled()) setFurnGroup('fadi');
-            setShowFurnPicker(true);
+            setShowFurnPicker(v => !v || mode !== 'furniture');
+            setModeRaw('select');
             return;
         }
         if (m === 'draw') {
@@ -390,7 +409,9 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
 
     const addFurniture = (key) => {
         const { w, d, h, z } = defaultSize(key, docRef.current.settings);
-        const cx = view ? (stageSize.width / 2 - view.x) / view.scale : 0;
+        const dockOffset = (showFurnPicker && stageSize.width >= 768) ? 176 : 0;
+        const viewCenterX = stageSize.width / 2 + dockOffset;
+        const cx = view ? (viewCenterX - view.x) / view.scale : 0;
         const cy = view ? (stageSize.height / 2 - view.y) / view.scale : 0;
         const raw = {
             id: genId('f'),
@@ -412,7 +433,9 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
         });
         const placed = { ...raw, x: res.x, y: res.y, rot: res.rot };
         commit(undefined, undefined, [...furnList(), placed]);
-        setShowFurnPicker(false);
+        if (typeof window !== 'undefined' && window.innerWidth < 768) {
+            setShowFurnPicker(false);
+        }
         setModeRaw('select');
         setSel({ kind: 'furniture', id: placed.id });
         toast(
@@ -928,6 +951,13 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
 
     // ===== Derived =====
     const settings = doc.settings || {};
+    const planTheme = settings.planTheme === 'cad' ? 'cad' : 'presentation';
+    const setPlanTheme = (theme) => {
+        onChange({ ...docRef.current, settings: { ...(docRef.current.settings || {}), planTheme: theme } });
+    };
+    const applyFloorMat = (roomId, floorMat) => {
+        commit(setRoomFloorMaterial(docRef.current.plan, roomId, floorMat), undefined);
+    };
     const listening = mode === 'select' || mode === 'editKT' || mode === 'door' || mode === 'window';
     const selOpening = openingSheet
         ? (doc.plan.walls.find(w => w.id === openingSheet.wallId)?.openings || []).find(o => o.id === openingSheet.openingId)
@@ -1059,10 +1089,13 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                                 stageScale={view.scale} stagePos={{ x: view.x, y: view.y }} stageSize={stageSize}
                                 contentBounds={bboxOfPlan(doc.plan, doc.notes, doc.furniture)}
                                 gridMinor={settings.gridMinor || 100} gridMajor={settings.gridMajor || 1000}
+                                themeMode={planTheme}
                             />
+                            <RoomFloorsLayer plan={doc.plan} themeMode={planTheme} />
                             <WallsLayer
                                 plan={doc.plan} scale={view.scale} sel={sel}
                                 listening={listening} showHandles={mode === 'select'}
+                                themeMode={planTheme}
                                 onWallTap={onWallTap}
                                 onLabelTap={(id) => openWallNumPad(id)}
                                 onOpeningTap={onOpeningTap}
@@ -1070,13 +1103,13 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                                 onNodeDrag={onNodeDrag}
                                 snapFn={snapFn}
                             />
-                            <RoomLabels plan={doc.plan} scale={view.scale} listening={mode === 'select'} onTap={onRoomTap} />
                             <FurnitureLayer
                                 items={doc.furniture} scale={view.scale} sel={sel}
                                 editItemId={mode === 'select' ? furnEditId : null}
                                 snapGuides={snapGuides}
                                 listening={mode === 'select'}
-                                showDims={settings.showFurnDims !== false}
+                                showDims={planTheme === 'cad' ? settings.showFurnDims !== false : settings.showFurnDims === true}
+                                themeMode={planTheme}
                                 onSelect={(id) => {
                                     setSel({ kind: 'furniture', id });
                                     setOpeningSheet(null);
@@ -1086,6 +1119,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                                 onScaleEdge={handleScaleFurnitureEdge}
                                 onTapEdge={handleTapFurnitureEdge}
                             />
+                            <RoomLabels plan={doc.plan} scale={view.scale} listening={mode === 'select'} themeMode={planTheme} onTap={onRoomTap} />
                             <Group listening={mode === 'select'}>
                                 {(doc.notes || []).map(n => (
                                     <NoteMarker key={n.id} note={n} scale={view.scale}
@@ -1216,6 +1250,69 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                     </div>
                 )}
 
+                {/* 5D+ Floating/Docked Library Launcher & Presentation Toggle HUD */}
+                {!showFurnPicker && (
+                    <button
+                        type="button"
+                        className="canvas-lib-launcher"
+                        onClick={() => setShowFurnPicker(true)}
+                        title="Mở bảng Thư viện 2D/3D & Vật liệu"
+                    >
+                        <Boxes size={15} />
+                        <span>Thư viện 2D/3D</span>
+                    </button>
+                )}
+
+                <div className="canvas-theme-hud mkg-segmented" role="group" aria-label="Kiểu hiển thị bản vẽ">
+                    <button
+                        type="button"
+                        className={`mkg-segmented-tab ${planTheme !== 'cad' ? 'active' : ''}`}
+                        onClick={() => setPlanTheme('presentation')}
+                    >
+                        Trình bày
+                    </button>
+                    <button
+                        type="button"
+                        className={`mkg-segmented-tab ${planTheme === 'cad' ? 'active' : ''}`}
+                        onClick={() => setPlanTheme('cad')}
+                    >
+                        CAD
+                    </button>
+                </div>
+
+                {/* Docked / Floating 5D+ Library Panel */}
+                <FurnitureLibraryPanel
+                    open={showFurnPicker}
+                    onClose={() => { setShowFurnPicker(false); setModeRaw('select'); }}
+                    doc={doc}
+                    furnSource={furnSource}
+                    onChangeSource={handleChangeFurnSource}
+                    furnGroup={furnGroup}
+                    onChangeGroup={setFurnGroup}
+                    furnRotLock={furnRotLock}
+                    onToggleRotLock={toggleDefaultFurnRotLock}
+                    furnInsertRot={furnInsertRot}
+                    onPickInsertRot={pickFurnInsertRot}
+                    showFurnDims={planTheme === 'cad' ? settings.showFurnDims !== false : settings.showFurnDims === true}
+                    onToggleShowFurnDims={() => {
+                        const cur = planTheme === 'cad' ? settings.showFurnDims !== false : settings.showFurnDims === true;
+                        onChange({
+                            ...docRef.current,
+                            settings: { ...settings, showFurnDims: !cur },
+                        });
+                    }}
+                    planTheme={planTheme}
+                    onChangePlanTheme={setPlanTheme}
+                    onApplyFloorMat={applyFloorMat}
+                    onAddFurniture={addFurniture}
+                    onPullFadi={pullFadiFromCloud}
+                    fadiSyncBusy={fadiSyncBusy}
+                    onOpenCatalogAdmin={onOpenCatalogAdmin ? () => {
+                        setShowFurnPicker(false);
+                        onOpenCatalogAdmin();
+                    } : null}
+                />
+
                 {/* Notes side panel */}
                 {showNotes && (
                     <div className="notes-panel">
@@ -1255,7 +1352,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                 )}
             </div>
 
-            {/* Mode toolbar */}
+            {/* Footer bar / Mode toolbar */}
             <div className="tool-bar">
                 {MODES.map(m => {
                     const Icon = m.icon;
@@ -1356,150 +1453,7 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                 </div>
             </Sheet>
 
-            {/* Furniture picker */}
-            <Sheet open={showFurnPicker} onClose={() => { setShowFurnPicker(false); setModeRaw('select'); }}
-                title="Thư viện nội thất 2D/3D"
-                sub={inFadiMode ? 'Đang dùng Thư viện FADI mặc định · Tự hít tường & đồ kề' : 'Tự động magnet vào tường, góc cột & đồ gần nhau · Bấm Chỉnh sửa để scale 4 chiều'}>
-                <div className="chip-row" style={{ marginBottom: 6 }}>
-                    {pickerGroups.map(g => (
-                        <button
-                            key={g.key}
-                            className={`chip ${activeFurnGroup === g.key ? 'on' : ''}`}
-                            style={g.key === 'fadi' && activeFurnGroup !== 'fadi' ? { borderColor: '#f59e0b', color: '#b45309', background: '#fffbeb' } : undefined}
-                            onClick={() => setFurnGroup(g.key)}
-                        >
-                            {g.key === 'fadi' ? `FADI (${(FURNITURE.fadi || []).length})` : g.name}
-                        </button>
-                    ))}
-                </div>
-                <div style={{
-                    display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between',
-                    gap: 8, padding: '8px 11px', marginBottom: 8, borderRadius: 11,
-                    background: furnRotLock ? '#fffbeb' : 'var(--bg)',
-                    border: `1px solid ${furnRotLock ? '#f59e0b' : 'var(--line)'}`,
-                }}>
-                    <button
-                        type="button"
-                        onClick={toggleDefaultFurnRotLock}
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 190,
-                            background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer',
-                            color: furnRotLock ? '#92400e' : 'var(--ink)',
-                        }}
-                    >
-                        {furnRotLock
-                            ? <Lock size={16} style={{ color: '#d97706', flexShrink: 0 }} />
-                            : <Unlock size={16} style={{ color: 'var(--muted)', flexShrink: 0 }} />}
-                        <span style={{ flex: 1 }}>
-                            <span style={{ fontSize: 13, fontWeight: 700, display: 'block', lineHeight: 1.2 }}>
-                                Khoá xoay khi đưa đồ vào
-                            </span>
-                            <span style={{ fontSize: 11.5, color: furnRotLock ? '#b45309' : 'var(--muted)' }}>
-                                {furnRotLock ? 'Đã khoá — magnet chỉ hít vị trí, không tự xoay' : 'Tắt — magnet tự xoay mặt lưng theo tường'}
-                            </span>
-                        </span>
-                        <span style={{
-                            padding: '3px 9px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, flexShrink: 0,
-                            background: furnRotLock ? '#d97706' : 'var(--surface)',
-                            color: furnRotLock ? '#ffffff' : 'var(--muted)',
-                            border: furnRotLock ? 'none' : '1px solid var(--line)',
-                        }}>
-                            {furnRotLock ? 'Đang khoá' : 'Tắt'}
-                        </span>
-                    </button>
-                    {furnRotLock && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}>
-                            <span style={{ fontSize: 11.5, color: '#92400e', fontWeight: 600, marginRight: 4 }}>Góc đưa vào:</span>
-                            {[0, 90, 180, 270].map(deg => (
-                                <button
-                                    key={deg}
-                                    type="button"
-                                    onClick={() => pickFurnInsertRot(deg)}
-                                    style={{
-                                        padding: '3px 9px', borderRadius: 8, fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
-                                        border: `1px solid ${furnInsertRot === deg ? '#d97706' : '#fcd34d'}`,
-                                        background: furnInsertRot === deg ? '#d97706' : '#ffffff',
-                                        color: furnInsertRot === deg ? '#ffffff' : '#92400e',
-                                    }}
-                                >
-                                    {deg}°
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                </div>
-                <div style={{ maxHeight: '42vh', overflowY: 'auto' }}>
-                    {(FURNITURE[activeFurnGroup] || []).map(it => {
-                        const sz = defaultSize(it.key, settings);
-                        return (
-                            <button key={it.key} className="sheet-row" onClick={() => addFurniture(it.key)}>
-                                <Sofa size={18} style={{ color: it.isFadi ? '#d97706' : (it.back ? 'var(--blue)' : 'var(--ok)') }} />
-                                <div style={{ flex: 1 }}>
-                                    {it.name}
-                                    <div className="sub">
-                                        {sz.w} × {sz.d} × {sz.h} mm{it.back ? (furnRotLock ? ' · magnet vị trí (khoá xoay)' : ' · magnet tường & đồ kề') : ' · magnet căn tim/cạnh'}
-                                    </div>
-                                </div>
-                            </button>
-                        );
-                    })}
-                    {activeFurnGroup === 'fadi' && (FURNITURE.fadi || []).length === 0 && (
-                        <div style={{
-                            margin: '6px 4px', padding: 14, borderRadius: 12,
-                            background: '#fffbeb', border: '1px dashed #fbbf24', color: '#78350f',
-                            fontSize: 12.5, lineHeight: 1.5, textAlign: 'center',
-                        }}>
-                            <div style={{ fontWeight: 700, marginBottom: 4 }}>Thư viện FADI hiện chưa có món nào</div>
-                            <div style={{ marginBottom: 10 }}>
-                                Mở Backend Quản Trị (PC) để nhập mẫu từ SketchUp vào nhóm FADI rồi bấm <b>Đẩy Cloud FADI</b>, hoặc tải dữ liệu mới từ Cloud.
-                            </div>
-                            <button type="button" className="btn" disabled={fadiSyncBusy} onClick={() => pullFadiFromCloud(false)}>
-                                <RefreshCw size={14} className={fadiSyncBusy ? 'spin' : ''} /> {fadiSyncBusy ? 'Đang tải…' : 'Tải từ Cloud FADI'}
-                            </button>
-                        </div>
-                    )}
-                </div>
-                {!inFadiMode ? (
-                    <button className="sheet-row" style={{ borderTop: '1px solid var(--line)', marginTop: 4 }}
-                        onClick={handleToggleFadiOption}>
-                        <Boxes size={18} style={{ color: fadiEnabled ? '#d97706' : 'var(--muted)' }} />
-                        <div style={{ flex: 1 }}>
-                            Thư viện nội thất FADI (Tuỳ chọn)
-                            <div className="sub">{fadiEnabled ? 'Đang bật trong danh sách trên — chạm để ẩn' : 'Chạm để nạp thêm đồ từ Thư viện FADI'}</div>
-                        </div>
-                        <span style={{
-                            padding: '3px 9px', borderRadius: 999, fontSize: 11.5, fontWeight: 700,
-                            background: fadiEnabled ? '#fef3c7' : 'var(--bg-2)',
-                            color: fadiEnabled ? '#b45309' : 'var(--muted)',
-                        }}>
-                            {fadiEnabled ? 'Đang bật' : 'Bật Option'}
-                        </span>
-                    </button>
-                ) : (
-                    <button className="sheet-row" style={{ borderTop: '1px solid var(--line)', marginTop: 4 }}
-                        disabled={fadiSyncBusy} onClick={() => pullFadiFromCloud(false)}>
-                        <RefreshCw size={18} className={fadiSyncBusy ? 'spin' : ''} style={{ color: '#d97706' }} />
-                        <div style={{ flex: 1 }}>
-                            Đồng bộ lại Thư viện FADI từ Cloud
-                            <div className="sub">Đang tự động dùng mặc định cho FADI ({(FURNITURE.fadi || []).length} món)</div>
-                        </div>
-                    </button>
-                )}
-                <button className="sheet-row" style={{ borderTop: '1px solid var(--line)' }}
-                    onClick={() => { setShowFurnPicker(false); setShowFurnSizes(true); }}>
-                    <Settings2 size={18} style={{ color: 'var(--ink-2)' }} />
-                    <div style={{ flex: 1 }}>Sửa kích thước mặc định<div className="sub">Áp dụng cho món thêm sau</div></div>
-                </button>
-                {onOpenCatalogAdmin && (
-                    <button className="sheet-row desktop-only"
-                        onClick={() => { setShowFurnPicker(false); onOpenCatalogAdmin(); }}>
-                        <Boxes size={18} style={{ color: 'var(--violet)' }} />
-                        <div style={{ flex: 1 }}>Mở Backend sửa thư viện 2D &amp; 3D (PC)<div className="sub">Quản trị Kho chung, Thư viện FADI &amp; nhập từ SketchUp</div></div>
-                    </button>
-                )}
-            </Sheet>
-
-            {/* Furniture default sizes */}
+            {/* Furniture default sizes & Settings */}
             <Sheet open={showFurnSizes} onClose={() => setShowFurnSizes(false)}
                 title="Kích thước mặc định" sub="Chạm để sửa — chỉ ảnh hưởng món thêm mới">
                 <div className="chip-row" style={{ marginBottom: 6 }}>
@@ -1650,6 +1604,13 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
                 <button className="sheet-row" onClick={() => onChange({ ...docRef.current, settings: { ...settings, showFurnDims: settings.showFurnDims === false } })}>
                     <div style={{ flex: 1 }}>Hiện kích thước nội thất (R×S)<div className="sub">Ghi kích thước trực tiếp trên món đồ 2D</div></div>
                     <div className={`sync-chip ${settings.showFurnDims !== false ? 'on' : 'off'}`}>{settings.showFurnDims !== false ? 'BẬT' : 'TẮT'}</div>
+                </button>
+                <button className="sheet-row" onClick={() => setPlanTheme(planTheme === 'cad' ? 'presentation' : 'cad')}>
+                    <div style={{ flex: 1 }}>Chế độ Trình bày kiến trúc 2D<div className="sub">Nền xám kỹ thuật, tường poché xám &amp; vật liệu sàn gỗ/gạch</div></div>
+                    <div className={`sync-chip ${planTheme !== 'cad' ? 'on' : 'off'}`}>{planTheme !== 'cad' ? 'TRÌNH BÀY' : 'CAD TRẮNG'}</div>
+                </button>
+                <button className="sheet-row" onClick={() => { setShowSettings(false); setShowFurnSizes(true); }}>
+                    <div style={{ flex: 1 }}>Sửa kích thước đồ nội thất mặc định<div className="sub">Đổi R×S cho từng mẫu khi thả mới</div></div>
                 </button>
 
                 <div style={{ padding: '12px 0 4px', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Bề rộng cửa mặc định</div>

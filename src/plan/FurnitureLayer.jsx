@@ -5,15 +5,21 @@ import { furnitureBasis } from '../lib/magnetSnap';
 import { isParametricCabinet, resolveParametricConfig } from '../lib/parametricModel';
 import { parseSvgSymbol } from '../lib/svgSymbol';
 
-const FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
-const FILL = 'rgba(241,245,249,0.72)';
-const FILL_WOOD = 'rgba(254,243,199,0.42)';
-const FILL_SOFT = 'rgba(226,232,240,0.48)';
-const FILL_WATER = 'rgba(224,242,254,0.45)';
+const FONT = "'Plus Jakarta Sans', -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
+const FILL = 'rgba(255,255,255,0.92)';
+const FILL_CAD = 'rgba(241,245,249,0.72)';
+const FILL_WOOD = 'rgba(255,255,255,0.92)';
+const FILL_WOOD_CAD = 'rgba(254,243,199,0.42)';
+const FILL_SOFT = 'rgba(255,255,255,0.94)';
+const FILL_SOFT_CAD = 'rgba(226,232,240,0.48)';
+const FILL_WATER = 'rgba(255,255,255,0.94)';
+const FILL_WATER_CAD = 'rgba(224,242,254,0.45)';
 const FILL_SEL = 'rgba(37,99,235,0.16)';
 const FILL_EDIT = 'rgba(5,150,105,0.14)';
-const LINE = '#475569';
-const LINE_SUB = '#94a3b8';
+const LINE = '#1e293b';
+const LINE_CAD = '#475569';
+const LINE_SUB = '#64748b';
+const LINE_SUB_CAD = '#94a3b8';
 const LINE_SEL = '#2563eb';
 const LINE_EDIT = '#059669';
 
@@ -28,18 +34,18 @@ function layerOrder(item) {
 }
 
 /** Màu nền tinh tế theo chủng loại để bản vẽ mặt bằng nội thất có chiều sâu chuyên nghiệp */
-export function itemFill(cat, isSelected, isEditing) {
+export function itemFill(cat, isSelected, isEditing, isPres = true) {
     if (isEditing) return FILL_EDIT;
     if (isSelected) return FILL_SEL;
-    if (!cat) return FILL;
+    if (!cat) return isPres ? FILL : FILL_CAD;
     if (cat.fill2d) return cat.fill2d;
-    if (cat.sym === 'rug') return 'rgba(254,249,195,0.28)';
-    if (cat.group === 'wc' || cat.sym === 'sink' || cat.sym === 'sink2') return FILL_WATER;
+    if (cat.sym === 'rug') return isPres ? 'rgba(218, 212, 200, 0.72)' : 'rgba(254,249,195,0.28)';
+    if (cat.group === 'wc' || cat.sym === 'sink' || cat.sym === 'sink2') return isPres ? FILL_WATER : FILL_WATER_CAD;
     if (['wardrobe', 'wardrobe_slide', 'cab', 'dresser', 'desk', 'nightstand', 'tvstand', 'table', 'altar', 'shoe_bench'].includes(cat.sym)) {
-        return FILL_WOOD;
+        return isPres ? FILL_WOOD : FILL_WOOD_CAD;
     }
-    if (['bed', 'sofa', 'sofaL', 'armchair', 'bench'].includes(cat.sym)) return FILL_SOFT;
-    return FILL;
+    if (['bed', 'sofa', 'sofaL', 'armchair', 'bench'].includes(cat.sym)) return isPres ? FILL_SOFT : FILL_SOFT_CAD;
+    return isPres ? FILL : FILL_CAD;
 }
 
 /**
@@ -424,7 +430,7 @@ export function Symbol2D({ sym, w, d, sw, color, subColor, item, cat }) {
                 <>
                     {seats}
                     {/* Mặt bàn đè lên phần chân ghế thu vào gầm bàn (đúng chuẩn hình chiếu mặt bằng) */}
-                    <Rect x={-hw} y={-hd} width={w} height={d} cornerRadius={30} fill="rgba(254,243,199,0.85)" {...st} />
+                    <Rect x={-hw} y={-hd} width={w} height={d} cornerRadius={30} fill="rgba(255,255,255,0.95)" {...st} />
                     <Rect x={-hw + inset} y={-hd + inset} width={w - inset * 2} height={d - inset * 2} cornerRadius={18} {...stThin} />
                 </>
             );
@@ -685,15 +691,16 @@ export function Symbol2D({ sym, w, d, sw, color, subColor, item, cat }) {
 /**
  * 1 món nội thất trên mặt bằng.
  */
-const FurnitureItem = ({ item, scale, isSelected, isEditing, showDims = true, onSelect, onChange, onRotate }) => {
+const FurnitureItem = ({ item, scale, isSelected, isEditing, showDims = true, themeMode = 'presentation', onSelect, onChange, onRotate }) => {
     const inv = 1 / scale;
+    const isPres = themeMode !== 'cad';
     const cat = catalogItem(item.kind);
     const w = item.w || cat?.w || 600;
     const d = item.d || cat?.d || 600;
-    const sw = 1.15 * inv;
-    const baseColor = cat?.color2d || LINE;
+    const sw = (isPres ? 1.0 : 1.15) * inv;
+    const baseColor = cat?.color2d || (isPres ? LINE : LINE_CAD);
     const color = isEditing ? LINE_EDIT : isSelected ? LINE_SEL : baseColor;
-    const subColor = isEditing ? '#10b981' : isSelected ? '#60a5fa' : (cat?.color2d ? baseColor : LINE_SUB);
+    const subColor = isEditing ? '#10b981' : isSelected ? '#60a5fa' : (cat?.color2d ? baseColor : (isPres ? LINE_SUB : LINE_SUB_CAD));
     const lastTap = React.useRef(0);
 
     const tap = (e) => {
@@ -715,8 +722,8 @@ const FurnitureItem = ({ item, scale, isSelected, isEditing, showDims = true, on
     const labelW = Math.max(w * 0.94, 40);
     const fsName = Math.max(7.5 * inv, Math.min(10.5 * inv, Math.min(w, d) * 0.22));
     const fsDim = Math.max(6.8 * inv, Math.min(9 * inv, fsName * 0.85));
-    const showName = !!(cat && pxW > 26 && pxD > 16);
-    const showDimText = !!(showDims && pxW > 42 && pxD > 26);
+    const showName = !!(cat && pxW > 26 && pxD > 16 && (!isPres || isSelected || isEditing || showDims));
+    const showDimText = !!(showDims && pxW > 42 && pxD > 26 && (!isPres || isSelected || isEditing || pxW > 90));
 
     return (
         <Group
@@ -731,7 +738,7 @@ const FurnitureItem = ({ item, scale, isSelected, isEditing, showDims = true, on
             {/* Khung bao vật thể: với sofaL hoặc bàn ăn có ghế thò ra, chỉ vẽ khung bao đứt nét khi đang chọn/sửa */}
             <Rect
                 x={-w / 2} y={-d / 2} width={w} height={d}
-                fill={isSofaL || isTable ? 'rgba(0,0,0,0.001)' : itemFill(cat, isSelected, isEditing)}
+                fill={isSofaL || isTable ? 'rgba(0,0,0,0.001)' : itemFill(cat, isSelected, isEditing, isPres)}
                 stroke={(isSofaL || isTable) && !isSelected && !isEditing ? 'transparent' : color}
                 strokeWidth={isSelected || isEditing ? sw * 1.9 : sw * 1.35}
                 dash={(isSofaL || isTable) && (isSelected || isEditing) ? [5 * inv, 4 * inv] : (cat?.mount === 'wall' || cat?.mount === 'ceiling' ? [6 * inv, 4 * inv] : undefined)}
@@ -961,7 +968,7 @@ function SnapGuidesOverlay({ guides, scale }) {
 }
 
 const FurnitureLayer = ({
-    items, scale, sel, editItemId, snapGuides, listening, showDims = true,
+    items, scale, sel, editItemId, snapGuides, listening, showDims = true, themeMode = 'presentation',
     onSelect, onChange, onRotate, onScaleEdge, onTapEdge,
 }) => {
     const sorted = React.useMemo(
@@ -980,6 +987,7 @@ const FurnitureLayer = ({
                     isSelected={sel?.kind === 'furniture' && sel.id === it.id}
                     isEditing={editItemId === it.id}
                     showDims={showDims}
+                    themeMode={themeMode}
                     onSelect={onSelect}
                     onChange={onChange}
                     onRotate={onRotate}

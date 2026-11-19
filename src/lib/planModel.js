@@ -104,6 +104,16 @@ export function renameRoom(plan, roomId, name) {
     return { ...plan, rooms: (plan.rooms || []).map(r => r.id === roomId ? { ...r, name } : r) };
 }
 
+export function setRoomFloorMaterial(plan, roomId, floorMat) {
+    const nextMat = floorMat || undefined;
+    return {
+        ...plan,
+        rooms: (plan.rooms || []).map(r => (roomId === '__all__' || r.id === roomId)
+            ? { ...r, floorMat: nextMat }
+            : r),
+    };
+}
+
 /**
  * Re-detect rooms from geometry, preserving user-given names
  * (match by node-id key first, then by old label point inside new polygon).
@@ -126,6 +136,7 @@ export function recomputeRooms(plan) {
             // Chiều cao thông thủy là số ĐO TAY — recompute chạy sau mỗi lần sửa tường,
             // không giữ lại thì sửa một bức tường là mất trắng số đã đo.
             h: old?.h,
+            ...(old?.floorMat ? { floorMat: old.floorMat } : {}),
             key,
             nodeIds: f.nodeIds,
             area: Math.abs(shoelaceArea(f.pts)),
