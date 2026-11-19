@@ -914,6 +914,29 @@ module MKG
       )
     end
 
+    def reload(show_toast: false)
+      @active_dialog.close rescue nil
+      @active_dialog = nil
+      @export_busy = false
+      base_dir = File.dirname(__dir__)
+      loader_rb = File.join(base_dir, 'mkg_khaosat_exporter.rb')
+      main_rb = File.join(__dir__, 'main.rb')
+      if File.exist?(loader_rb)
+        load loader_rb
+      elsif File.exist?(main_rb)
+        load main_rb
+      end
+      ver = defined?(PLUGIN_VERSION) ? PLUGIN_VERSION : '1.1.1'
+      puts "[MKG Khảo Sát] Đã reload plugin v#{ver} lúc #{Time.now.strftime('%H:%M:%S')}!"
+      UI.messagebox("Đã reload plugin MKG Khảo Sát v#{ver}!") if show_toast
+      ver
+    rescue StandardError => e
+      UI.messagebox("Lỗi reload MKG Khảo Sát:\n#{e.message}") if show_toast
+      puts "[MKG Khảo Sát] Lỗi reload: #{e.message}"
+      nil
+    end
+    alias reload! reload
+
     def open_export_dialog
       model = Sketchup.active_model
       return unless model
@@ -963,6 +986,7 @@ module MKG
         }
       }
 
+      @active_dialog.close rescue nil
       dlg = UI::HtmlDialog.new(
         dialog_title: "MKG Khảo Sát v#{PLUGIN_VERSION} — Xuất Thẳng Lên Thư Viện",
         preferences_key: 'com.mkg.khaosat.exporter',
@@ -973,6 +997,8 @@ module MKG
         min_width: 560,
         min_height: 460
       )
+      @active_dialog = dlg
+      dlg.set_on_closed { @active_dialog = nil } if dlg.respond_to?(:set_on_closed)
 
       @export_busy = false
 
@@ -1279,11 +1305,13 @@ module MKG
       cmd_dae.tooltip = 'Xuất nhanh 1 món sang .dae chuẩn hoá gốc toạ độ'
 
       cmd_help = UI::Command.new('Hướng dẫn hệ trục & Model') { show_guide_dialog }
+      cmd_reload = UI::Command.new('Reload MKG Khảo Sát') { reload(show_toast: true) }
 
       menu = UI.menu('Extensions').add_submenu('MKG Khảo Sát (do.mkg.vn)')
       menu.add_item(cmd_pkg)
       menu.add_item(cmd_dae)
       menu.add_separator
+      menu.add_item(cmd_reload)
       menu.add_item(cmd_help)
 
       toolbar = UI::Toolbar.new('MKG Khảo Sát')
