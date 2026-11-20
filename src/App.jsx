@@ -26,6 +26,7 @@ import { genId } from './lib/geometry';
 import { getCurrentLocation } from './lib/location';
 import {
     initCatalogStore, applyCatalogSyncPayload, applyFadiCatalogSyncPayload,
+    getCatalogUpdatedAt, getFadiCatalogUpdatedAt,
     isFadiLibraryEnabled, setCatalogContext,
 } from './lib/furnitureCatalog';
 
@@ -120,10 +121,16 @@ export default function App() {
     const nextBackgroundSync = useRef(0);
     const syncFailures = useRef(0);
 
-    const syncCloudCatalogs = useCallback(() => {
+    const syncCloudCatalogs = useCallback(({ force = false } = {}) => {
         if (!pb.isLoggedIn() || pb.isCustomer()) return;
-        pb.fetchCloudCatalog('global').then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
-        pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
+        const knownGlobal = force ? 0 : getCatalogUpdatedAt();
+        const knownFadi = force ? 0 : getFadiCatalogUpdatedAt();
+        pb.fetchCloudCatalog('global', { knownUpdatedAt: knownGlobal })
+            .then(p => p && applyCatalogSyncPayload(p, { force }))
+            .catch(() => {});
+        pb.fetchCloudCatalog('fadi', { knownUpdatedAt: knownFadi })
+            .then(p => p && applyFadiCatalogSyncPayload(p, { force }))
+            .catch(() => {});
     }, []);
 
     const syncFadiContext = useCallback((projObj = null) => {
@@ -255,6 +262,7 @@ export default function App() {
                 && document.visibilityState === 'visible' && navigator.onLine !== false
                 && pb.isLoggedIn() && !pb.isCustomer() && Date.now() >= nextBackgroundSync.current) {
                 syncAll(true);
+                syncCloudCatalogs();
             }
         }, 30_000);
         return () => {
@@ -815,9 +823,9 @@ export default function App() {
             if (!pb.isCustomer()) {
                 syncAll(true);
                 refreshCustomerInboxCount();
-                syncCloudCatalogs();
+                syncCloudCatalogs({ force: true });
             } else if (isFadiLibraryEnabled()) {
-                pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
+                pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p, { force: true })).catch(() => {});
             }
             return user;
         } catch (err) {

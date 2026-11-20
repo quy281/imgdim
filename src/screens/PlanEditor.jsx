@@ -18,7 +18,8 @@ import ElevationView from '../plan/ElevationView';
 import {
     catalogItem, defaultSize, subscribeCatalog,
     isFadiContextActive, isFadiLibraryEnabled, setFadiLibraryEnabled,
-    listPickerGroups, applyCatalogSyncPayload, applyFadiCatalogSyncPayload, FURNITURE,
+    listPickerGroups, applyCatalogSyncPayload, applyFadiCatalogSyncPayload,
+    getCatalogUpdatedAt, getFadiCatalogUpdatedAt, FURNITURE,
 } from '../lib/furnitureCatalog';
 import * as pb from '../lib/pb';
 import {
@@ -186,8 +187,12 @@ export default function PlanEditor({ doc, projectName = '', onChange, onBack, on
     useEffect(() => {
         if (!pb.isLoggedIn() || pb.isCustomer()) return;
         if (showFurnPicker) {
-            pb.fetchCloudCatalog('fadi').then(p => p && applyFadiCatalogSyncPayload(p)).catch(() => {});
-            pb.fetchCloudCatalog('global').then(p => p && applyCatalogSyncPayload(p)).catch(() => {});
+            pb.fetchCloudCatalog('fadi', { knownUpdatedAt: getFadiCatalogUpdatedAt() })
+                .then(p => p && applyFadiCatalogSyncPayload(p))
+                .catch(() => {});
+            pb.fetchCloudCatalog('global', { knownUpdatedAt: getCatalogUpdatedAt() })
+                .then(p => p && applyCatalogSyncPayload(p))
+                .catch(() => {});
         }
     }, [showFurnPicker]);
     const [templates, setTemplates] = useState(null);

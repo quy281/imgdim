@@ -34,7 +34,8 @@ function resolveBackendBase() {
     let envUrl;
     try { envUrl = import.meta.env.VITE_BACKEND_URL; } catch { /* ignore outside Vite */ }
     if (typeof envUrl === 'string') return envUrl.replace(/\/+$/, '');
-    return 'https://db.mkg.vn';
+    // Mặc định dùng same-origin Cloudflare Pages Functions (/api — D1 + R2) cho mọi máy.
+    return '';
 }
 
 const BASE = resolveBackendBase();
@@ -2792,10 +2793,20 @@ export function isCurrentAccountFadi() {
  * catalogKey: `'global'` (chung) hoặc `'fadi'` (Thư viện FADI).
  * Trả về `null` nếu offline, chưa đăng nhập hoặc chưa tạo collection trên server.
  */
-export async function fetchCloudCatalog(catalogKey = 'global') {
+export async function fetchCloudCatalog(catalogKey = 'global', { knownUpdatedAt = 0 } = {}) {
     if (!isLoggedIn()) return null;
     const key = String(catalogKey || 'global').trim() || 'global';
     try {
+        if (knownUpdatedAt > 0) {
+            const meta = await api(
+                `collections/${FURNITURE_CATALOG}/records?perPage=1&fields=id,catalog_key,updated_ms&${q(`catalog_key='${esc(key)}'`)}`
+            );
+            const recMeta = meta?.items?.[0];
+            if (!recMeta) return null;
+            if (Number(recMeta.updated_ms || 0) > 0 && Number(recMeta.updated_ms) <= knownUpdatedAt) {
+                return null;
+            }
+        }
         const res = await api(
             `collections/${FURNITURE_CATALOG}/records?perPage=1&${q(`catalog_key='${esc(key)}'`)}`
         );

@@ -1,7 +1,7 @@
 // MKG Khảo Sát — minimal offline-first service worker.
 // Navigation: network-first, cache fallback (works offline after first load).
 // Hashed assets: cache-first (content-addressed, safe forever).
-const CACHE = 'ks-v1';
+const CACHE = 'ks-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 

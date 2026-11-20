@@ -373,5 +373,23 @@ const fadiPulled2 = await pb.fetchCloudCatalog('fadi');
 const matchingRuou = (fadiPulled2?.customItems || []).filter(x => x.name === 'Tủ Rượu FADI');
 check('Re-import trung ten vao FADI cap nhat de (khong nhan ban), giu item cu fadi_tu1 va chuan hoa fadiRoom', matchingRuou.length === 1 && matchingRuou[0].w === 1400 && matchingRuou[0].fadiRoom === 'Khách + ăn' && fadiPulled2.customItems.some(x => x.key === 'fadi_tu1'));
 
+// 11. Test KTS may khac doc FADI va co che skip R2 qua metadata updated_ms
+await pb.logout();
+await pb.loginSmart('kts2', '1111');
+const ktsFadi = await pb.fetchCloudCatalog('fadi');
+check('May khac (KTS2) keo duoc FADI catalog tu Cloud D1/R2', !!ktsFadi && ktsFadi.customItems.some(x => x.name === 'Tủ Rượu FADI'));
+
+const origR2Get = env.MEDIA.get.bind(env.MEDIA);
+let r2CatalogReads = 0;
+env.MEDIA.get = async (k) => {
+    if (k.includes('catalog/')) r2CatalogReads++;
+    return origR2Get(k);
+};
+const skippedUnchanged = await pb.fetchCloudCatalog('fadi', { knownUpdatedAt: ktsFadi.updatedAt });
+check('fetchCloudCatalog skip doc R2 khi updated_ms khong doi (0 R2 reads)', skippedUnchanged === null && r2CatalogReads === 0);
+const pulledNewer = await pb.fetchCloudCatalog('fadi', { knownUpdatedAt: ktsFadi.updatedAt - 1 });
+check('fetchCloudCatalog tu dong tai lai FADI khi cloud updated_ms moi hon', !!pulledNewer && r2CatalogReads === 1);
+env.MEDIA.get = origR2Get;
+
 console.log(`\n===== CLOUDFLARE E2E TEST: ${pass} pass, ${fail} fail =====`);
 if (fail > 0) process.exit(1);

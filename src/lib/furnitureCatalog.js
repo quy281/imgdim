@@ -827,6 +827,14 @@ function collectGlbAssetsForKeys(keySet, maxChars = 15_000_000) {
     return out;
 }
 
+export function getCatalogUpdatedAt() {
+    return Number(catalogState.updatedAt) || 0;
+}
+
+export function getFadiCatalogUpdatedAt() {
+    return Number(fadiState.updatedAt) || 0;
+}
+
 export function getCatalogSyncPayload({ includeGlb = false } = {}) {
     const payload = {
         version: 1,

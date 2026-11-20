@@ -917,15 +917,17 @@ async function handleCustomerSubmissions(req, env, auth, subPath, url) {
 async function handleFurnitureCatalog(req, env, auth, subPath, url) {
     if (!auth) return errRes('Unauthorized', 401);
     const filter = url.searchParams.get('filter') || '';
-    const format = async (r) => ({
+    const fieldsSet = parseFieldsParam(url);
+    const needPayload = !fieldsSet || fieldsSet.has('payload');
+    const format = async (r) => projectFields({
         id: r.id,
         catalog_key: r.catalog_key,
-        payload: await loadJsonWithOffload(env, r.payload_json, r.payload_r2_key),
+        ...(needPayload ? { payload: await loadJsonWithOffload(env, r.payload_json, r.payload_r2_key) } : {}),
         updated_ms: Number(r.updated_ms || 0),
         updated_by: r.updated_by || '',
         created: r.created_at,
         updated: r.updated_at,
-    });
+    }, fieldsSet);
 
     if (req.method === 'GET' && subPath === '/records') {
         const keyEq = parseFilterEq(filter, 'catalog_key');
